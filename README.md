@@ -88,3 +88,14 @@ fly_driver/
 Proposal stage as of September 2026. No code exists yet. Current focus is the eye and brain track plus the minimal CarRacing and PPO harness it needs.
 
 See `CLAUDE.md` for the full project context, week-by-week plan, and required correctness tests.
+
+## Running locally
+
+There is no install step or dev server yet — the repo is documentation-only until the `fly_driver/` tree is added.
+
+```bash
+git clone https://github.com/Paytonhenry04/Formula-Fly.git
+cd Formula-Fly
+```
+
+When Python training code and containers land, this section will list dependencies (expected: PyTorch, Gymnasium, flyvis, etc.) and commands to run CarRacing/PPO smoke tests.
