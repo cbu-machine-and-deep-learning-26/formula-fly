@@ -145,3 +145,100 @@ These fail silently and look plausible when wrong. Write tests, don't eyeball:
 - **Ventral nerve cord (VNC):** fly's spinal-cord analog (in MaleCNS, not FlyWire; flybody handles the body side for us).
 - **LIF:** leaky integrate-and-fire neuron model (used by Shiu et al. whole-brain sim).
 - **Tethered rig:** real neuroscience setup where a fixed fly steers a virtual world; our whole project is a software version of one.
+
+## 14. Python coding standards
+
+Applies to all Python in this repo, agent-written or human-written. Goal: any team member (or agent) can read another's code without friction, and tooling enforces most of it automatically.
+
+### 14.1 Naming
+
+| Element | Convention | Example |
+|---|---|---|
+| Variables, functions, methods | `snake_case` | `user_count`, `get_active_users()` |
+| Classes, exceptions | `PascalCase` | `OrderProcessor`, `InvalidTokenError` |
+| Constants | `UPPER_SNAKE_CASE` | `MAX_RETRIES`, `DEFAULT_TIMEOUT_SEC` |
+| Modules, packages | short `lowercase_with_underscores` | `payment_gateway.py`, `utils/` |
+| Type variables (generics) | `PascalCase`, often single letter | `T`, `KeyType` |
+| "Private" / internal use | leading underscore | `_cache`, `_parse_header()` |
+| Name-mangled (rare, subclass-safe) | leading double underscore | `__internal_state` |
+| Test files / functions | `test_` prefix | `test_order_processor.py`, `def test_rejects_negative_amount()` |
+
+- **Booleans** read as a yes/no question: `is_valid`, `has_permission`, `can_retry`. Avoid bare `flag`, `check`.
+- **Functions are verbs**: `calculate_total()`, `send_email()`. Avoid noun-only names like `total()` for a function that computes something.
+- **Collections are plural**: `users`, `order_ids`. A single item shouldn't be named like a collection.
+- **No single-letter names** except conventional, short-lived ones: loop counters (`i`, `j`), comprehensions, or math where the domain uses them (`x`, `y`). Everything else gets a real name.
+- **Avoid ambiguous abbreviations** (`usr`, `cfg`, `mgr`) unless the abbreviation is the domain standard (`id`, `url`, `db`, `req`, `resp` are fine).
+- **Don't encode type in the name** (`user_list`, `str_name`) — type hints already do that job.
+- **Match the domain vocabulary** — this project's domain is neuroscience/RL, so prefer `root_id`, `primary_type`, `synapse_count`, `control_vector` etc. over ad hoc renamings.
+- **Avoid shadowing builtins**: don't name things `list`, `dict`, `id`, `type`, `input`.
+
+### 14.2 Formatting
+
+**Tooling (non-negotiable baseline):**
+- **Formatter:** [Black](https://black.readthedocs.io/) — no manual style debates, run it in CI and pre-commit.
+- **Linter:** [Ruff](https://docs.astral.sh/ruff/) (covers flake8, isort, pyupgrade, and more in one tool).
+- **Type checking:** [mypy](https://mypy-lang.org/) or Ruff's type-aware rules, run in CI.
+- All of the above configured in `pyproject.toml` so settings are versioned, not personal.
+
+**Line length:** 88 characters (Black's default). Don't fight the formatter with manual line breaks it will undo.
+
+**Imports**, grouped and separated by a blank line, alphabetized within each group (Ruff/isort handles this automatically):
+```python
+# 1. Standard library
+import os
+from datetime import datetime
+
+# 2. Third-party
+import requests
+from pydantic import BaseModel
+
+# 3. Local/first-party
+from fly_driver.eyes import FlyvisEye
+from fly_driver.policies import ControlVector
+```
+- No wildcard imports (`from module import *`).
+- Prefer absolute imports over relative imports across packages; relative imports (`.` / `..`) are fine within a single package's internal modules.
+
+**Strings:** Double quotes by default (Black enforces this). Use f-strings for interpolation — not `%` formatting or `.format()`.
+
+**Type hints:** Required on all public function signatures (parameters and return type). Encouraged elsewhere.
+```python
+def get_control_vector(features: torch.Tensor) -> ControlVector:
+    ...
+```
+
+**Docstrings:** Required on all public modules, classes, and functions. Google style:
+```python
+def calculate_discount(price: float, percent: float) -> float:
+    """Calculate the discounted price.
+
+    Args:
+        price: Original price before discount.
+        percent: Discount percentage, e.g. 15 for 15%.
+
+    Returns:
+        The discounted price, rounded to 2 decimal places.
+    """
+```
+
+**Blank lines:**
+- 2 blank lines between top-level functions/classes.
+- 1 blank line between methods inside a class.
+- No blank line right after a `def` line before the docstring.
+
+**Comments:** Explain *why*, not *what* — the code already says what. Delete commented-out code instead of leaving it; version control remembers it.
+
+### 14.3 File & project structure
+
+- **Tests mirror source structure**: `fly_driver/eyes/flyvis_eye.py` → `tests/eyes/test_flyvis_eye.py`.
+- **One clear responsibility per module.** If a file is doing three unrelated things, split it. As a rough guardrail, a module pushing past ~400 lines is worth a second look.
+- **`__init__.py` stays minimal** — re-export the public API of a package if it helps callers, but avoid burying real logic there.
+- **No business logic in entrypoint/training-launcher scripts** — they should just wire things together (config → eye → brain → policy → env) and call into `fly_driver/`.
+- **Config and secrets** live in environment variables or a config module (see `fly_driver/configs/`), never hardcoded in business logic files.
+- **Filenames are `snake_case.py`**, matching the naming rules above — no `CamelCase.py` or `kebab-case.py`.
+
+### 14.4 Enforcement
+
+- Black, Ruff, and mypy run as **pre-commit hooks** so violations are caught before a commit lands.
+- The same checks run in **CI** as a required status check — pre-commit hooks can be skipped locally, CI can't.
+- Code review flags naming/structure issues the tools can't catch (a misleading name, a module doing too much) — save review time for things that need human judgment.
