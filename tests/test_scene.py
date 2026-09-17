@@ -173,6 +173,26 @@ class TestSceneOptions:
         model = mujoco.MjModel.from_xml_string(build_scene_xml(square, SceneConfig(timestep=0.004)))
         assert model.opt.timestep == pytest.approx(0.004)
 
+    def test_the_friction_cone_is_elliptic(self, square):
+        """The default pyramidal cone under-delivers lateral tyre force badly enough to
+        change the car: at 250 km/h and moderate lock it produced 2.6 g where the tyre
+        and aero figures say 4.5, and the steered front wheels skipped along the road.
+        This is the single option that fixed cornering, so it is pinned."""
+        model = mujoco.MjModel.from_xml_string(build_scene_xml(square, SceneConfig()))
+        assert model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC
+
+    def test_impratio_is_raised_for_accurate_friction(self, square):
+        """MuJoCo's own guidance: with an elliptic cone, raise impratio well above 1 or
+        friction stays soft."""
+        model = mujoco.MjModel.from_xml_string(build_scene_xml(square, SceneConfig()))
+        assert model.opt.impratio >= 5.0
+
+    def test_the_cone_can_be_switched_back(self, square):
+        model = mujoco.MjModel.from_xml_string(
+            build_scene_xml(square, SceneConfig(friction_cone="pyramidal"))
+        )
+        assert model.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL
+
 
 class TestSceneConfigValidation:
     @pytest.mark.parametrize(
@@ -187,6 +207,8 @@ class TestSceneConfigValidation:
             {"model_extent_m": -1.0},
             {"znear_extents": 0.0},
             {"zfar_extents": 0.001},
+            {"friction_cone": "conical"},
+            {"impratio": 0.5},
         ],
     )
     def test_rejects_bad_values(self, kwargs):

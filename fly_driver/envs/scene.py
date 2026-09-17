@@ -51,6 +51,18 @@ class SceneConfig:
             already penalises leaving the track, and walls add thousands of contact geoms
             that slow every step of every rollout.
         wall_height_m: Wall height when ``include_walls`` is set.
+        friction_cone: MuJoCo's contact friction cone, ``elliptic`` or ``pyramidal``.
+            Elliptic, deliberately. With the default pyramidal cone the steered front
+            tyres skipped off the road at full lock: at 250 km/h they were in contact
+            11-22% of the time, hopping 3 mm, and the car pulled 2.6 g where the tyre
+            and aero figures say 4.5. It was not the steering, the timestep, the
+            suspension or the cylinder shape -- a rigidly toed wheel did it too -- and
+            softer contacts cured the hop only at the cost of top speed (322 -> 276
+            km/h). The elliptic cone with ``impratio`` delivers the expected lateral
+            force (3.8 g settled at 250 km/h, tyre forces at mu*N), which is what the
+            fly's laps are measured against.
+        impratio: Ratio of frictional to normal constraint impedance, elliptic cones
+            only. MuJoCo recommends raising it well above 1 for accurate friction.
         timestep: Physics timestep in seconds. 2 ms keeps a rigid-body car with wheel
             contacts stable; larger values let the wheels tunnel under load.
         offscreen_width: Offscreen framebuffer width in pixels.
@@ -82,6 +94,8 @@ class SceneConfig:
     include_walls: bool = False
     wall_height_m: float = 0.6
     timestep: float = 0.002
+    friction_cone: str = "elliptic"
+    impratio: float = 10.0
     offscreen_width: int = 1280
     offscreen_height: int = 1280
     world_contype: int = 1
@@ -103,6 +117,12 @@ class SceneConfig:
             raise ValueError(f"kerb_width_m must be non-negative, got {self.kerb_width_m}")
         if self.timestep <= 0:
             raise ValueError(f"timestep must be positive, got {self.timestep}")
+        if self.friction_cone not in ("pyramidal", "elliptic"):
+            raise ValueError(
+                f"friction_cone must be pyramidal or elliptic, got {self.friction_cone!r}"
+            )
+        if self.impratio < 1.0:
+            raise ValueError(f"impratio must be at least 1, got {self.impratio}")
         if self.offscreen_width <= 0 or self.offscreen_height <= 0:
             raise ValueError(
                 f"offscreen framebuffer must be positive, got "
@@ -274,7 +294,8 @@ def build_scene_xml(
 
     return f"""<mujoco model="practice_track">
   <compiler angle="radian" autolimits="true"/>
-  <option timestep="{config.timestep}" integrator="implicitfast"/>
+  <option timestep="{config.timestep}" integrator="implicitfast"
+          cone="{config.friction_cone}" impratio="{config.impratio}"/>
 
   <!-- MuJoCo scales znear/zfar by the model's *extent*, and it infers extent from the
        bounding box unless told otherwise. A 1.7 km circuit gives extent ~1700 m, which
