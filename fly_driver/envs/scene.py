@@ -64,6 +64,10 @@ class SceneConfig:
             from the scene bounding box. A 1.7 km circuit therefore puts the near clipping
             plane tens of metres in front of the camera and a cockpit view renders as an
             empty sky. Pinning extent to car scale fixes it.
+        world_contype: Collision class of the ground and walls.
+        world_conaffinity: What the ground and walls collide with. Defaults pair with the
+            chassis and wheel classes in :mod:`fly_driver.envs.car` so that wheels touch
+            the ground but never the bodywork or each other.
         znear_extents: Near clipping plane, in extents. With the default extent this is
             centimetres, which is what a camera 1 m off the ground needs.
         zfar_extents: Far clipping plane, in extents. Must cover how far down the track the
@@ -80,6 +84,8 @@ class SceneConfig:
     timestep: float = 0.002
     offscreen_width: int = 1280
     offscreen_height: int = 1280
+    world_contype: int = 1
+    world_conaffinity: int = 6
     model_extent_m: float = 10.0
     znear_extents: float = 0.005
     zfar_extents: float = 60.0
@@ -254,7 +260,8 @@ def build_scene_xml(
                     f'pos="{mid[0]:.3f} {mid[1]:.3f} {config.wall_height_m / 2:.3f}" '
                     f'euler="0 0 {yaw:.5f}" '
                     f'size="{half_len:.3f} 0.1 {config.wall_height_m / 2:.3f}" '
-                    f'material="wall" group="2"/>'
+                    f'material="wall" group="2" '
+                    f'contype="{config.world_contype}" conaffinity="{config.world_conaffinity}"/>'
                 )
 
     start_position, start_yaw = centerline.pose_at(0.0)
@@ -312,7 +319,8 @@ def build_scene_xml(
   <worldbody>
     <light name="sun" directional="true" pos="0 0 200" dir="0.2 0.3 -1"
            diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" castshadow="true"/>
-    <geom name="ground" type="plane" size="0 0 1" material="grass" friction="1.0 0.005 0.0001"/>
+    <geom name="ground" type="plane" size="0 0 1" material="grass" friction="1.0 0.005 0.0001"
+          contype="{config.world_contype}" conaffinity="{config.world_conaffinity}"/>
     <geom name="road_geom" type="mesh" mesh="road" material="asphalt"
           contype="0" conaffinity="0" group="1"/>{kerb_geoms}{walls}
     <site name="start" pos="{start_position[0]:.3f} {start_position[1]:.3f} 0.05"
