@@ -4,25 +4,35 @@ The headline test is the issue's own acceptance criterion -- a random policy ste
 without crashing -- and it is first in the file. Everything after it guards something that
 fails *silently*: a frame the eye will reject, a step interval that quietly stops matching
 the optic lobe's integration rate, a camera buried in the bodywork returning a perfectly
-plausible flat image, or a frame with no motion signal in it at all.
+plausible flat image, an info key the evaluation harness reads under a different meaning, or
+a frame with no motion signal in it at all.
 
 That last one is the reason this env exists rather than Gymnasium CarRacing (`AGENTS.md`
 §6): flyvis models T4/T5, which are elementary *motion* detectors, and a top-down camera
-gives them nothing to detect. Up to now that claim lived in a docstring and had never been
-measured. :class:`TestOpticFlow` measures it.
+gives them nothing to detect. #16 asks for "expansion when going forward and slide when
+turning" and until now that lived in a docstring and had never been measured.
+:class:`TestOpticFlow` measures both.
 """
 
 from __future__ import annotations
 
+from collections import namedtuple
+
+import mujoco
 import numpy as np
 import pytest
 
-from fly_driver.envs.practice_track import PracticeTrack, StepResult
+from fly_driver.envs.practice_track import PracticeTrack, ProgressReward
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.interface import FRAME_DTYPE, FRAME_RATE_HZ, FRAME_SHAPE, ControlVector
 
+Step = namedtuple("Step", "frame reward terminated truncated info")
 
-def _started(env: PracticeTrack) -> np.ndarray:
+FLAT_OUT = ControlVector(steer=0.0, throttle=1.0, brake=0.0)
+COASTING = ControlVector.neutral()
+
+
+def _started(env: PracticeTrack) -> tuple[np.ndarray, dict]:
     """``env.reset()``, or skip the test if this machine cannot render offscreen."""
     try:
         return env.reset()
@@ -31,17 +41,29 @@ def _started(env: PracticeTrack) -> np.ndarray:
         pytest.skip(f"no offscreen GL context: {exc}")
 
 
-def _drive(env: PracticeTrack, control: ControlVector, steps: int) -> StepResult:
+def _step(env: PracticeTrack, control) -> Step:
+    return Step(*env.step(control))
+
+
+def _drive(env: PracticeTrack, control, steps: int) -> Step:
     """Hold one control for a while and return the last step."""
     result = None
     for _ in range(steps):
-        result = env.step(control)
+        result = _step(env, control)
     assert result is not None
     return result
 
 
-FLAT_OUT = ControlVector(steer=0.0, throttle=1.0, brake=0.0)
-COASTING = ControlVector.neutral()
+def _speed_mph(env: PracticeTrack) -> float:
+    return env.dynamics.speed_mps(env.data) * 2.23694
+
+
+def _yaw_rate(env: PracticeTrack) -> float:
+    """Magnitude of the car's yaw rate, rad/s, straight from the simulation."""
+    velocity = np.zeros(6)
+    body = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "car")
+    mujoco.mj_objectVelocity(env.model, env.data, mujoco.mjtObj.mjOBJ_BODY, body, velocity, 0)
+    return abs(float(velocity[2]))
 
 
 class TestArguments:
@@ -87,12 +109,11 @@ class TestArguments:
         finally:
             env.close()
 
-    def test_step_rejects_anything_that_is_not_a_control_vector(self):
-        """A bare tuple would be silently unpackable in a dozen plausible ways."""
+    def test_render_before_reset_is_an_error(self):
         env = PracticeTrack()
         try:
-            with pytest.raises(TypeError):
-                env.step((0.0, 1.0, 0.0))
+            with pytest.raises(RuntimeError, match="reset"):
+                env.render()
         finally:
             env.close()
 
@@ -113,6 +134,8 @@ class TestTiming:
         env = PracticeTrack()
         try:
             assert env.frame_shape == FRAME_SHAPE
+            assert env.observation_shape == FRAME_SHAPE
+            assert env.action_shape == (3,)
             assert env.frame_rate_hz == FRAME_RATE_HZ
         finally:
             env.close()
@@ -127,23 +150,183 @@ class TestARandomPolicyCanStepIt:
         try:
             _started(env)
             rng = np.random.default_rng(0)
-            episodes = 0
             for _ in range(400):
-                action = ControlVector.clipped(
-                    steer=rng.uniform(-1.0, 1.0),
-                    throttle=rng.uniform(0.0, 1.0),
-                    brake=rng.uniform(0.0, 1.0),
-                )
-                result = env.step(action)
+                action = rng.uniform([-1.0, 0.0, 0.0], [1.0, 1.0, 1.0]).astype(np.float32)
+                result = _step(env, action)
                 assert np.all(np.isfinite(env.data.qpos))
                 assert np.all(np.isfinite(env.data.qvel))
+                assert np.isfinite(result.reward)
                 assert not result.info["diverged"]
-                if result.done:
-                    episodes += 1
+                if result.terminated or result.truncated:
                     env.reset()
-            assert episodes >= 0  # the point is that nothing raised
         finally:
             env.close()
+
+
+@pytest.mark.render
+class TestTheEvaluationHarnessCanDriveIt:
+    """`fly_driver.training.evaluation` (GH-18) declares an ``Env`` protocol and the dummy
+    track speaks it. Two env shapes in one repo is exactly the drift `AGENTS.md` §3 exists
+    to stop, so the shape is pinned here rather than left to a reviewer to notice."""
+
+    def test_reset_returns_a_frame_and_an_info_mapping(self):
+        env = PracticeTrack()
+        try:
+            returned = env.reset(seed=11)
+            assert isinstance(returned, tuple) and len(returned) == 2
+            frame, info = returned
+            assert frame.dtype == FRAME_DTYPE
+            assert isinstance(info, dict)
+        finally:
+            env.close()
+
+    def test_step_returns_the_gymnasium_five_tuple(self):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            returned = env.step(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+            assert isinstance(returned, tuple) and len(returned) == 5
+            frame, reward, terminated, truncated, info = returned
+            assert frame.dtype == FRAME_DTYPE
+            assert isinstance(reward, float)
+            assert isinstance(terminated, bool) and isinstance(truncated, bool)
+            assert isinstance(info, dict)
+        finally:
+            env.close()
+
+    def test_render_gives_the_last_frame_as_a_copy(self):
+        """The harness calls render() once per step while recording video and keeps the
+        array. Handing back the live buffer would make every recorded frame the last one."""
+        env = PracticeTrack()
+        try:
+            frame, _ = _started(env)
+            rendered = env.render()
+            assert np.array_equal(rendered, frame)
+            assert rendered is not frame
+            moved = _drive(env, FLAT_OUT, 30).frame
+            assert np.array_equal(env.render(), moved)
+        finally:
+            env.close()
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            ControlVector(steer=0.0, throttle=0.5, brake=0.0),
+            np.array([0.0, 0.5, 0.0], dtype=np.float32),
+            [0.0, 0.5, 0.0],
+            (0.0, 0.5, 0.0),
+        ],
+    )
+    def test_it_accepts_every_action_form_the_harness_might_send(self, action):
+        """The harness converts an agent's output to a (3,) float32 array before it reaches
+        an env, so refusing arrays here would make this env unevaluatable."""
+        env = PracticeTrack()
+        try:
+            _started(env)
+            env.step(action)
+        finally:
+            env.close()
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            np.array([2.0, 0.0, 0.0]),  # out of range
+            np.array([np.nan, 0.0, 0.0]),  # non-finite
+            np.zeros(4),  # wrong shape
+        ],
+    )
+    def test_it_refuses_a_bad_action_rather_than_clipping_it(self, action):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            with pytest.raises(ValueError):
+                env.step(action)
+        finally:
+            env.close()
+
+    def test_lap_time_is_the_completed_lap_not_the_running_clock(self):
+        """The harness reads info["lap_time"] *only* when info["lap_complete"] is true, and
+        substitutes steps / frame_rate_hz when it is None. A running clock here would
+        therefore be reported as a lap time that looks entirely reasonable and is wrong."""
+        env = PracticeTrack()
+        try:
+            _started(env)
+            info = _drive(env, FLAT_OUT, 60).info
+            assert info["lap_complete"] is False
+            assert info["lap_time"] is None
+            assert info["lap_elapsed_s"] >= 0.0  # the running clock lives under its own key
+        finally:
+            env.close()
+
+
+@pytest.mark.render
+class TestReward:
+    def test_the_terms_add_up_to_the_reward(self):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            result = _drive(env, FLAT_OUT, 40)
+            assert sum(result.info["reward_terms"].values()) == pytest.approx(result.reward)
+        finally:
+            env.close()
+
+    def test_standing_still_earns_nothing(self):
+        """`AGENTS.md` §11: verify the agent cannot farm reward without progressing."""
+        env = PracticeTrack()
+        try:
+            _started(env)
+            parked = sum(_step(env, COASTING).reward for _ in range(100))
+        finally:
+            env.close()
+        assert parked <= 0.0, f"a parked car earned {parked:.3f}"
+
+    def test_driving_earns_more_than_coasting(self):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            driven = sum(_step(env, FLAT_OUT).reward for _ in range(100))
+        finally:
+            env.close()
+        assert driven > 10.0, f"100 steps of full throttle earned only {driven:.3f}"
+
+    def test_leaving_the_circuit_is_punished(self):
+        env = PracticeTrack(track_limit=0.0)  # keep going so the penalty is observable
+        try:
+            _started(env)
+            _drive(env, FLAT_OUT, 120)
+            lock = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
+            for _ in range(300):
+                result = _step(env, lock)
+                if result.info["off_track"]:
+                    break
+            assert result.info["off_track"], "full lock at speed never left the circuit"
+            assert result.info["reward_terms"]["off_track"] < 0.0
+        finally:
+            env.close()
+
+    def test_the_reward_function_is_an_argument(self):
+        """GH-17 owns reward shaping. This env supplies a default and the seam, not a rule."""
+
+        def always_seven(info, dt):
+            del info, dt
+            return 7.0, {"seven": 7.0}
+
+        env = PracticeTrack(reward=always_seven)
+        try:
+            _started(env)
+            assert _step(env, FLAT_OUT).reward == 7.0
+        finally:
+            env.close()
+
+    def test_the_default_matches_the_dummy_tracks_constants(self):
+        """The dummy exists so the harness runs without MuJoCo. A stand-in whose returns
+        are on a different scale from the real thing is a poor stand-in."""
+        reward = ProgressReward()
+        assert (reward.lateral_penalty, reward.lap_bonus, reward.off_track_penalty) == (
+            0.1,
+            100.0,
+            -10.0,
+        )
 
 
 @pytest.mark.render
@@ -151,10 +334,10 @@ class TestTheFrameIsWhatTheEyeAsksFor:
     def test_shape_and_dtype_match_the_contract(self):
         env = PracticeTrack()
         try:
-            frame = _started(env)
+            frame, _ = _started(env)
             assert frame.shape == FRAME_SHAPE
             assert frame.dtype == FRAME_DTYPE
-            assert env.step(FLAT_OUT).frame.shape == FRAME_SHAPE
+            assert _step(env, FLAT_OUT).frame.shape == FRAME_SHAPE
         finally:
             env.close()
 
@@ -162,7 +345,8 @@ class TestTheFrameIsWhatTheEyeAsksFor:
         """The eye takes frame_shape as a constructor argument, so this has to be real."""
         env = PracticeTrack(frame_shape=(64, 128, 3))
         try:
-            assert _started(env).shape == (64, 128, 3)
+            frame, _ = _started(env)
+            assert frame.shape == (64, 128, 3)
         finally:
             env.close()
 
@@ -171,7 +355,7 @@ class TestTheFrameIsWhatTheEyeAsksFor:
         plausible constant image and every shape assertion above still passes."""
         env = PracticeTrack()
         try:
-            frame = _started(env)
+            frame, _ = _started(env)
             assert frame.std() > 10.0, "the head camera is looking at nothing"
         finally:
             env.close()
@@ -181,7 +365,7 @@ class TestTheFrameIsWhatTheEyeAsksFor:
         the last would then be comparing a frame with itself."""
         env = PracticeTrack()
         try:
-            first = _started(env)
+            first, _ = _started(env)
             second = _drive(env, FLAT_OUT, 40).frame
             assert first is not second
             assert not np.array_equal(first, second)
@@ -191,58 +375,100 @@ class TestTheFrameIsWhatTheEyeAsksFor:
 
 @pytest.mark.render
 class TestOpticFlow:
-    """The reason MuJoCo beat CarRacing. Asserted in prose until now; measured here.
+    """#16's stated purpose: "the eye sees expansion when going forward and slide when
+    turning". Measured here rather than asserted in prose.
 
-    Both checks are deliberately about *change between frames*, which is what an
-    elementary motion detector reads. Neither asks the image to zoom cleanly: at 96x96
-    the sky and the car's own bodywork fill most of the frame and the horizon barely
-    expands at all, so a whole-frame scale fit would be measuring the wrong thing.
+    All three checks read *change between frames*, which is what an elementary motion
+    detector reads. None asks the whole image to scale cleanly: at 96x96 the sky and the
+    car's own bodywork fill most of the frame and the horizon barely moves, so a
+    whole-frame fit measures the wrong thing. The flow lives in the band between them.
     """
+
+    #: Rows carrying ground, kerbs and trees -- below the sky, above the bodywork.
+    BAND = (0.30, 0.60)
+
+    @classmethod
+    def _band(cls, frame: np.ndarray, columns: slice = slice(None)) -> np.ndarray:
+        height = frame.shape[0]
+        rows = slice(int(height * cls.BAND[0]), int(height * cls.BAND[1]))
+        return frame.astype(np.float64).mean(axis=2)[rows, columns]
+
+    @staticmethod
+    def _shift(before: np.ndarray, after: np.ndarray, span: int = 20) -> int:
+        """Horizontal shift in pixels that best maps one band onto the next.
+
+        Negative means the world moved left. Wrapped columns are excluded from the
+        comparison, so a large shift is not rewarded for matching its own tail.
+        """
+        width = before.shape[1]
+        best, best_error = 0, float("inf")
+        for shift in range(-span, span + 1):
+            rolled = np.roll(before, shift, axis=1)
+            keep = slice(shift, None) if shift >= 0 else slice(None, width + shift)
+            error = float(np.abs(rolled[:, keep] - after[:, keep]).mean())
+            if error < best_error:
+                best_error, best = error, shift
+        return best
 
     @staticmethod
     def _motion_energy(frames: list[np.ndarray]) -> float:
         stack = np.stack([frame.astype(np.float64).mean(axis=2) for frame in frames])
         return float(np.abs(np.diff(stack, axis=0)).mean())
 
-    @staticmethod
-    def _sideways_shift(before: np.ndarray, after: np.ndarray, span: int = 12) -> int:
-        """Horizontal shift that best maps one frame onto the next, in pixels.
-
-        Restricted to the band between the sky and the bodywork, which is where the
-        ground, the kerbs and the trees are. Negative means the world moved left.
-        """
-        height = before.shape[0]
-        rows = slice(int(height * 0.30), int(height * 0.60))
-        a = before.astype(np.float64).mean(axis=2)[rows]
-        b = after.astype(np.float64).mean(axis=2)[rows]
-        width = a.shape[1]
-        best, best_error = 0, float("inf")
-        for shift in range(-span, span + 1):
-            rolled = np.roll(a, shift, axis=1)
-            keep = slice(shift, None) if shift >= 0 else slice(None, width + shift)
-            error = float(np.abs(rolled[:, keep] - b[:, keep]).mean())
-            if error < best_error:
-                best_error, best = error, shift
-        return best
-
     def test_a_moving_car_makes_motion_signal_and_a_parked_one_does_not(self):
         env = PracticeTrack()
         try:
             _started(env)
             _drive(env, COASTING, 60)  # let the springs settle
-            still = self._motion_energy([env.step(COASTING).frame for _ in range(8)])
+            still = self._motion_energy([_step(env, COASTING).frame for _ in range(8)])
             _drive(env, FLAT_OUT, 120)
-            moving = self._motion_energy([env.step(FLAT_OUT).frame for _ in range(8)])
+            moving = self._motion_energy([_step(env, FLAT_OUT).frame for _ in range(8)])
         finally:
             env.close()
         assert still < 0.5, f"a parked car's camera is moving: {still:.3f}"
         assert moving > 10 * max(still, 0.05), f"driving produced no motion signal: {moving:.3f}"
 
     @pytest.mark.slow
+    def test_driving_forward_expands_the_view(self):
+        """Expansion, in #16's own words: going forward pushes the world outwards, so the
+        left of the frame sweeps left while the right sweeps right.
+
+        Gated on speed and yaw rate rather than a step count, so it survives the car being
+        recalibrated. The upper bound is not caution: above roughly 140 mph the car covers
+        enough ground in seven frames that the two bands stop overlapping and the estimator
+        stops meaning anything (both halves collapse to the same saturated value). Inside
+        the window it is unambiguous -- measured -2/+20 at 69 mph, -17/+10 at 95 mph and
+        -20/+10 at 123 mph.
+        """
+        env = PracticeTrack()
+        try:
+            _started(env)
+            for _ in range(600):
+                _step(env, FLAT_OUT)
+                if 60.0 < _speed_mph(env) < 125.0 and _yaw_rate(env) < 0.05:
+                    break
+            else:  # pragma: no cover - the car always reaches the window on the straight
+                pytest.fail("never found a straight stretch inside the speed window")
+
+            before = _step(env, FLAT_OUT).frame
+            after = _drive(env, FLAT_OUT, 7).frame
+            half = before.shape[1] // 2
+            left = self._shift(
+                self._band(before, slice(0, half)), self._band(after, slice(0, half))
+            )
+            right = self._shift(
+                self._band(before, slice(half, None)), self._band(after, slice(half, None))
+            )
+        finally:
+            env.close()
+        assert left < right, f"the view is not expanding: left={left:+d} right={right:+d}"
+
+    @pytest.mark.slow
     def test_steering_slides_the_world_the_other_way(self):
-        """Turning right sweeps the scene left across the retina, and vice versa. Get the
-        sign wrong and a policy would simply learn the mirror image, which is exactly the
-        kind of error `AGENTS.md` §11 says to pin with a test rather than eyeball."""
+        """Slide, the other half of #16's sentence. Turning right sweeps the scene left
+        across the retina, and vice versa. Get the sign wrong and a policy would simply
+        learn the mirror image, which is exactly the kind of error `AGENTS.md` §11 says to
+        pin with a test rather than eyeball."""
         shifts = {}
         for name, steer in (("left", -0.8), ("straight", 0.0), ("right", 0.8)):
             env = PracticeTrack()
@@ -250,9 +476,9 @@ class TestOpticFlow:
                 _started(env)
                 _drive(env, FLAT_OUT, 120)
                 control = ControlVector(steer=steer, throttle=0.3, brake=0.0)
-                before = env.step(control).frame
+                before = _step(env, control).frame
                 after = _drive(env, control, 9).frame
-                shifts[name] = self._sideways_shift(before, after)
+                shifts[name] = self._shift(self._band(before), self._band(after), span=12)
             finally:
                 env.close()
         assert shifts["right"] < shifts["straight"] < shifts["left"], shifts
@@ -267,7 +493,7 @@ class TestEpisodeBoundaries:
             assert not _drive(env, FLAT_OUT, 120).terminated, "straight ahead is not off track"
             lock = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
             for _ in range(200):
-                result = env.step(lock)
+                result = _step(env, lock)
                 if result.terminated:
                     break
             assert result.terminated, "full lock at speed never left the circuit"
@@ -294,8 +520,19 @@ class TestEpisodeBoundaries:
             result = _drive(env, FLAT_OUT, 30)
             assert result.truncated
             assert not result.terminated
-            assert result.done
             assert result.info["steps"] == 30
+        finally:
+            env.close()
+
+    def test_stepping_past_the_end_raises(self):
+        """A loop that ignores `terminated` should fail loudly, not keep driving a car that
+        is already in a field. The dummy track raises here too, with the same message."""
+        env = PracticeTrack(max_steps=5)
+        try:
+            _started(env)
+            _drive(env, FLAT_OUT, 5)
+            with pytest.raises(RuntimeError, match="episode has ended"):
+                env.step(FLAT_OUT)
         finally:
             env.close()
 
@@ -324,7 +561,7 @@ class TestTimingHolds:
         try:
             _started(env)
             before = float(env.data.time)
-            env.step(FLAT_OUT)
+            _step(env, FLAT_OUT)
             assert float(env.data.time) - before == pytest.approx(1.0 / FRAME_RATE_HZ)
             _drive(env, FLAT_OUT, 99)
             assert float(env.data.time) == pytest.approx(100 / FRAME_RATE_HZ)
@@ -337,7 +574,7 @@ class TestTimingHolds:
 class TestDeterminism:
     """`AGENTS.md` §11 asks for this explicitly: the eval protocol has to be reproducible."""
 
-    def test_the_same_seed_gives_the_same_frames_and_the_same_trajectory(self):
+    def test_the_same_seed_gives_the_same_trajectory(self):
         controls = [
             ControlVector.clipped(steer=np.sin(i * 0.3), throttle=0.6, brake=0.0) for i in range(60)
         ]
@@ -345,43 +582,63 @@ class TestDeterminism:
         for _ in range(2):
             env = PracticeTrack(seed=7)
             try:
-                frames = [_started(env)]
-                infos = []
+                frames = [_started(env)[0]]
+                rewards = []
                 for control in controls:
-                    result = env.step(control)
+                    result = _step(env, control)
                     frames.append(result.frame)
-                    infos.append(result.info["progress_m"])
-                runs.append((frames, infos, env.data.qpos.copy()))
+                    rewards.append(result.reward)
+                runs.append((frames, rewards, env.data.qpos.copy()))
             finally:
                 env.close()
         first, second = runs
-        assert all(np.array_equal(a, b) for a, b in zip(first[0], second[0], strict=True))
-        assert first[1] == second[1]
+
+        # The physics is the part that has to be exact, and is.
         assert np.array_equal(first[2], second[2])
+        assert first[1] == second[1]
+
+        # The rendering is not, quite. MuJoCo hands rasterisation to the GPU, and two
+        # identical runs on this machine occasionally disagree by a single level out of 255
+        # on a scattering of subpixels along polygon edges -- measured over 488 frame pairs:
+        # 0.6% of frames affected, never more than 1/255, at most 0.025% of subpixels, so a
+        # mean absolute difference of 0.00025 levels. Far below anything the hex resampler's
+        # 13-pixel mean filter can see, but it does mean frames must never be hashed or
+        # compared for exact equality in a determinism check.
+        #
+        # The bound is on the mean rather than on a share of subpixels: the share has a long
+        # tail as GPU scheduling varies, while a genuinely different frame moves the mean by
+        # tens of levels. 0.05 leaves two orders of magnitude of headroom either way.
+        for before, after in zip(first[0], second[0], strict=True):
+            delta = np.abs(before.astype(np.int16) - after.astype(np.int16))
+            assert delta.max() <= 2, f"a pixel moved by {delta.max()} levels, not GPU noise"
+            assert delta.mean() < 0.05, f"mean difference {delta.mean():.4f} levels"
+
+    def test_reset_takes_a_seed(self):
+        """The harness seeds per episode, `config.seed + episode`, not per env."""
+        env = PracticeTrack(seed=0)
+        try:
+            _started(env)
+            env.reset(seed=41)
+            assert env.seed == 41
+            drawn = env.rng.random()
+            env.reset(seed=41)
+            assert env.rng.random() == drawn
+        finally:
+            env.close()
 
 
 @pytest.mark.render
 class TestInfo:
-    """Raw signals for GH-17 to build a reward from. There is deliberately no reward here."""
-
-    def test_it_reports_no_reward(self):
-        env = PracticeTrack()
-        try:
-            _started(env)
-            info = env.step(FLAT_OUT).info
-            assert "reward" not in info
-        finally:
-            env.close()
-
     def test_progress_is_positive_going_forwards(self):
         env = PracticeTrack()
         try:
             _started(env)
-            result = _drive(env, FLAT_OUT, 80)
-            assert result.info["progress_m"] > 0.0
-            assert result.info["speed_mps"] > 5.0
-            assert result.info["on_track"]
-            assert result.info["off_track_fraction"] == 0.0
+            info = _drive(env, FLAT_OUT, 80).info
+            assert info["progress_m"] > 0.0
+            assert info["speed_mps"] > 5.0
+            assert info["on_track"]
+            assert info["off_track_fraction"] == 0.0
+            assert info["off_track"] is False
         finally:
             env.close()
 
@@ -390,24 +647,26 @@ class TestInfo:
         env = PracticeTrack()
         try:
             _started(env)
-            info = env.step(FLAT_OUT).info
+            info = _step(env, FLAT_OUT).info
             assert info["on_out_lap"]
-            assert info["lap_time"] == 0.0
+            assert info["lap_elapsed_s"] == 0.0
             assert info["lap_count"] == 0
-            assert info["lap_completed"] is None
+            assert info["lap_complete"] is False
         finally:
             env.close()
 
     def test_the_clock_starts_when_the_car_crosses_the_line(self):
-        env = PracticeTrack()
+        # Track limits off: flat out from the grid runs wide at the first corner, and this
+        # test is about the lap clock, not about how well a held throttle drives.
+        env = PracticeTrack(track_limit=0.0)
         try:
             _started(env)
             for _ in range(600):
-                info = env.step(FLAT_OUT).info
+                info = _step(env, FLAT_OUT).info
                 if not info["on_out_lap"]:
                     break
             assert not info["on_out_lap"], "never reached the start line"
-            assert _drive(env, FLAT_OUT, 20).info["lap_time"] > 0.0
+            assert _drive(env, FLAT_OUT, 20).info["lap_elapsed_s"] > 0.0
         finally:
             env.close()
 
@@ -451,13 +710,13 @@ class TestTheEyeSeam:
             return ControlVector.clipped(rng.uniform(-0.3, 0.3), 0.5, 0.0)
 
         try:
-            for _ in range(2):
-                frame = env.reset()
+            for episode in range(2):
+                frame, _ = env.reset(seed=episode)
                 eye.reset()  # the real eye keeps state between frames; episodes must not
                 while True:
-                    result = env.step(policy(eye.encode(frame)))
+                    result = _step(env, policy(eye.encode(frame)))
                     frame = result.frame
-                    if result.done:
+                    if result.terminated or result.truncated:
                         break
         finally:
             env.close()
@@ -480,6 +739,8 @@ class TestClose:
             env.reset()
         with pytest.raises(RuntimeError, match="closed"):
             env.step(COASTING)
+        with pytest.raises(RuntimeError, match="closed"):
+            env.render()
 
     @pytest.mark.render
     def test_it_is_a_context_manager(self):
