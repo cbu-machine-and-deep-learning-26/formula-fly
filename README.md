@@ -14,6 +14,19 @@ matter versus unconstrained networks of matched size?
 
 Everything is simulation. No hardware, animals, or real vehicles.
 
+## Try it
+
+The practice track runs on Windows, Linux and macOS with three commands.
+**[RUNNING.md](RUNNING.md)** has the setup for each, plus the controls.
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"   # Windows: .venv\Scripts\python.exe
+.venv/bin/python scripts/drive.py             # macOS: .venv/bin/mjpython
+```
+
+Lap times land in [lap_times.md](lap_times.md).
+
 ## Pipeline
 
 ```
@@ -58,5 +71,6 @@ on FlyWire.
 
 ## Develop
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for git-flow and branch names. Project
+Setup and controls: [RUNNING.md](RUNNING.md). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for git-flow and branch names. Project
 context for agents lives in [AGENTS.md](AGENTS.md) (`CLAUDE.md` is a pointer to it).
