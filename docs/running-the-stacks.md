@@ -114,6 +114,45 @@ settling, T4/T5 direction selectivity through the eye, and 10 s of noise
 staying finite and below 20 a.u. The synthetic gratings and moving edges live
 in `fly_driver.eyes.stimuli`.
 
+### Live demo (webcam → eye)
+
+`scripts/flyvis_eye_live.py` is a viewer, not a training component: it shows
+the 96 × 96 frame the eye receives, the eight T4/T5 hex maps updating live
+through `FlyvisEye.encode`, and a direction meter with one bar per direction
+(left/right/up/down from the T4/T5 a/b/c/d subtypes, resting activity
+subtracted). Wave a hand across the camera and the bar for that direction
+jumps. The overlay shows display fps, per-frame eye latency, and the camera
+rate next to "eye stepped at 50 Hz" because every frame, however fast it
+arrives, is one 20 ms step of the optic lobe.
+
+```bash
+# in the flyvis venv (Python 3.9-3.12); uv is fastest, pip works too
+uv pip install -r requirements-flyvis.txt     # adds opencv-python for the camera
+export FLYVIS_ROOT_DIR="$HOME/.cache/flyvis"  # where `flyvis download-pretrained` put results/
+python scripts/flyvis_eye_live.py             # webcam 0; falls back to --source synthetic
+python scripts/flyvis_eye_live.py --source synthetic   # bright bar sweeping l/r/u/d, 2 s each
+```
+
+Keys: space pauses/resumes, `r` resets the eye state (1 s grey warm-up),
+`q`/Esc quits. Options: `--camera-index`, `--fps-cap` (default 50),
+`--meter-statistic q95|mean`, `--color-limit`, `--save-dir DIR --save-every N`
+for PNG snapshots. macOS: grant camera permission to the terminal app you run
+it from (System Settings → Privacy & Security → Camera); the first run prompts.
+Windows and Linux work the same way through OpenCV.
+
+Headless check, also what `tests/scripts/test_flyvis_eye_live.py` runs:
+
+```bash
+python scripts/flyvis_eye_live.py --source synthetic --frames 200 --no-display
+```
+
+It prints the meter every 10 frames, the mean display fps, eye latency
+(median/p95/max against the 20 ms budget), and how often the winning meter
+direction agreed with the bar's direction. The script exits `0` with `SKIP:`
+when flyvis, the checkpoint, or (for the webcam) OpenCV is missing, so base CI
+does not need any of them. The hex map drawing is shared with
+`scripts/flyvis_eye_demo.py` via `fly_driver.analysis.hex_plots`.
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64
