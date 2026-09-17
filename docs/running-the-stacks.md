@@ -58,6 +58,9 @@ pretrained T4/T5 direction selectivity:
 pytest -q tests/eyes
 ```
 
+`python scripts/hex_resampler_plot.py PATH.png` renders the bright top-left
+test pattern next to its 721-column resampling (matplotlib only, no flyvis).
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64
