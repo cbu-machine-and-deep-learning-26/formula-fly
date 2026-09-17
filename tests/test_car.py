@@ -17,6 +17,7 @@ import pytest
 
 from fly_driver.envs.car import (
     ACTUATOR_NAMES,
+    SF70H_REFERENCE,
     CarConfig,
     car_actuators_xml,
     car_assets_xml,
@@ -285,3 +286,79 @@ class TestCarConfigValidation:
 
     def test_ride_height_matches_wheel_radius(self):
         assert CarConfig(wheel_radius_m=0.4).ride_height_m == pytest.approx(0.4)
+
+
+class TestMatchesSF70HSpecification:
+    """The config claims to describe a Ferrari SF70H. Check it against the published
+    figures in SF70H_REFERENCE rather than trusting the docstring."""
+
+    def test_mass_is_the_2017_minimum(self):
+        assert CONFIG.mass_kg == pytest.approx(SF70H_REFERENCE["mass_kg"])
+
+    def test_wheelbase(self):
+        assert CONFIG.wheelbase_m == pytest.approx(SF70H_REFERENCE["wheelbase_m"])
+
+    def test_wheel_diameter(self):
+        assert CONFIG.wheel_radius_m * 2 == pytest.approx(SF70H_REFERENCE["wheel_diameter_m"])
+
+    def test_overall_width_is_within_the_regulation(self):
+        """2017 regs capped overall width at 2000 mm, measured across the wheels."""
+        for track, tyre in (
+            (CONFIG.track_width_front_m, CONFIG.wheel_width_front_m),
+            (CONFIG.track_width_rear_m, CONFIG.wheel_width_rear_m),
+        ):
+            assert track + tyre <= SF70H_REFERENCE["overall_width_m"] + 1e-9
+
+    def test_rears_are_wider_than_fronts(self):
+        assert CONFIG.wheel_width_rear_m > CONFIG.wheel_width_front_m
+
+    def test_weight_distribution_is_rear_biased_and_legal(self):
+        """2017 regulations put a floor of 44% on the front axle."""
+        assert 0.44 <= CONFIG.front_weight_fraction < 0.50
+
+    def test_steering_lock_is_realistic(self):
+        """F1 runs roughly 20 degrees at the road wheel, not a road car's 35+."""
+        assert 15.0 <= np.degrees(CONFIG.max_steer_rad) <= 28.0
+
+    def test_tyre_friction_is_in_the_published_slick_range(self):
+        assert 1.5 <= CONFIG.wheel_friction[0] <= 1.8
+
+
+class TestMassProperties:
+    def test_centre_of_gravity_is_behind_the_midpoint(self):
+        """Rear weight bias means the CoG sits behind the wheelbase centre."""
+        assert CONFIG.centre_of_gravity_x_m < 0
+
+    def test_centre_of_gravity_is_below_the_axle_line(self):
+        assert CONFIG.centre_of_gravity_offset_z_m < 0
+
+    def test_model_mass_matches_the_configured_mass(self, model):
+        """Chassis geom carries mass=0 and the explicit <inertial> holds it all, so a
+        mistake here would silently double-count the car's weight."""
+        total = float(model.body_mass.sum())
+        wheels_and_hubs = 4 * CONFIG.wheel_mass_kg + 2 * CONFIG.hub_mass_kg
+        assert total == pytest.approx(CONFIG.mass_kg + wheels_and_hubs, rel=0.01)
+
+    def test_yaw_inertia_is_not_the_box_default(self, model):
+        """MuJoCo would derive ~1500 kg m^2 from a uniform 5 m box against a real car's
+        ~750. Halved yaw response is invisible in any test that does not look for it."""
+        car = _body_id(model)
+        assert float(model.body_inertia[car][2]) == pytest.approx(CONFIG.inertia_yaw_kgm2, rel=0.05)
+
+    def test_static_front_axle_load_matches_the_weight_split(self, model, data):
+        """Settle the car and check the contact forces land where the config says."""
+        _drive(model, data, 0.0, 0.0, 0.0, 2.0)
+        loads = {"f": 0.0, "r": 0.0}
+        for i in range(data.ncon):
+            contact = data.contact[i]
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom2) or ""
+            if not name.startswith("wheel_"):
+                name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom1) or ""
+            if not name.startswith("wheel_"):
+                continue
+            force = np.zeros(6)
+            mujoco.mj_contactForce(model, data, i, force)
+            loads[name[6]] += abs(float(force[0]))
+        total = loads["f"] + loads["r"]
+        assert total > 0, "car is not resting on its wheels"
+        assert loads["f"] / total == pytest.approx(CONFIG.front_weight_fraction, abs=0.06)

@@ -68,25 +68,75 @@ ACTUATOR_NAMES = (
 )
 
 
+#: Published Ferrari SF70H figures, kept next to the config they justify so the numbers can
+#: be checked rather than trusted. Sources: Ferrari.com, Wikipedia, F1technical, and the 2017
+#: FIA technical regulations.
+#:
+#: ===========================  ===================================
+#: Mass incl. driver            728 kg (2017 FIA minimum)
+#: Power                        ~746 kW / 1000 hp, 1.6 L V6 turbo hybrid
+#: Length x width x height      5000 x 2000 x 950 mm
+#: Wheelbase                    ~3600 mm
+#: Track, front / rear          1600 / 1550 mm
+#: Wheels                       13 inch, 670 mm diameter
+#: Tyre width, front / rear     305 / 405 mm
+#: Gearbox                      8-speed sequential
+#: ===========================  ===================================
+#:
+#: Performance targets used for validation, all from 2017 at Silverstone specifically,
+#: which beats generic figures because it is the circuit we actually simulate:
+#:
+#: - Copse taken at 290 km/h, the fastest proper corner in F1 that year
+#: - Vale: 300 -> 194 km/h in ~71 m, about 5.5 g
+#: - Peak cornering up to 6 g through the quick corners
+#:
+#: Note the overall width of 2000 mm is the car *including* its wheels. ``chassis_width_m``
+#: is the bodywork only, so that 2 x (track/2 + tyre width/2) lands near 2 m.
+SF70H_REFERENCE = {
+    "mass_kg": 728.0,
+    "power_w": 746_000.0,
+    "wheelbase_m": 3.60,
+    "overall_width_m": 2.00,
+    "wheel_diameter_m": 0.670,
+    "top_speed_kmh": 340.0,
+    "zero_to_100_kmh_s": 2.6,
+    "copse_speed_kmh": 290.0,
+    "vale_braking_g": 5.5,
+}
+
+
 @dataclass(frozen=True)
 class CarConfig:
     """Vehicle parameters, all in SI units.
 
-    Defaults are a light open-wheel car: roughly Formula-ish mass and wheelbase without
-    pretending to model a specific chassis. They are collected here rather than scattered
-    through the XML so that tuning is one edit and so a reviewer can see the whole vehicle
-    at once.
+    Defaults describe a **Ferrari SF70H** (2017), the F1 car in Assetto Corsa's Ferrari
+    70th Anniversary pack. See :data:`SF70H_REFERENCE` for the published figures these come
+    from. Every value lives here rather than scattered through the MJCF so that tuning is one
+    edit, a reviewer can see the whole vehicle at once, and an Assetto-Corsa-derived parameter
+    set can be dropped in later without touching physics code.
 
     Args:
-        mass_kg: Chassis mass. Wheel mass is separate and small.
+        mass_kg: Total car mass including driver, carried by the chassis body. Wheel and
+            upright masses are additional and small.
         wheelbase_m: Front-to-rear axle distance.
-        track_width_m: Left-to-right wheel separation.
+        track_width_front_m: Left-to-right front wheel separation.
+        track_width_rear_m: Rear track. Narrower than the front on an SF70H.
         chassis_length_m: Visual body length.
         chassis_width_m: Visual body width.
         chassis_height_m: Visual body height.
         wheel_radius_m: Wheel radius; also sets the chassis ride height.
-        wheel_width_m: Wheel width.
+        wheel_width_front_m: Front tyre width. 305 mm on a 2017 car.
+        wheel_width_rear_m: Rear tyre width. 405 mm -- rears are much wider than fronts.
         wheel_mass_kg: Mass of one wheel.
+        front_weight_fraction: Share of static mass on the front axle. Single-seaters are
+            rear-biased; the 2017 regulations floor was 44% front.
+        centre_of_gravity_height_m: CoG height above the road. Low, which is what keeps an
+            F1 car flat in a corner instead of rolling onto its side.
+        inertia_roll_kgm2: Moment of inertia about the car's long axis.
+        inertia_pitch_kgm2: About the lateral axis.
+        inertia_yaw_kgm2: About the vertical axis -- the one that governs how quickly the
+            car rotates into a corner. Stated explicitly because MuJoCo would otherwise
+            derive ~1500 kg m^2 from the chassis box against a real car's ~750.
         max_steer_rad: Steering lock at the kingpin, each way.
         steer_gain: Position-actuator stiffness for the steering. High enough that the
             wheels track the command against tyre scrub.
@@ -115,20 +165,28 @@ class CarConfig:
             mass does not satisfy it.
     """
 
-    mass_kg: float = 750.0
-    wheelbase_m: float = 3.0
-    track_width_m: float = 1.6
-    chassis_length_m: float = 4.6
-    chassis_width_m: float = 1.4
-    chassis_height_m: float = 0.35
-    wheel_radius_m: float = 0.33
-    wheel_width_m: float = 0.30
-    wheel_mass_kg: float = 15.0
-    max_steer_rad: float = 0.55
-    steer_gain: float = 6000.0
+    # --- Ferrari SF70H (2017). See SF70H_REFERENCE for sources. ---
+    mass_kg: float = 728.0
+    wheelbase_m: float = 3.60
+    track_width_front_m: float = 1.60
+    track_width_rear_m: float = 1.55
+    chassis_length_m: float = 5.00
+    chassis_width_m: float = 1.10
+    chassis_height_m: float = 0.60
+    wheel_radius_m: float = 0.335
+    wheel_width_front_m: float = 0.305
+    wheel_width_rear_m: float = 0.405
+    wheel_mass_kg: float = 13.0
+    front_weight_fraction: float = 0.455
+    centre_of_gravity_height_m: float = 0.28
+    inertia_roll_kgm2: float = 112.0
+    inertia_pitch_kgm2: float = 700.0
+    inertia_yaw_kgm2: float = 750.0
+    max_steer_rad: float = 0.35
+    steer_gain: float = 12000.0
     drive_gear: float = 900.0
     brake_gain: float = 700.0
-    wheel_friction: tuple[float, float, float] = (1.6, 0.01, 0.001)
+    wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
     camera_forward_m: float = 1.8
     camera_height_m: float = 1.0
     camera_fovy_deg: float = 75.0
@@ -140,9 +198,11 @@ class CarConfig:
         positives = {
             "mass_kg": self.mass_kg,
             "wheelbase_m": self.wheelbase_m,
-            "track_width_m": self.track_width_m,
+            "track_width_front_m": self.track_width_front_m,
+            "track_width_rear_m": self.track_width_rear_m,
             "wheel_radius_m": self.wheel_radius_m,
-            "wheel_width_m": self.wheel_width_m,
+            "wheel_width_front_m": self.wheel_width_front_m,
+            "wheel_width_rear_m": self.wheel_width_rear_m,
             "wheel_mass_kg": self.wheel_mass_kg,
             "max_steer_rad": self.max_steer_rad,
             "drive_gear": self.drive_gear,
@@ -159,11 +219,46 @@ class CarConfig:
                 f"max_steer_rad={self.max_steer_rad} is at or past 90 degrees; "
                 f"the kingpin would fold the wheel sideways"
             )
+        if not 0.0 < self.front_weight_fraction < 1.0:
+            raise ValueError(
+                f"front_weight_fraction must be in (0, 1), got {self.front_weight_fraction}"
+            )
+        if self.centre_of_gravity_height_m >= self.wheel_radius_m * 2:
+            raise ValueError(
+                f"centre_of_gravity_height_m={self.centre_of_gravity_height_m} is above the top "
+                f"of the wheels; a car that top-heavy would roll over in any corner"
+            )
+        for name in ("inertia_roll_kgm2", "inertia_pitch_kgm2", "inertia_yaw_kgm2"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
 
     @property
     def ride_height_m(self) -> float:
-        """Chassis centre height when the wheels are resting on flat ground."""
+        """Body-frame origin height with the wheels resting on flat ground.
+
+        The origin sits at axle height, so this is the wheel radius. The centre of gravity
+        is lower, which is what :attr:`centre_of_gravity_offset_z_m` expresses.
+        """
         return self.wheel_radius_m
+
+    @property
+    def centre_of_gravity_x_m(self) -> float:
+        """Longitudinal CoG position relative to the body origin, in metres.
+
+        Negative is rearward. A front weight fraction of 0.455 puts the CoG 54.5% of the
+        wheelbase behind the front axle, which for a 3.6 m wheelbase is 162 mm behind the
+        midpoint. This is what makes the car rear-biased like a real single-seater.
+        """
+        from_front = (1.0 - self.front_weight_fraction) * self.wheelbase_m
+        return self.wheelbase_m / 2.0 - from_front
+
+    @property
+    def centre_of_gravity_offset_z_m(self) -> float:
+        """CoG height relative to the body origin (axle height), in metres.
+
+        Negative, because an F1 car's centre of gravity sits below axle centreline.
+        """
+        return self.centre_of_gravity_height_m - self.wheel_radius_m
 
 
 def _wheel_body_xml(name: str, x: float, y: float, config: CarConfig, *, steerable: bool) -> str:
@@ -171,14 +266,17 @@ def _wheel_body_xml(name: str, x: float, y: float, config: CarConfig, *, steerab
 
     The cylinder's axis is set with ``zaxis="0 1 0"`` so it rolls about the car's lateral
     axis. A default-oriented cylinder would stand on its edge like a drum.
+
+    Front and rear wheels differ in width: the SF70H runs 305 mm fronts and 405 mm rears.
     """
     friction = " ".join(str(value) for value in config.wheel_friction)
+    width = config.wheel_width_front_m if name.startswith("f") else config.wheel_width_rear_m
     wheel = f"""
         <body name="wheel_{name}">
           <joint name="roll_{name}" type="hinge" axis="0 1 0"
                  damping="{config.wheel_damping}" armature="{config.wheel_armature}"/>
           <geom name="wheel_{name}_geom" type="cylinder" zaxis="0 1 0"
-                size="{config.wheel_radius_m} {config.wheel_width_m / 2}"
+                size="{config.wheel_radius_m} {width / 2}"
                 mass="{config.wheel_mass_kg}"
                 friction="{friction}"
                 contype="{WHEEL_CONTYPE}" conaffinity="{WHEEL_CONAFFINITY}"
@@ -226,14 +324,15 @@ def car_body_xml(
     """
     config = config or CarConfig()
     half_base = config.wheelbase_m / 2.0
-    half_track = config.track_width_m / 2.0
+    half_front = config.track_width_front_m / 2.0
+    half_rear = config.track_width_rear_m / 2.0
 
     wheels = "".join(
         [
-            _wheel_body_xml("fl", half_base, half_track, config, steerable=True),
-            _wheel_body_xml("fr", half_base, -half_track, config, steerable=True),
-            _wheel_body_xml("rl", -half_base, half_track, config, steerable=False),
-            _wheel_body_xml("rr", -half_base, -half_track, config, steerable=False),
+            _wheel_body_xml("fl", half_base, half_front, config, steerable=True),
+            _wheel_body_xml("fr", half_base, -half_front, config, steerable=True),
+            _wheel_body_xml("rl", -half_base, half_rear, config, steerable=False),
+            _wheel_body_xml("rr", -half_base, -half_rear, config, steerable=False),
         ]
     )
 
@@ -245,10 +344,19 @@ def car_body_xml(
     <body name="car" pos="{position[0]:.4f} {position[1]:.4f} {config.ride_height_m}"
           euler="0 0 {yaw:.6f}">
       <freejoint name="car_root"/>
-      <geom name="chassis" type="box" material="car_body"
+      <!-- Mass and inertia are stated explicitly rather than derived from the chassis box.
+           MuJoCo would compute Izz from a uniform 5 m box as ~1500 kg m^2 against a real
+           F1 car's ~750, which halves yaw response and makes the car handle like a bus.
+           The <inertial> x offset places the centre of gravity at the real front/rear
+           weight split, and its z at CoG height, so weight transfer under braking and
+           roll in a corner behave. -->
+      <inertial pos="{config.centre_of_gravity_x_m:.4f} 0 {config.centre_of_gravity_offset_z_m:.4f}"
+                mass="{config.mass_kg}"
+                diaginertia="{config.inertia_roll_kgm2} {config.inertia_pitch_kgm2}
+                             {config.inertia_yaw_kgm2}"/>
+      <geom name="chassis" type="box" material="car_body" mass="0"
             size="{config.chassis_length_m / 2} {config.chassis_width_m / 2}
                   {config.chassis_height_m / 2}"
-            mass="{config.mass_kg}"
             contype="{CHASSIS_CONTYPE}" conaffinity="{CHASSIS_CONAFFINITY}"/>
       <camera name="fly_head" mode="fixed"
               pos="{config.camera_forward_m} 0 {config.camera_height_m}"
