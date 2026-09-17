@@ -40,6 +40,7 @@ from fly_driver.envs.aero import SF70H_AERO, AeroConfig, downforce_n, drag_n
 from fly_driver.envs.powertrain import (
     SF70H_POWERTRAIN,
     PowertrainConfig,
+    abs_factor,
     brake_torque,
     drive_torque,
     select_gear,
@@ -156,6 +157,14 @@ class CarConfig:
         max_steer_rad: Steering lock at the kingpin, each way.
         steer_gain: Position-actuator stiffness for the steering. High enough that the
             wheels track the command against tyre scrub.
+        steer_damping_nms: Viscous damping on each kingpin. This is the steering damper a
+            real car has, and it is not optional. The kingpin carries ~0.75 kg m^2 (the
+            wheel and upright) against 12 kN m/rad of actuator stiffness, a 20 Hz mode;
+            at the original 2.0 N m s/rad its damping ratio was **0.011**, so any
+            asymmetry under braking rang the front wheels at 20 Hz -- the "shake" Payton
+            reported. 150 gives a ratio near 0.8: settles in a few cycles, still snappy.
+            A test computes the realised ratio from the compiled model so a heavier
+            wheel cannot quietly bring the shimmy back.
         max_actuator_torque_nm: Control range of the drive and brake motors, in N*m.
             A ceiling, not a setpoint -- actual torque comes from the powertrain model.
             Wide enough that MuJoCo never silently clips a legitimate command.
@@ -211,6 +220,7 @@ class CarConfig:
     inertia_yaw_kgm2: float = 750.0
     max_steer_rad: float = 0.35
     steer_gain: float = 12000.0
+    steer_damping_nms: float = 150.0
     max_actuator_torque_nm: float = 20_000.0
     wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
@@ -234,6 +244,8 @@ class CarConfig:
             "max_steer_rad": self.max_steer_rad,
             "max_actuator_torque_nm": self.max_actuator_torque_nm,
             "hub_mass_kg": self.hub_mass_kg,
+            "steer_gain": self.steer_gain,
+            "steer_damping_nms": self.steer_damping_nms,
         }
         for name, value in positives.items():
             if value <= 0:
@@ -335,7 +347,7 @@ def _wheel_body_xml(name: str, x: float, y: float, config: CarConfig, *, steerab
       <body name="hub_{name}" pos="{x} {y} 0">
         <joint name="steer_{name}" type="hinge" axis="0 0 1"
                range="{-config.max_steer_rad} {config.max_steer_rad}"
-               damping="2.0" armature="0.2"/>
+               damping="{config.steer_damping_nms}" armature="0.2"/>
         <inertial pos="0 0 0" mass="{config.hub_mass_kg}"
                   diaginertia="{hub_inertia} {hub_inertia} {hub_inertia}"/>{wheel}
       </body>"""
@@ -656,14 +668,19 @@ class CarDynamics:
 
         dt = float(self._model.opt.timestep)
         for side in ("fl", "fr", "rl", "rr"):
-            commands[f"brake_{side}"] = brake_torque(
+            wheel_rads = float(data.qvel[self._wheel_dof[side]])
+            torque = brake_torque(
                 control.brake,
-                float(data.qvel[self._wheel_dof[side]]),
+                wheel_rads,
                 front=side.startswith("f"),
                 config=self.powertrain,
                 dt=dt,
                 wheel_inertia=self._wheel_inertia[side],
             )
+            # Slip limiter. Without it a 40% pedal at 150 km/h locked the fronts 88% of
+            # the time, and a locked, steered wheel steers nothing.
+            torque *= abs_factor(speed, wheel_rads, self.car.wheel_radius_m, self.powertrain)
+            commands[f"brake_{side}"] = torque
         return commands
 
     def step(self, control: ControlVector, data: mujoco.MjData, n_substeps: int = 1) -> None:

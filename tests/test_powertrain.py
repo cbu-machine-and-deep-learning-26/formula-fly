@@ -208,6 +208,51 @@ class TestBrakes:
             brake_torque(1.0, 100.0, True, P, **kwargs)
 
 
+class TestAbsFactor:
+    """The slip limiter. Measured without it: 40% pedal at 150 km/h locked the fronts
+    88% of the time, and the car went straight on while the steering shook."""
+
+    R = WHEEL_RADIUS
+
+    def _factor(self, speed, wheel_rads, config=P):
+        from fly_driver.envs.powertrain import abs_factor
+
+        return abs_factor(speed, wheel_rads, self.R, config)
+
+    def test_freely_rolling_wheel_gets_full_torque(self):
+        assert self._factor(40.0, 40.0 / self.R) == 1.0
+
+    def test_locked_wheel_gets_no_torque(self):
+        assert self._factor(40.0, 0.0) == 0.0
+
+    def test_ramps_between_the_thresholds(self):
+        mid = (P.abs_slip_full + P.abs_slip_release) / 2
+        wheel = (1.0 - mid) * 40.0 / self.R
+        assert self._factor(40.0, wheel) == pytest.approx(0.5)
+
+    def test_stands_down_at_walking_pace_so_the_car_can_stop(self):
+        assert self._factor(P.abs_min_speed_mps * 0.5, 0.0) == 1.0
+
+    def test_disabled_means_no_limiting(self):
+        off = PowertrainConfig(
+            peak_power_w=P.peak_power_w,
+            peak_torque_nm=P.peak_torque_nm,
+            max_engine_rads=P.max_engine_rads,
+            idle_engine_rads=P.idle_engine_rads,
+            max_brake_torque_nm=P.max_brake_torque_nm,
+            abs_enabled=False,
+        )
+        assert self._factor(40.0, 0.0, off) == 1.0
+
+    def test_reversing_is_symmetric(self):
+        assert self._factor(10.0, -10.0 / self.R) == 1.0
+
+    def test_monotonic_in_slip(self):
+        speeds = [(1.0 - s) * 40.0 / self.R for s in (0.0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.5)]
+        factors = [self._factor(40.0, w) for w in speeds]
+        assert factors == sorted(factors, reverse=True)
+
+
 class TestPowertrainConfigValidation:
     def _valid(self, **overrides):
         base = {
@@ -233,6 +278,9 @@ class TestPowertrainConfigValidation:
             {"brake_bias_front": 0.0},
             {"idle_engine_rads": 2000.0},  # above the limiter
             {"shift_up_fraction": 0.4, "shift_down_fraction": 0.6},  # inverted
+            {"abs_slip_full": 0.5, "abs_slip_release": 0.3},  # inverted
+            {"abs_slip_release": 1.5},
+            {"abs_min_speed_mps": -1.0},
         ],
     )
     def test_rejects_bad_values(self, overrides):

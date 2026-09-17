@@ -330,6 +330,34 @@ class TestStability:
         assert data.xpos[_body_id(model)][2] == pytest.approx(CONFIG.ride_height_m, abs=0.05)
 
 
+class TestSteeringDamping:
+    def test_kingpin_is_near_critically_damped(self, model):
+        """The steering damper. At the original 2.0 N m s/rad the kingpin's damping ratio
+        was 0.011 -- a 20 Hz mode with nothing holding it -- and under braking with a
+        touch of steering the front wheels rang lock-to-lock, 28 degrees peak to peak.
+
+        Computed from the compiled model, not the config, so a heavier wheel or a stiffer
+        actuator cannot quietly bring the shimmy back."""
+        joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "steer_fl")
+        dof = model.jnt_dofadr[joint]
+        actuator = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "steer_fl")
+        inertia = float(model.dof_M0[dof])
+        stiffness = float(model.actuator_gainprm[actuator][0])
+        damping = float(model.dof_damping[dof])
+        ratio = damping / (2.0 * np.sqrt(stiffness * inertia))
+        assert 0.5 <= ratio <= 1.2, f"kingpin damping ratio {ratio:.3f}"
+
+    def test_steering_still_responds_quickly(self, model, data):
+        """Damping must not make the wheels lag the command. Full lock in under 0.1 s."""
+        dynamics = CarDynamics(model, CONFIG)
+        joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "steer_fl")
+        address = model.jnt_qposadr[joint]
+        dynamics.step(
+            ControlVector(steer=1.0, throttle=0.0, brake=0.0), data, int(0.1 / model.opt.timestep)
+        )
+        assert abs(float(data.qpos[address])) > 0.9 * CONFIG.max_steer_rad
+
+
 class TestCarConfigValidation:
     @pytest.mark.parametrize(
         "kwargs",

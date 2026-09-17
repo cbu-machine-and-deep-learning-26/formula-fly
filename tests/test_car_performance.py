@@ -159,6 +159,46 @@ class TestAeroLoad:
         assert car.wheel_friction[0] * load / car.mass_kg / G > 4.5
 
 
+class TestBrakingStability:
+    """Payton: "when braking, even small amounts, the front wobble or shake aggressively,
+    putting the car out of control." Two causes, both measured, both pinned here."""
+
+    def _brake_with_a_touch_of_steering(self, bed, brake: float):
+        import mujoco
+
+        from fly_driver.interface import ControlVector
+
+        joint = mujoco.mj_name2id(bed.model, mujoco.mjtObj.mjOBJ_JOINT, "steer_fl")
+        address = bed.model.jnt_qposadr[joint]
+        front = bed.dynamics._wheel_dof["fl"]
+        radius = bed.car.wheel_radius_m
+        bed.reset()
+        bed.accelerate_to(150.0 / 3.6)
+        angles, slips = [], []
+        for _ in range(int(1.5 / bed.dt)):
+            bed.dynamics.step(ControlVector(steer=0.08, throttle=0.0, brake=brake), bed.data, 1)
+            speed = bed.speed()
+            angles.append(float(bed.data.qpos[address]))
+            slips.append((speed - abs(float(bed.data.qvel[front])) * radius) / max(speed, 1.0))
+        angles = np.degrees(np.array(angles))
+        return float(angles.max() - angles.min()), float((np.array(slips) > 0.5).mean())
+
+    def test_front_wheels_do_not_shimmy_under_braking(self, bed):
+        """Was 27.9 degrees peak-to-peak at 19 Hz with the undamped kingpin."""
+        wobble, _ = self._brake_with_a_touch_of_steering(bed, 0.4)
+        assert wobble < 5.0, f"{wobble:.1f} degrees of steering oscillation"
+
+    def test_front_wheels_do_not_lock_at_a_moderate_pedal(self, bed):
+        """Was locked 88% of the time at 40% pedal. A locked, steered wheel steers nothing."""
+        _, locked = self._brake_with_a_touch_of_steering(bed, 0.4)
+        assert locked < 0.2, f"front wheel locked {100 * locked:.0f}% of the time"
+
+    def test_full_pedal_still_stops_the_car(self, bed):
+        """The limiter must never make the brakes weaker overall."""
+        result = measure_braking(bed, 150.0, 0.0)
+        assert result["brake 150->0 km/h (m)"] < 55.0
+
+
 class TestNumericalStability:
     def test_no_nan_over_a_long_hard_rollout(self, bed):
         """`AGENTS.md` §11. Two separate blow-ups happened while building this: the car

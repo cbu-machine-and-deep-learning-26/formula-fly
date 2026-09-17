@@ -44,6 +44,7 @@ import numpy as np
 __all__ = [
     "PowertrainConfig",
     "SF70H_POWERTRAIN",
+    "abs_factor",
     "brake_torque",
     "drive_torque",
     "limiter_fraction",
@@ -82,6 +83,18 @@ class PowertrainConfig:
             54-58% front; too far rearward and the car spins under braking.
         limiter_taper_fraction: Fraction of the rev range over which the limiter tapers
             torque to zero. A hard cut makes torque chatter on and off every step.
+        abs_enabled: Slip-limit the brakes so a wheel cannot lock. Real F1 has no ABS,
+            but Assetto Corsa offers it as a driving assist on this car, and here it is on
+            by default for a measured reason: with brake torque sized past tyre grip (so
+            high-speed braking can use the downforce), a 40% pedal at 150 km/h locked the
+            front wheels 88% of the time. A locked, steered wheel has no directional grip
+            -- the car went straight on and shook. See :func:`abs_factor`.
+        abs_slip_full: Longitudinal slip below which the brakes get full torque.
+        abs_slip_release: Slip at which brake torque is cut to zero. Torque ramps linearly
+            between the two, which settles the wheel near 15-20% slip rather than
+            bang-banging between rolling and locked.
+        abs_min_speed_mps: Below this ground speed slip is ill-conditioned and the limiter
+            stands down, so the car can be braked to a dead stop.
 
     Raises:
         ValueError: On non-positive values, an empty or non-descending gear set, or
@@ -100,6 +113,10 @@ class PowertrainConfig:
     shift_down_fraction: float = 0.55
     brake_bias_front: float = 0.57
     limiter_taper_fraction: float = 0.04
+    abs_enabled: bool = True
+    abs_slip_full: float = 0.12
+    abs_slip_release: float = 0.30
+    abs_min_speed_mps: float = 2.0
 
     def __post_init__(self) -> None:
         positives = {
@@ -126,6 +143,15 @@ class PowertrainConfig:
                 f"need 0 < shift_down_fraction < shift_up_fraction <= 1, got "
                 f"{self.shift_down_fraction} and {self.shift_up_fraction}; overlapping "
                 f"thresholds make the gearbox hunt"
+            )
+        if not 0.0 <= self.abs_slip_full < self.abs_slip_release <= 1.0:
+            raise ValueError(
+                f"need 0 <= abs_slip_full < abs_slip_release <= 1, got "
+                f"{self.abs_slip_full} and {self.abs_slip_release}"
+            )
+        if self.abs_min_speed_mps < 0.0:
+            raise ValueError(
+                f"abs_min_speed_mps must be non-negative, got {self.abs_min_speed_mps}"
             )
         if not 0.0 <= self.limiter_taper_fraction < 1.0:
             raise ValueError(
@@ -251,6 +277,30 @@ def drive_torque(throttle: float, wheel_rads: float, gear: int, config: Powertra
     crank = engine_torque(engine_rads, config) * limiter_fraction(engine_rads, config)
     axle = crank * ratio * config.driveline_efficiency * throttle
     return axle / 2.0
+
+
+def abs_factor(
+    ground_speed_mps: float, wheel_rads: float, wheel_radius_m: float, config: PowertrainConfig
+) -> float:
+    """Multiplier on one wheel's brake torque from the slip limiter: 1 rolling, 0 locked.
+
+    Longitudinal slip is ``(v - omega * r) / v``: 0 for a freely rolling wheel, 1 for a
+    locked one. Full torque up to ``abs_slip_full``, zero at ``abs_slip_release``, linear
+    between. Below ``abs_min_speed_mps`` the ratio is ill-conditioned and the limiter
+    stands down so the car can actually stop.
+
+    The ground speed is the car's, not the wheel's own -- in a corner the inner and outer
+    wheels differ by half the track width times the yaw rate, under a metre per second at
+    racing speed. ``abs_slip_full`` leaves margin for that.
+    """
+    if not config.abs_enabled or ground_speed_mps < config.abs_min_speed_mps:
+        return 1.0
+    slip = (ground_speed_mps - abs(float(wheel_rads)) * wheel_radius_m) / ground_speed_mps
+    if slip <= config.abs_slip_full:
+        return 1.0
+    if slip >= config.abs_slip_release:
+        return 0.0
+    return 1.0 - (slip - config.abs_slip_full) / (config.abs_slip_release - config.abs_slip_full)
 
 
 def brake_torque(
