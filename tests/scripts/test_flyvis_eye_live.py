@@ -52,6 +52,8 @@ def test_skips_cleanly_without_optional_stack(tmp_path: Path) -> None:
             "--no-display",
             "--frames",
             "3",
+            "--show",
+            "R1",
         ],
         check=False,
         capture_output=True,
@@ -63,8 +65,7 @@ def test_skips_cleanly_without_optional_stack(tmp_path: Path) -> None:
     assert result.stdout.startswith("SKIP:")
 
 
-def test_headless_synthetic_run_prints_direction_meter() -> None:
-    """Run N synthetic frames without a window and report the meter and timing."""
+def _skip_without_pretrained_eye() -> None:
     pytest.importorskip("flyvis")
     from fly_driver.eyes.flyvis_eye import resolve_checkpoint_dir
 
@@ -73,24 +74,30 @@ def test_headless_synthetic_run_prints_direction_meter() -> None:
     except FileNotFoundError:
         pytest.skip("run `flyvis download-pretrained` to enable this test")
 
-    result = subprocess.run(
+
+def _run_headless(*extra_args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         [
             sys.executable,
             str(SCRIPT_PATH),
             "--source",
             "synthetic",
             "--no-display",
-            "--frames",
-            "30",
-            "--print-every",
-            "10",
             "--fps-cap",
             "0",
+            *extra_args,
         ],
         check=False,
         capture_output=True,
         text=True,
     )
+
+
+def test_headless_synthetic_run_prints_direction_meter() -> None:
+    """Run N synthetic frames without a window and report the meter and timing."""
+    _skip_without_pretrained_eye()
+
+    result = _run_headless("--frames", "30", "--print-every", "10")
 
     assert result.returncode == 0, result.stderr
     assert "SKIP" not in result.stdout
@@ -98,6 +105,62 @@ def test_headless_synthetic_run_prints_direction_meter() -> None:
     assert len(meter_lines) == 3, result.stdout
     assert "frames: 30" in result.stdout
     assert "eye latency: median" in result.stdout
+
+
+def test_headless_figure_has_retina_and_show_panels(tmp_path: Path) -> None:
+    """Snapshot on Agg with the retina panel and extra --show cell types."""
+    _skip_without_pretrained_eye()
+
+    result = _run_headless(
+        "--frames",
+        "3",
+        "--print-every",
+        "0",
+        "--save-dir",
+        str(tmp_path),
+        "--save-every",
+        "2",
+        "--show",
+        "R1, Tm3,T4a",
+        "--hide-t5",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "readouts: T4a, T4b, T4c, T4d\n" in result.stdout
+    assert "panels: camera, retina, T4a, T4b, T4c, T4d, R1, Tm3\n" in result.stdout
+    assert sorted(path.name for path in tmp_path.glob("*.png")) == [
+        "flyvis_eye_live_00000.png",
+        "flyvis_eye_live_00002.png",
+    ]
+
+
+def test_headless_rejects_unknown_show_types() -> None:
+    """Unknown or partial-lattice cell types fail fast with a clear message."""
+    _skip_without_pretrained_eye()
+
+    unknown = _run_headless("--frames", "1", "--show", "R1,NotACell")
+    partial = _run_headless("--frames", "1", "--show", "Lawf1")
+
+    assert unknown.returncode == 2
+    assert "unknown cell types ['NotACell']" in unknown.stderr
+    assert "choose from" in unknown.stderr
+    assert partial.returncode == 2
+    assert "721-column lattice" in partial.stderr
+
+
+def test_show_types_are_parsed_and_ordered_after_readouts() -> None:
+    """--show splits on commas, drops blanks and repeats, and follows T4/T5."""
+    live = _load_live_module()
+
+    assert live.parse_show_types(None) == []
+    assert live.parse_show_types(" R1, L1,,Mi1,R1 ") == ["R1", "L1", "Mi1"]
+    assert live.build_readout_names() == READOUTS
+    assert live.build_readout_names(hide_t5=True) == READOUTS[:4]
+    assert live.build_panel_names(READOUTS[:4], ["Tm3", "T4a", "R1"]) == [
+        *READOUTS[:4],
+        "Tm3",
+        "R1",
+    ]
 
 
 def test_direction_meter_maps_subtypes_to_directions() -> None:

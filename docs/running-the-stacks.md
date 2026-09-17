@@ -117,13 +117,19 @@ in `fly_driver.eyes.stimuli`.
 ### Live demo (webcam → eye)
 
 `scripts/flyvis_eye_live.py` is a viewer, not a training component: it shows
-the 96 × 96 frame the eye receives, the eight T4/T5 hex maps updating live
-through `FlyvisEye.encode`, and a direction meter with one bar per direction
+the 96 × 96 frame the eye receives, the **retina** next to it (the 721-column
+hex-resampled luminance that actually enters the network, `HexResampler`
+output, grey 0..1), the eight T4/T5 hex maps updating live through
+`FlyvisEye.encode`, and a direction meter with one bar per direction
 (left/right/up/down from the T4/T5 a/b/c/d subtypes, resting activity
 subtracted). Wave a hand across the camera and the bar for that direction
 jumps. The overlay shows display fps, per-frame eye latency, and the camera
 rate next to "eye stepped at 50 Hz" because every frame, however fast it
-arrives, is one 20 ms step of the optic lobe.
+arrives, is one 20 ms step of the optic lobe. `--show R1,L1,Mi1,Tm3` adds a
+hex panel for any of the model's cell types (read from
+`FlyvisEye.state_activity`, so photoreceptors and lamina cells work too, drawn
+relative to their resting activity; only `Lawf1`/`Lawf2` cannot be drawn),
+`--hide-t5` drops the T5 row, and `--no-retina` hides the retina panel.
 
 ```bash
 # in the flyvis venv (Python 3.9-3.12); uv is fastest, pip works too
@@ -135,6 +141,7 @@ python scripts/flyvis_eye_live.py --source synthetic   # bright bar sweeping l/r
 
 Keys: space pauses/resumes, `r` resets the eye state (1 s grey warm-up),
 `q`/Esc quits. Options: `--camera-index`, `--fps-cap` (default 50),
+`--show TYPE[,TYPE...]`, `--hide-t5`, `--no-retina`,
 `--meter-statistic q95|mean`, `--color-limit`, `--save-dir DIR --save-every N`
 for PNG snapshots. macOS: grant camera permission to the terminal app you run
 it from (System Settings → Privacy & Security → Camera); the first run prompts.

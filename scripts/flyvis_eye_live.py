@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Watch the frozen flyvis eye respond to a webcam (or a synthetic bar) live.
 
-One window shows the 96x96 frame the eye receives, the eight T4/T5 hexagonal
-maps updating through ``FlyvisEye.encode`` (streaming, state carried between
-frames), and a direction meter with one bar per motion direction. Wave a hand
-across the camera and the bar for that direction jumps.
+One window shows, left to right, the pipeline the fly sees through: the 96x96
+frame the eye receives, the **retina** (the 721-column hex-resampled luminance
+that actually enters the network, from ``HexResampler``), and the T4/T5
+hexagonal maps updating through ``FlyvisEye.encode`` (streaming, state carried
+between frames), plus a direction meter with one bar per motion direction. Wave
+a hand across the camera and the bar for that direction jumps. ``--show
+R1,L1,Mi1,Tm3`` adds panels for any of the model's cell types: the eye keeps
+its T4/T5 readouts for the meter, and the extra panels are read from
+``FlyvisEye.state_activity`` (the full network state after each step, which
+also covers the 31 non-output types such as photoreceptors and lamina cells);
+``--hide-t5`` drops the T5 row; ``--no-retina`` hides the retina panel.
 
 **Display choice.** matplotlib with blitting, not pygame. matplotlib is already
 used by every other script in the repo, so the live demo adds only
@@ -62,6 +69,9 @@ from fly_driver.eyes.stimuli import (
 
 Frame = npt.NDArray[np.uint8]
 
+T4_READOUTS = ("T4a", "T4b", "T4c", "T4d")
+T5_READOUTS = ("T5a", "T5b", "T5c", "T5d")
+MAPS_PER_ROW = 4
 METER_DIRECTIONS = ("left", "right", "up", "down")
 # Image-coordinate preferred direction of each T4/T5 subtype, the mapping the
 # direction-selectivity gate in tests/eyes asserts against the pretrained eye.
@@ -249,6 +259,102 @@ def open_source(
 
 
 # --------------------------------------------------------------------------
+# Readout selection
+# --------------------------------------------------------------------------
+
+
+def parse_show_types(show: str | None) -> list[str]:
+    """Split a ``--show`` value such as ``"R1,L1, Mi1"`` into unique cell types.
+
+    Args:
+        show: Comma-separated cell type names, or ``None``.
+
+    Returns:
+        The names in the order given, stripped, without repeats or blanks.
+    """
+    if not show:
+        return []
+    names: list[str] = []
+    for raw_name in show.split(","):
+        name = raw_name.strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def build_readout_names(*, hide_t5: bool = False) -> tuple[str, ...]:
+    """Return the eye readouts feeding the direction meter: T4a-d, then T5a-d.
+
+    Args:
+        hide_t5: Drop the T5 row.
+
+    Returns:
+        The readout names to construct the eye with.
+    """
+    return T4_READOUTS + (() if hide_t5 else T5_READOUTS)
+
+
+def build_panel_names(
+    readout_names: Sequence[str], show: Sequence[str] = ()
+) -> list[str]:
+    """Return the hex panels to draw: the readouts, then ``--show`` extras.
+
+    Extras that repeat a readout are dropped so every cell type has one panel.
+
+    Args:
+        readout_names: The eye's readouts.
+        show: Extra cell types requested with ``--show``.
+
+    Returns:
+        Panel names in display order.
+    """
+    names = list(readout_names)
+    names.extend(name for name in show if name not in names)
+    return names
+
+
+class UnknownCellTypesError(ValueError):
+    """Raised when ``--show`` names cell types the model cannot draw."""
+
+
+def resolve_cell_type_indices(eye: Any, names: Sequence[str]) -> dict[str, np.ndarray]:
+    """Map extra cell types to their neuron indices in ``eye.state_activity``.
+
+    Any of the model's cell types can be shown, not only the 34 output types
+    the eye exposes as readouts, because the full network state is available
+    after every ``encode``. Types must occupy the whole 721-column lattice in
+    flyvis hex order (all but ``Lawf1``/``Lawf2``).
+
+    Args:
+        eye: A constructed ``FlyvisEye``.
+        names: Cell types requested with ``--show``.
+
+    Returns:
+        ``{name: indices}`` with one index per hex column, in column order.
+
+    Raises:
+        UnknownCellTypesError: For names the model lacks or cannot draw.
+    """
+    nodes = eye.network.connectome.nodes
+    available = sorted(str(name) for name in np.unique(nodes.type[:].astype(str)))
+    unknown = [name for name in names if name not in available]
+    if unknown:
+        raise UnknownCellTypesError(
+            f"--show: unknown cell types {unknown}; choose from {', '.join(available)}"
+        )
+    indices = {name: np.asarray(nodes.layer_index[name][:]) for name in names}
+    partial = [
+        name for name, index in indices.items() if len(index) != HEX_COLUMN_COUNT
+    ]
+    if partial:
+        raise UnknownCellTypesError(
+            f"--show: {partial} do not cover the {HEX_COLUMN_COUNT}-column lattice "
+            "and cannot be drawn as hex maps"
+        )
+    return indices
+
+
+# --------------------------------------------------------------------------
 # Direction meter
 # --------------------------------------------------------------------------
 
@@ -367,17 +473,32 @@ def _ema(current: float, sample: float) -> float:
 
 
 class LiveView:
-    """matplotlib figure with blitted camera frame, hex maps, meter, and overlay.
+    """matplotlib figure with blitted camera frame, retina, hex maps, and meter.
+
+    Layout: the left block holds the camera frame, the retina next to it, and
+    the direction meter below; the right block holds the readout hex maps in
+    rows of :data:`MAPS_PER_ROW`, so the pipeline reads camera → retina → cell
+    types from left to right. With one readout row (``--hide-t5`` and nothing
+    shown) the maps span both rows.
 
     Args:
-        readout_names: Readouts to draw as hex maps (two rows of four).
+        panel_names: Cell types to draw as hex maps (readouts first).
         color_limit: Symmetric colour limit for the maps in activity units.
         display: Open an interactive window. ``False`` uses the Agg backend and
             only supports :meth:`save`.
+        show_retina: Draw the hex-resampled luminance entering the network.
+        relative_panels: Panels whose values are deviations from rest; their
+            titles say so.
     """
 
     def __init__(
-        self, readout_names: Sequence[str], color_limit: float, display: bool
+        self,
+        panel_names: Sequence[str],
+        color_limit: float,
+        display: bool,
+        *,
+        show_retina: bool = True,
+        relative_panels: Sequence[str] = (),
     ) -> None:
         import matplotlib
 
@@ -386,30 +507,70 @@ class LiveView:
         import matplotlib.pyplot as plt
 
         self.display = display
+        self.show_retina = show_retina
         self.paused = False
         self.reset_requested = False
         self.is_open = True
         self._needs_background = True
         self._meter_peak = METER_PEAK_FLOOR
         self._plt = plt
+        self._raster = HexRaster()
 
-        self.figure = plt.figure(figsize=(13, 6.5), facecolor="white")
-        grid = self.figure.add_gridspec(
-            2, 6, left=0.03, right=0.99, top=0.85, bottom=0.1, wspace=0.15, hspace=0.35
-        )
-        camera_axes = self.figure.add_subplot(grid[0, :2])
-        meter_axes = self.figure.add_subplot(grid[1, :2])
-        map_axes = [
-            self.figure.add_subplot(grid[row, 2 + column])
-            for row in range(2)
-            for column in range(4)
+        readout_rows = [
+            list(panel_names[start : start + MAPS_PER_ROW])
+            for start in range(0, len(panel_names), MAPS_PER_ROW)
         ]
+        row_count = max(2, len(readout_rows))
+        left_columns = 2
+        self.figure = plt.figure(
+            figsize=(12, min(8.0, 2.0 + 2.25 * row_count)), facecolor="white"
+        )
+        grid = self.figure.add_gridspec(
+            row_count,
+            left_columns + MAPS_PER_ROW,
+            left=0.03,
+            right=0.99,
+            top=0.85 if row_count == 2 else 0.9,
+            bottom=0.1 if row_count == 2 else 0.06,
+            wspace=0.15,
+            hspace=0.35,
+        )
+        camera_axes = self.figure.add_subplot(
+            grid[0, 0] if show_retina else grid[0, :2]
+        )
+        retina_axes = self.figure.add_subplot(grid[0, 1]) if show_retina else None
+        meter_axes = self.figure.add_subplot(grid[1, :left_columns])
+        map_axes = []
+        map_names = []
+        for row_index, names in enumerate(readout_rows):
+            for column_index, name in enumerate(names):
+                column = left_columns + column_index
+                cell = (
+                    grid[:, column]
+                    if len(readout_rows) == 1
+                    else grid[row_index, column]
+                )
+                map_axes.append(self.figure.add_subplot(cell))
+                map_names.append(name)
 
         blank = np.full(DEFAULT_FRAME_SHAPE, GREY_LEVEL, dtype=np.uint8)
         self._image = camera_axes.imshow(blank, animated=display)
         camera_axes.set_title("eye input (96x96)", fontsize=10)
         camera_axes.set_xticks([])
         camera_axes.set_yticks([])
+
+        self._retina = None
+        if retina_axes is not None:
+            self._retina = self._raster.imshow(
+                retina_axes,
+                np.full(HEX_COLUMN_COUNT, 0.5, dtype=np.float32),
+                cmap="gray",
+                vmin=0.0,
+                vmax=1.0,
+                interpolation="nearest",
+            )
+            self._retina.set_animated(display)
+            retina_axes.set_title("retina (721 columns)", fontsize=10)
 
         self._bars = meter_axes.bar(
             METER_DIRECTIONS, [0.0] * len(METER_DIRECTIONS), color="#4c72b0"
@@ -418,7 +579,14 @@ class LiveView:
             bar.set_animated(display)
         meter_axes.set_ylim(0, 1.05)
         meter_axes.set_yticks([])
-        meter_axes.set_title("direction meter (T4/T5, relative to peak)", fontsize=10)
+        meter_families = "/".join(
+            family
+            for family in ("T4", "T5")
+            if any(name.startswith(family) for name in panel_names)
+        )
+        meter_axes.set_title(
+            f"direction meter ({meter_families}, relative to peak)", fontsize=10
+        )
         self._meter_text = meter_axes.text(
             0.5,
             0.95,
@@ -430,9 +598,8 @@ class LiveView:
             animated=display,
         )
 
-        self._raster = HexRaster()
         self._maps = []
-        for axes, name in zip(map_axes, readout_names):
+        for axes, name in zip(map_axes, map_names):
             image = self._raster.imshow(
                 axes,
                 np.zeros(HEX_COLUMN_COUNT, dtype=np.float32),
@@ -442,11 +609,13 @@ class LiveView:
                 interpolation="nearest",
             )
             image.set_animated(display)
-            axes.set_title(name, fontsize=10, fontweight="bold")
+            title = f"{name} − rest" if name in relative_panels else name
+            axes.set_title(title, fontsize=10, fontweight="bold")
             self._maps.append(image)
         self.figure.colorbar(
             self._maps[0], ax=map_axes, label="activity (a.u.)", shrink=0.6, pad=0.02
         )
+        self.panel_names = ["camera"] + (["retina"] if show_retina else []) + map_names
 
         self._overlay = self.figure.text(
             0.03, 0.97, "", fontsize=10, family="monospace", va="top", animated=display
@@ -467,6 +636,8 @@ class LiveView:
             *self._bars,
             *self._maps,
         ]
+        if self._retina is not None:
+            self._animated.append(self._retina)
 
         if display:
             self.figure.canvas.mpl_connect("key_press_event", self._on_key)
@@ -496,12 +667,23 @@ class LiveView:
     def update(
         self,
         frame: Frame,
+        retina: npt.NDArray[np.floating[Any]] | None,
         maps: dict[str, npt.NDArray[np.floating[Any]]],
         meter: dict[str, float],
         overlay_text: str,
     ) -> None:
-        """Push new data into the artists and redraw only them."""
+        """Push new data into the artists and redraw only them.
+
+        Args:
+            frame: The 96x96x3 frame the eye received.
+            retina: ``(721,)`` resampled luminance in ``[0, 1]``, or ``None``.
+            maps: Readout maps in panel order (see ``split_readout_maps``).
+            meter: Direction meter values.
+            overlay_text: Status line for the top-left overlay.
+        """
         self._image.set_data(frame)
+        if self._retina is not None and retina is not None:
+            self._retina.set_data(self._raster.render(retina))
         for image, values in zip(self._maps, maps.values()):
             image.set_data(self._raster.render(values))
         self._meter_peak = max(
@@ -578,11 +760,25 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--save-every", type=int, default=50, help="Snapshot period.")
     parser.add_argument("--meter-statistic", choices=METER_STATISTICS, default="q95")
     parser.add_argument("--color-limit", type=float, default=DEFAULT_COLOR_LIMIT)
+    parser.add_argument(
+        "--show",
+        default=None,
+        metavar="TYPE[,TYPE...]",
+        help="Extra flyvis output cell types to draw, e.g. R1,L1,Mi1,Tm3.",
+    )
+    parser.add_argument(
+        "--hide-t5", action="store_true", help="Drop the T5a-d row (compact view)."
+    )
+    parser.add_argument(
+        "--no-retina",
+        action="store_true",
+        help="Hide the retina panel (the 721-column luminance entering the eye).",
+    )
     parser.add_argument("--checkpoint", default=None, help="flyvis checkpoint.")
     return parser.parse_args(argv)
 
 
-def _try_load_eye(checkpoint: str | None) -> Any:
+def _try_load_eye(checkpoint: str | None, readouts: Sequence[str]) -> Any:
     """Return a FlyvisEye, or ``None`` after printing why the demo is skipped."""
     from fly_driver.eyes.flyvis_eye import (
         DEFAULT_CHECKPOINT,
@@ -606,7 +802,7 @@ def _try_load_eye(checkpoint: str | None) -> Any:
     except FileNotFoundError as error:
         print(f"SKIP: {error}")
         return None
-    return FlyvisEye(checkpoint=checkpoint)
+    return FlyvisEye(checkpoint=checkpoint, readouts=readouts)
 
 
 def _has_opencv() -> bool:
@@ -617,12 +813,22 @@ def _has_opencv() -> bool:
     return True
 
 
-def _measure_baseline(eye: Any, statistic: str) -> dict[str, float]:
-    """Reset the eye and read the resting meter from one more grey frame."""
+def _measure_baseline(
+    eye: Any, statistic: str
+) -> tuple[dict[str, float], npt.NDArray[np.float32]]:
+    """Reset the eye and read the resting meter and network state from grey.
+
+    Returns:
+        The resting direction meter (subtracted from live values) and the
+        resting activity of every neuron (subtracted from ``--show`` panels).
+    """
     eye.reset()
     grey = grey_frames(1, frame_shape=eye.frame_shape)[0]
-    return compute_direction_meter(
-        eye.encode(grey), eye.readout_names, statistic=statistic
+    features = eye.encode(grey)
+    resting_state = np.array(eye.state_activity, dtype=np.float32)
+    return (
+        compute_direction_meter(features, eye.readout_names, statistic=statistic),
+        resting_state,
     )
 
 
@@ -683,23 +889,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             "install it or run with --source synthetic."
         )
         return 0
-    eye = _try_load_eye(args.checkpoint)
+    eye = _try_load_eye(args.checkpoint, build_readout_names(hide_t5=args.hide_t5))
     if eye is None:
         return 0
+    show_types = [
+        name for name in parse_show_types(args.show) if name not in eye.readout_names
+    ]
+    try:
+        extra_indices = resolve_cell_type_indices(eye, show_types)
+    except UnknownCellTypesError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    panel_names = build_panel_names(eye.readout_names, show_types)
     print(f"checkpoint: {eye.checkpoint_dir}; device: {eye.device}")
     print(f"readouts: {', '.join(eye.readout_names)}")
 
     source = open_source(args.source, args.camera_index, eye.frame_shape)
     print(f"source: {source.description}")
     print(f"eye stepped at {eye.frame_rate_hz:.0f} Hz (one frame = one step)")
-    baseline = _measure_baseline(eye, args.meter_statistic)
+    baseline, resting_state = _measure_baseline(eye, args.meter_statistic)
     print(f"resting meter (subtracted): {format_meter(baseline)}")
 
     view: LiveView | None = None
     if not args.no_display or args.save_dir is not None:
         view = LiveView(
-            eye.readout_names, args.color_limit, display=not args.no_display
+            panel_names,
+            args.color_limit,
+            display=not args.no_display,
+            show_retina=not args.no_retina,
+            relative_panels=show_types,
         )
+        print(f"panels: {', '.join(view.panel_names)}")
     if args.save_dir is not None:
         args.save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -716,7 +936,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if view is not None:
                 view.poll()
                 if view.reset_requested:
-                    baseline = _measure_baseline(eye, args.meter_statistic)
+                    baseline, resting_state = _measure_baseline(
+                        eye, args.meter_statistic
+                    )
                     view.reset_requested = False
                     print("eye state reset")
                 if view.paused:
@@ -749,9 +971,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
 
             if view is not None:
+                # The retina is what the network integrates: the same resampler
+                # call encode() made, repeated here (~1.5 ms) purely for display.
+                retina = (
+                    eye.resampler.frame(source_frame.frame)[0, 0, 0].numpy()
+                    if view.show_retina
+                    else None
+                )
+                maps = split_readout_maps(features, eye.readout_names)
+                if extra_indices:
+                    state = eye.state_activity
+                    for name, indices in extra_indices.items():
+                        maps[name] = state[indices] - resting_state[indices]
                 view.update(
                     source_frame.frame,
-                    split_readout_maps(features, eye.readout_names),
+                    retina,
+                    {name: maps[name] for name in panel_names},
                     meter,
                     _format_overlay(
                         stats,
