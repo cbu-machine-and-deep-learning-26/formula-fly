@@ -45,6 +45,10 @@ and brake as bars, steering as a bar running -1 to +1 as the ControlVector does,
 of each coilover, lap times, and a map of the circuit with a fly marking where you are.
 ``--no-hud`` suppresses it.
 
+Run wide and the lap is thrown away: once 15% of the car's width is past the kerb and onto
+the grass the car goes back to the grid and the clock resets, the same way a real timed lap
+is lost. ``--track-limit`` changes the fraction, and 0 turns the rule off.
+
 The car starts behind the start line, and the clock only begins when it first crosses:
 the panel shows ``OUT`` until then, so the run-up is not charged to lap one.
 
@@ -85,7 +89,7 @@ import mujoco
 import numpy as np
 
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
-from fly_driver.envs.centerline import Centerline
+from fly_driver.envs.centerline import Centerline, off_track_fraction
 from fly_driver.envs.lap import DEFAULT_LAP_LOG_PATH, LapLog, LapTimer, format_lap_time
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD
@@ -305,6 +309,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
     parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
     parser.add_argument(
+        "--track-limit",
+        type=float,
+        default=0.15,
+        help=(
+            "restart when this fraction of the car's width is past the kerb and onto the "
+            "grass; 0 disables the rule"
+        ),
+    )
+    parser.add_argument(
         "--lap-log",
         type=Path,
         default=DEFAULT_LAP_LOG_PATH,
@@ -337,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lap_timer = LapTimer(centerline)
     lap_log = None if args.no_lap_log else LapLog(args.lap_log)
+    excursions = 0
 
     data = mujoco.MjData(model)
     reset_to_start(model, data)
@@ -378,6 +392,31 @@ def main(argv: list[str] | None = None) -> int:
 
                 position = data.xpos[car_body]
                 projection = centerline.project(float(position[0]), float(position[1]))
+
+                # Track limits. Measured from the car's outer edge, so the kerb is fair
+                # game and the grass is not; a lap that leaves the circuit is not a lap.
+                if args.track_limit > 0.0:
+                    beyond = off_track_fraction(
+                        projection,
+                        car_width_m=car.overall_width_m,
+                        kerb_width_m=scene.kerb_width_m,
+                    )
+                    if beyond > args.track_limit:
+                        excursions += 1
+                        reset_to_start(model, data)
+                        dynamics.reset()
+                        grid = centerline.project(
+                            float(data.xpos[car_body][0]), float(data.xpos[car_body][1])
+                        )
+                        lap_timer.reset(grid.arclength, float(data.time))
+                        print()
+                        print(
+                            f"off track: {beyond * 100:.0f}% of the car past the kerb "
+                            f"-- back to the grid (excursion {excursions})",
+                            flush=True,
+                        )
+                        continue
+
                 completed = lap_timer.update(projection.arclength, float(data.time))
                 if completed is not None:
                     note = ""

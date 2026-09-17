@@ -47,6 +47,16 @@ class SceneConfig:
             sets the spatial frequency the eye sees when moving, so it interacts directly
             with T4/T5 tuning — it is a knob, not a cosmetic constant.
         kerb_width_m: Width of the striped edge strip. Set to 0 to disable kerbs.
+
+            1.0 m is the FIA standard for a raised red-and-white kerb and what Silverstone
+            runs at most corners. It is **not** taken from Assetto Corsa, unlike the car:
+            AC keeps its kerb geometry in the track's 3D mesh rather than in any readable
+            data file, so there is no number there to copy. Measuring it in game and
+            correcting this would be a worthwhile small job.
+
+            It matters beyond looks. The kerb is the outer boundary for the track-limits
+            rule (see :func:`~fly_driver.envs.centerline.off_track_fraction`), so its width
+            decides how far a car may run wide before the lap is thrown away.
         include_walls: Add collidable walls at the track edges. Off by default: the reward
             already penalises leaving the track, and walls add thousands of contact geoms
             that slow every step of every rollout.
@@ -108,7 +118,7 @@ class SceneConfig:
     surface_height_m: float = 0.02
     texture_repeat_m: float = 8.0
     grass_texture_repeat_m: float = 5.0
-    kerb_width_m: float = 0.75
+    kerb_width_m: float = 1.00
     include_walls: bool = False
     wall_height_m: float = 0.6
     timestep: float = 0.002

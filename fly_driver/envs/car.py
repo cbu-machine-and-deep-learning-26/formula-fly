@@ -398,6 +398,19 @@ class CarConfig:
         return self.wheelbase_m / 2.0 - from_front
 
     @property
+    def overall_width_m(self) -> float:
+        """Widest point of the car, outside wheel to outside wheel, in metres.
+
+        The wheels are wider than the bodywork on a single-seater, so this is a track
+        width plus one tyre. Comes out at 1.97 m against the 2.00 m the 2017 regulations
+        allowed, which is the expected answer for a car built to the limit.
+        """
+        return max(
+            self.track_width_front_m + self.wheel_width_front_m,
+            self.track_width_rear_m + self.wheel_width_rear_m,
+        )
+
+    @property
     def centre_of_pressure_x_m(self) -> float:
         """Longitudinal centre of pressure relative to the body origin, in metres.
 

@@ -14,7 +14,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fly_driver.envs.centerline import DEFAULT_CENTERLINE_PATH, Centerline
+from fly_driver.envs.centerline import (
+    DEFAULT_CENTERLINE_PATH,
+    Centerline,
+    off_track_fraction,
+)
 
 #: Silverstone GP circuit official length, metres. Our polyline samples it at ~5 m, so it
 #: reads slightly short; 0.5% is generous headroom for that while still catching a unit
@@ -262,3 +266,102 @@ class TestVendoredSilverstone:
             for a, b in zip(steps[:-1], steps[1:], strict=True)
         )
         assert total == pytest.approx(track.length, rel=1e-6)
+
+
+class TestOffTrackFraction:
+    """Payton's track-limits rule: once 15% of the car's width is past the kerb and onto
+    the grass, the lap is thrown away.
+
+    Measured from the car's outer edge rather than its centre, because that is what "off
+    the track" means to a marshal. Projection.edge_overshoot stays the centre-based signal
+    for a smooth reward penalty; this is the yes/no one.
+    """
+
+    CAR = 2.0
+    KERB = 1.0
+
+    def _at(self, lateral: float, half_width: float = 7.0):
+        from fly_driver.envs.centerline import Projection
+
+        return Projection(
+            arclength=100.0,
+            lateral=lateral,
+            half_width_left=half_width,
+            half_width_right=half_width,
+            segment=0,
+        )
+
+    def _fraction(self, lateral: float, half_width: float = 7.0) -> float:
+        return off_track_fraction(
+            self._at(lateral, half_width), car_width_m=self.CAR, kerb_width_m=self.KERB
+        )
+
+    def test_mid_track_is_zero(self):
+        assert self._fraction(0.0) == 0.0
+
+    def test_a_car_inside_the_white_line_is_zero(self):
+        assert self._fraction(5.0) == 0.0
+
+    def test_straddling_the_edge_onto_the_kerb_is_still_zero(self):
+        """Half the car on the kerb is racing, not an excursion."""
+        assert self._fraction(7.0) == 0.0
+
+    def test_just_past_the_kerb_starts_counting(self):
+        assert self._fraction(7.1) == pytest.approx(0.05)
+
+    def test_the_trigger_point_is_where_expected(self):
+        """15% of a 2 m car is 30 cm of it past the kerb."""
+        assert self._fraction(7.3) == pytest.approx(0.15)
+
+    def test_fully_off_reads_a_whole_car_width(self):
+        assert self._fraction(9.0) == pytest.approx(1.0)
+
+    def test_it_works_on_both_sides(self):
+        assert self._fraction(-7.3) == pytest.approx(self._fraction(7.3))
+
+    def test_it_uses_the_half_width_on_the_car_s_own_side(self):
+        """The track is not symmetric, so the wrong side would let a car run wide on one
+        edge and punish it on the other."""
+        from fly_driver.envs.centerline import Projection
+
+        narrow_left = Projection(
+            arclength=0.0, lateral=6.0, half_width_left=5.0, half_width_right=9.0, segment=0
+        )
+        assert off_track_fraction(narrow_left, car_width_m=self.CAR, kerb_width_m=self.KERB) > 0.0
+        narrow_right = Projection(
+            arclength=0.0, lateral=-6.0, half_width_left=9.0, half_width_right=5.0, segment=0
+        )
+        assert off_track_fraction(narrow_right, car_width_m=self.CAR, kerb_width_m=self.KERB) > 0.0
+
+    def test_a_wider_kerb_buys_more_room(self):
+        far = self._at(7.5)
+        tight = off_track_fraction(far, car_width_m=self.CAR, kerb_width_m=0.5)
+        loose = off_track_fraction(far, car_width_m=self.CAR, kerb_width_m=2.0)
+        assert tight > loose == 0.0
+
+    def test_no_kerb_means_the_white_line_is_the_edge(self):
+        assert off_track_fraction(self._at(7.0), car_width_m=self.CAR) == pytest.approx(0.5)
+
+    def test_rejects_a_car_with_no_width(self):
+        with pytest.raises(ValueError):
+            off_track_fraction(self._at(0.0), car_width_m=0.0)
+
+    def test_the_real_circuit_keeps_a_centred_car_on_track(self):
+        """Every point on the racing line must be legal, or the rule would reset a car
+        that never put a wheel wrong."""
+        from fly_driver.envs.car import CarConfig
+        from fly_driver.envs.scene import SceneConfig
+
+        centerline = Centerline.load()
+        car, scene = CarConfig(), SceneConfig()
+        for arclength in np.linspace(0.0, centerline.length, 400, endpoint=False):
+            point, _ = centerline.pose_at(float(arclength))
+            projection = centerline.project(float(point[0]), float(point[1]))
+            assert (
+                off_track_fraction(
+                    projection,
+                    car_width_m=car.overall_width_m,
+                    kerb_width_m=scene.kerb_width_m,
+                )
+                == 0.0
+            ), f"centreline is off track at {arclength:.0f} m"

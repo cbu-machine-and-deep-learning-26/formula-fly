@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-__all__ = ["Centerline", "DEFAULT_CENTERLINE_PATH"]
+__all__ = ["off_track_fraction", "Centerline", "DEFAULT_CENTERLINE_PATH"]
 
 #: The vendored Silverstone centerline. See ``data/README.md`` for provenance and licence.
 DEFAULT_CENTERLINE_PATH = Path(__file__).parent / "data" / "silverstone_centerline.csv"
@@ -35,6 +35,38 @@ DEFAULT_CENTERLINE_PATH = Path(__file__).parent / "data" / "silverstone_centerli
 #: Geometry is float64 throughout. Arclength accumulates over ~5.9 km at millimetre scale,
 #: and float32 would lose resolution at the far end of a lap.
 _GEOM_DTYPE = np.float64
+
+
+def off_track_fraction(
+    projection: Projection,
+    *,
+    car_width_m: float,
+    kerb_width_m: float = 0.0,
+) -> float:
+    """How far the car's outer edge lies past the kerb, as a fraction of its own width.
+
+    ``0.0`` while any part of the car is still on the track or its kerb, rising to ``1.0``
+    when the whole car is a full width beyond the kerb's outer edge and onto the grass.
+
+    Measured from the car's **edge**, not its centre, because that is what a marshal
+    watches and what "all four wheels off" means. :attr:`Projection.edge_overshoot` is the
+    centre's overshoot and is the right signal for a smooth reward penalty; this one is
+    the right signal for a yes/no track-limits rule.
+
+    Args:
+        projection: Where the car's centre sits, from :meth:`Centerline.project`.
+        car_width_m: The car's overall width.
+        kerb_width_m: Width of the striped kerb outside the track edge, which counts as
+            still being on the circuit.
+
+    Raises:
+        ValueError: If ``car_width_m`` is not positive.
+    """
+    if car_width_m <= 0:
+        raise ValueError(f"car_width_m must be positive, got {car_width_m}")
+    edge = projection.half_width_left if projection.lateral >= 0.0 else projection.half_width_right
+    past = abs(projection.lateral) + car_width_m / 2.0 - (edge + kerb_width_m)
+    return max(0.0, past) / car_width_m
 
 
 @dataclass(frozen=True)
