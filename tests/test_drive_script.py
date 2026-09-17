@@ -136,10 +136,10 @@ class TestGamepadMapping:
     """Analog: half a trigger is half the throttle. Same ControlVector the fly produces."""
 
     @staticmethod
-    def axes(left_x=0.0, left_trigger=-1.0, right_trigger=-1.0):
+    def axes(stick_x=0.0, left_trigger=-1.0, right_trigger=-1.0):
         """Six GLFW axes with triggers released (-1) unless stated."""
         values = [0.0] * 6
-        values[drive.AXIS_LEFT_X] = left_x
+        values[drive.AXIS_STEER] = stick_x
         values[drive.AXIS_LEFT_TRIGGER] = left_trigger
         values[drive.AXIS_RIGHT_TRIGGER] = right_trigger
         return values
@@ -147,7 +147,7 @@ class TestGamepadMapping:
     def test_axis_indices_match_glfw(self):
         """The mapping hardcodes indices so it is testable without GLFW; check them."""
         glfw = pytest.importorskip("glfw")
-        assert drive.AXIS_LEFT_X == glfw.GAMEPAD_AXIS_LEFT_X
+        assert drive.AXIS_STEER == glfw.GAMEPAD_AXIS_RIGHT_X
         assert drive.AXIS_LEFT_TRIGGER == glfw.GAMEPAD_AXIS_LEFT_TRIGGER
         assert drive.AXIS_RIGHT_TRIGGER == glfw.GAMEPAD_AXIS_RIGHT_TRIGGER
 
@@ -166,22 +166,22 @@ class TestGamepadMapping:
         assert control.brake == 0.5 and control.throttle == 0.0
 
     def test_stick_inside_the_deadzone_is_centred(self):
-        assert drive.gamepad_axes_to_control(self.axes(left_x=0.05)).steer == 0.0
+        assert drive.gamepad_axes_to_control(self.axes(stick_x=0.05)).steer == 0.0
 
     def test_stick_is_rescaled_past_the_deadzone(self):
         """A plain cut would leave the first 8% dead and full deflection unreachable."""
         edge = drive.GAMEPAD_DEADZONE
-        assert drive.gamepad_axes_to_control(self.axes(left_x=edge)).steer == pytest.approx(0.0)
-        assert drive.gamepad_axes_to_control(self.axes(left_x=1.0)).steer == pytest.approx(1.0)
-        assert drive.gamepad_axes_to_control(self.axes(left_x=-1.0)).steer == pytest.approx(-1.0)
+        assert drive.gamepad_axes_to_control(self.axes(stick_x=edge)).steer == pytest.approx(0.0)
+        assert drive.gamepad_axes_to_control(self.axes(stick_x=1.0)).steer == pytest.approx(1.0)
+        assert drive.gamepad_axes_to_control(self.axes(stick_x=-1.0)).steer == pytest.approx(-1.0)
 
     def test_half_stick_is_roughly_half_lock(self):
-        steer = drive.gamepad_axes_to_control(self.axes(left_x=0.5)).steer
+        steer = drive.gamepad_axes_to_control(self.axes(stick_x=0.5)).steer
         assert 0.4 < steer < 0.5
 
     def test_steering_is_monotonic(self):
         values = [
-            drive.gamepad_axes_to_control(self.axes(left_x=x)).steer
+            drive.gamepad_axes_to_control(self.axes(stick_x=x)).steer
             for x in (-1, -0.5, -0.1, 0, 0.1, 0.5, 1)
         ]
         assert values == sorted(values)
@@ -191,14 +191,14 @@ class TestGamepadMapping:
         glfw = pytest.importorskip("glfw")
 
         class State:
-            axes = self.axes(left_x=0.5)
+            axes = self.axes(stick_x=0.5)
 
         monkeypatch.setattr(glfw, "get_gamepad_state", lambda jid: State())
         pad = drive.GamepadInput(0, "test")
         assert pad.control(0.0).steer == pad.control(300.0 / 3.6).steer
 
     def test_out_of_range_axes_are_clipped_not_rejected(self):
-        control = drive.gamepad_axes_to_control(self.axes(left_x=1.7, right_trigger=3.0))
+        control = drive.gamepad_axes_to_control(self.axes(stick_x=1.7, right_trigger=3.0))
         assert control.steer == 1.0 and control.throttle == 1.0
 
     def test_too_few_axes_is_an_error(self):

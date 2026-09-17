@@ -29,10 +29,11 @@ Keyboard -- arrows only, **held** keys:
              a small correction at 250 km/h (see ``steering_gain``).
 ===========  ==================================================================
 
-Gamepad (Xbox or PlayStation, through GLFW's built-in mappings) -- analog:
+Gamepad (Xbox or PlayStation, through GLFW's built-in mappings) -- analog. Steering is on the
+right stick, Payton's preference after driving with the left:
 
 ===========  ==================================================================
-  left stick X    steering, with a small deadzone so a resting stick is centred.
+  right stick X   steering, with a small deadzone so a resting stick is centred.
   right trigger   throttle, 0 to 1.
   left trigger    brake, 0 to 1.
 ===========  ==================================================================
@@ -97,7 +98,7 @@ KEYS = ("up", "down", "left", "right")
 
 #: GLFW gamepad axis indices. Spelled out so the mapping is testable without GLFW; a test
 #: checks them against the real constants.
-AXIS_LEFT_X = 0
+AXIS_STEER = 2  # right stick, X
 AXIS_LEFT_TRIGGER = 4
 AXIS_RIGHT_TRIGGER = 5
 #: Stick travel below this is treated as centred. A resting stick rarely reads exactly 0,
@@ -199,7 +200,7 @@ def gamepad_axes_to_control(
     if not 0.0 <= deadzone < 1.0:
         raise ValueError(f"deadzone must be in [0, 1), got {deadzone}")
 
-    raw = float(axes[AXIS_LEFT_X])
+    raw = float(axes[AXIS_STEER])
     if abs(raw) < deadzone:
         steer = 0.0
     else:
