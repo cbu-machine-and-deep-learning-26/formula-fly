@@ -88,15 +88,13 @@ def generate_drifting_grating(
     rows, columns = np.indices((height, width), dtype=np.float64)
     angle_radians = np.radians(direction_degrees)
     projected_position = columns * np.cos(angle_radians) + rows * np.sin(angle_radians)
-    frame_times = np.arange(num_frames, dtype=np.float64) / validated_frame_rate
-    phases = (
-        2.0
-        * np.pi
-        * (
-            projected_position[None, :, :] / period
-            - temporal_frequency * frame_times[:, None, None]
-        )
+    displacement_per_frame = temporal_frequency * period / validated_frame_rate
+    displacements = np.arange(num_frames, dtype=np.float64) * displacement_per_frame
+    wrapped_positions = np.remainder(
+        projected_position[None, :, :] - displacements[:, None, None],
+        period,
     )
+    phases = 2.0 * np.pi * wrapped_positions / period
     luminance = mean_intensity + amplitude * np.cos(phases)
     grayscale = np.rint(np.clip(luminance, 0.0, 1.0) * 255.0).astype(np.uint8)
     return np.repeat(grayscale[:, :, :, None], 3, axis=3)
