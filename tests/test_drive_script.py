@@ -147,7 +147,7 @@ class TestGamepadMapping:
     def test_axis_indices_match_glfw(self):
         """The mapping hardcodes indices so it is testable without GLFW; check them."""
         glfw = pytest.importorskip("glfw")
-        assert drive.AXIS_STEER == glfw.GAMEPAD_AXIS_RIGHT_X
+        assert drive.AXIS_STEER == glfw.GAMEPAD_AXIS_LEFT_X
         assert drive.AXIS_LEFT_TRIGGER == glfw.GAMEPAD_AXIS_LEFT_TRIGGER
         assert drive.AXIS_RIGHT_TRIGGER == glfw.GAMEPAD_AXIS_RIGHT_TRIGGER
 

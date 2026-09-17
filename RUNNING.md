@@ -99,7 +99,7 @@ Plug it in before launching; it is detected automatically.
 
 | Control | Action |
 |---|---|
-| Right stick, left/right | Steering (analog) |
+| Left stick, left/right | Steering (analog) |
 | Right trigger | Throttle (analog) |
 | Left trigger | Brake (analog) |
 

@@ -30,10 +30,10 @@ Keyboard -- arrows only, **held** keys:
 ===========  ==================================================================
 
 Gamepad (Xbox or PlayStation, through GLFW's built-in mappings) -- analog. Steering is on the
-right stick, Payton's preference after driving with the left:
+left stick, back where it started after a spell on the right:
 
 ===========  ==================================================================
-  right stick X   steering, with a small deadzone so a resting stick is centred.
+  left stick X    steering, with a small deadzone so a resting stick is centred.
   right trigger   throttle, 0 to 1.
   left trigger    brake, 0 to 1.
 ===========  ==================================================================
@@ -113,7 +113,7 @@ KEYS = ("up", "down", "left", "right")
 
 #: GLFW gamepad axis indices. Spelled out so the mapping is testable without GLFW; a test
 #: checks them against the real constants.
-AXIS_STEER = 2  # right stick, X
+AXIS_STEER = 0  # left stick, X
 AXIS_LEFT_TRIGGER = 4
 AXIS_RIGHT_TRIGGER = 5
 #: Stick travel below this is treated as centred. A resting stick rarely reads exactly 0,
