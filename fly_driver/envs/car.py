@@ -12,18 +12,20 @@ slide, and spin.
 - **steer**: position actuators on the two front kingpin hinges. Both receive the same
   command; no Ackermann correction, which is a real simplification and is fine at the
   steering angles a racing line uses.
-- **drive**: torque motors on the two rear wheel hinges.
-- **brake**: MuJoCo ``damper`` actuators, which apply ``-kv * ctrl * qvel``. Using dampers
-  rather than opposing-torque motors is deliberate: a damper's force is proportional to and
-  opposed to the current wheel velocity, so braking can slow a wheel to a stop but can
-  never drive it backwards. Hand-rolling that with a motor means computing
-  ``-sign(qvel)`` every step and getting the zero-crossing right, which chatters.
+- **drive**: torque motors on the two rear wheel hinges. The torque comes from the engine
+  curve and the engaged gear in :mod:`fly_driver.envs.powertrain`.
+- **brake**: torque motors on all four wheels. Constant torque opposing rotation, clamped
+  so a wheel can be stopped but never driven backwards. See
+  :func:`fly_driver.envs.powertrain.brake_torque` for why the earlier damper brakes, whose
+  force faded with wheel speed, were replaced.
 
 Braking is applied to all four wheels while drive is rear-only, so the car brakes straight
 but can spin its rear wheels out of a corner.
 
-The env owns the mapping from a :class:`~fly_driver.interface.ControlVector` to these
-eight numbers; see :func:`control_to_ctrl`.
+:class:`CarDynamics` owns the mapping from a :class:`~fly_driver.interface.ControlVector`
+to these eight numbers, and applies the aerodynamic forces on every substep. The bodywork
+is visual only; physics runs on one collision box, so the car drives the same whatever it
+looks like.
 """
 
 from __future__ import annotations
@@ -164,13 +166,16 @@ class CarConfig:
             front wheels' time on the ground through a corner fell from 71% to 56% and
             yaw-rate variation doubled, because more grip means more load transfer, which
             lifts wheels. Measured lateral grip did not improve.
-        camera_forward_m: Camera offset ahead of the chassis centre.
-        camera_height_m: Camera height above the chassis centre. Together these clear the
-            bodywork. Mounted at the chassis centre the car's own nose filled ~38% of the
-            frame and the eye saw almost no moving contrast -- straight-line mean frame
-            delta was 0.08/255, effectively blind. Forward and up puts the whole lower
-            field on the road instead. These are tunable because where a "fly's head"
-            belongs is partly a GH-21/GH-25 cockpit question.
+        fly_mount_x_m: Longitudinal position of the ``fly_mount`` site in the body frame:
+            the cockpit floor, where GH-21 attaches the tethered flybody. Slightly ahead
+            of the wheelbase midpoint, as a driver's seat is.
+        fly_mount_z_m: Height of that site above the axle line -- the top of the tub.
+        camera_height_above_mount_m: The head camera sits this far above the fly mount,
+            looking forward. 0.45 m is helmet-top height on a real car, and also where the
+            broadcast T-cam is. When the body was a plain 0.35 m box the camera had to
+            float over the front axle to see anything; with real bodywork the nose is low
+            enough that the eye can sit where the fly actually is. A test measures how
+            much of the frame the nose takes.
         camera_fovy_deg: Vertical field of view. A real fly sees nearly panoramically; a
             single pinhole camera cannot, so this is a compromise **GH-13 should choose**
             once the hex resampler's coverage is known.
@@ -208,8 +213,9 @@ class CarConfig:
     steer_gain: float = 12000.0
     max_actuator_torque_nm: float = 20_000.0
     wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
-    camera_forward_m: float = 1.8
-    camera_height_m: float = 1.0
+    fly_mount_x_m: float = 0.10
+    fly_mount_z_m: float = 0.17
+    camera_height_above_mount_m: float = 0.45
     camera_fovy_deg: float = 75.0
     wheel_damping: float = 0.05
     wheel_armature: float = 0.6
@@ -339,7 +345,72 @@ def car_assets_xml(config: CarConfig | None = None) -> str:
     """MJCF ``<asset>`` fragment for the car's materials."""
     del config  # Reserved: liveries or wheel textures would land here.
     return """
-    <material name="car_body" rgba="0.75 0.12 0.12 1" specular="0.4" shininess="0.6"/>"""
+    <material name="car_body" rgba="0.75 0.12 0.12 1" specular="0.4" shininess="0.6"/>
+    <material name="car_carbon" rgba="0.10 0.10 0.11 1" specular="0.3" shininess="0.4"/>
+    <material name="car_accent" rgba="0.92 0.92 0.92 1" specular="0.3" shininess="0.3"/>"""
+
+
+#: Visual-only geom attributes. No contact, no mass, and group 1 so the default viewer and
+#: the head camera both draw them. The collision box lives in group 3, which neither draws.
+_VISUAL = 'contype="0" conaffinity="0" group="1"'
+
+
+def _bodywork_xml(config: CarConfig) -> str:
+    """Low-poly F1 bodywork from primitives: tub, nose, wings, sidepods, airbox, cover.
+
+    Everything here is **visual only**. Physics still runs on the single collision box, so
+    this changes nothing about how the car drives; it changes what the fly sees and what a
+    human watching the demo sees. Proportions are the SF70H's, laid out in the body frame
+    (origin at the wheelbase midpoint at axle height, +x forward, +z up) and assume the
+    3.6 m wheelbase.
+
+    The one shape that matters for the science is the nose. It sits directly in the head
+    camera's lower field, and a tall nose would put static bodywork where the eye needs
+    moving road. It is kept low and narrow for that reason, and a test measures how much
+    of the frame it takes.
+    """
+    ground = -config.wheel_radius_m  # road surface, in the body frame
+    fw_z = ground + 0.075  # front wing main plane, just clear of the kerbs
+    return f"""
+      <!-- monocoque / tub -->
+      <geom name="body_tub" type="box" material="car_body" {_VISUAL}
+            pos="0.15 0 0.0" size="1.05 0.30 0.17"/>
+      <!-- nose: low and narrow so it stays out of the fly's view -->
+      <geom name="body_nose" type="box" material="car_body" {_VISUAL}
+            pos="1.90 0 -0.10" size="0.65 0.13 0.08"/>
+      <!-- front wing: main plane and endplates -->
+      <geom name="body_front_wing" type="box" material="car_carbon" {_VISUAL}
+            pos="2.45 0 {fw_z:.3f}" size="0.18 0.90 0.015"/>
+      <geom name="body_front_endplate_l" type="box" material="car_accent" {_VISUAL}
+            pos="2.45 0.90 {fw_z + 0.06:.3f}" size="0.18 0.012 0.075"/>
+      <geom name="body_front_endplate_r" type="box" material="car_accent" {_VISUAL}
+            pos="2.45 -0.90 {fw_z + 0.06:.3f}" size="0.18 0.012 0.075"/>
+      <!-- sidepods -->
+      <geom name="body_sidepod_l" type="box" material="car_body" {_VISUAL}
+            pos="-0.55 0.46 -0.02" size="0.85 0.16 0.15"/>
+      <geom name="body_sidepod_r" type="box" material="car_body" {_VISUAL}
+            pos="-0.55 -0.46 -0.02" size="0.85 0.16 0.15"/>
+      <!-- airbox / roll hoop behind the cockpit -->
+      <geom name="body_airbox" type="box" material="car_body" {_VISUAL}
+            pos="-0.55 0 0.36" size="0.22 0.17 0.20"/>
+      <!-- engine cover -->
+      <geom name="body_engine_cover" type="box" material="car_body" {_VISUAL}
+            pos="-1.35 0 0.12" size="0.55 0.16 0.13"/>
+      <!-- rear wing: pylon, main plane, endplates -->
+      <geom name="body_rear_pylon" type="box" material="car_carbon" {_VISUAL}
+            pos="-1.95 0 0.28" size="0.04 0.03 0.18"/>
+      <geom name="body_rear_wing" type="box" material="car_carbon" {_VISUAL}
+            pos="-2.15 0 0.45" size="0.16 0.50 0.015"/>
+      <geom name="body_rear_endplate_l" type="box" material="car_accent" {_VISUAL}
+            pos="-2.15 0.50 0.30" size="0.20 0.012 0.20"/>
+      <geom name="body_rear_endplate_r" type="box" material="car_accent" {_VISUAL}
+            pos="-2.15 -0.50 0.30" size="0.20 0.012 0.20"/>
+      <!-- Where the fly goes. GH-21 mounts the tethered flybody here and GH-25/26 pose the
+           cockpit mesh from it, so this is the one frame the body track builds against:
+           origin on the tub floor of the cockpit opening, +x forward, +z up. Group 4 keeps
+           the marker out of the head camera; toggle it on in the viewer to see it. -->
+      <site name="fly_mount" type="sphere" size="0.04" rgba="0.1 0.9 0.2 0.8" group="4"
+            pos="{config.fly_mount_x_m} 0 {config.fly_mount_z_m}"/>"""
 
 
 def car_body_xml(
@@ -359,6 +430,7 @@ def car_body_xml(
     half_base = config.wheelbase_m / 2.0
     half_front = config.track_width_front_m / 2.0
     half_rear = config.track_width_rear_m / 2.0
+    camera_z = config.fly_mount_z_m + config.camera_height_above_mount_m
 
     wheels = "".join(
         [
@@ -387,12 +459,18 @@ def car_body_xml(
                 mass="{config.mass_kg}"
                 diaginertia="{config.inertia_roll_kgm2} {config.inertia_pitch_kgm2}
                              {config.inertia_yaw_kgm2}"/>
-      <geom name="chassis" type="box" material="car_body" mass="0"
+      <!-- The collision box. Physics runs on this alone; it is in group 3 so neither the
+           viewer nor the head camera draws it, and the bodywork below is what you see. -->
+      <geom name="chassis" type="box" mass="0" group="3" rgba="0.5 0.5 0.5 0.3"
             size="{config.chassis_length_m / 2} {config.chassis_width_m / 2}
                   {config.chassis_height_m / 2}"
-            contype="{CHASSIS_CONTYPE}" conaffinity="{CHASSIS_CONAFFINITY}"/>
+            contype="{CHASSIS_CONTYPE}" conaffinity="{CHASSIS_CONAFFINITY}"/>{_bodywork_xml(config)}
+      <!-- The fly's eye: directly above the fly_mount site at helmet height, which is also
+           where a real onboard T-cam sits. Earlier the camera floated over the front axle
+           purely to clear the old box-shaped body; now that the body is shaped like a car
+           the camera can sit where the fly actually is. -->
       <camera name="fly_head" mode="fixed"
-              pos="{config.camera_forward_m} 0 {config.camera_height_m}"
+              pos="{config.fly_mount_x_m} 0 {camera_z:.4f}"
               xyaxes="0 -1 0 0 0 1" fovy="{config.camera_fovy_deg}"/>{wheels}
     </body>"""
 
