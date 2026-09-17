@@ -37,17 +37,32 @@ def test_skips_cleanly_without_optional_stack(tmp_path: os.PathLike[str]) -> Non
     assert result.stdout.startswith("SKIP:")
 
 
-def test_edge_frames_sweep_monotonically() -> None:
-    """Create a correctly shaped edge that only advances across receptors."""
+def test_edge_frames_have_timed_baseline_sweep_and_hold() -> None:
+    """Create both edge directions with the configured timing and monotone sweep."""
     smoke_module = _load_smoke_module()
     horizontal_positions = [-2.0, -1.0, 0.0, 1.0, 2.0]
+    expected_frame_count = (
+        smoke_module.EDGE_PRE_STIMULUS_FRAMES
+        + smoke_module.EDGE_SWEEP_FRAMES
+        + smoke_module.EDGE_POST_STIMULUS_FRAMES
+    )
 
-    frames = smoke_module._create_edge_frames(horizontal_positions, frame_count=5)
+    for direction in ("ltr", "rtl"):
+        frames = smoke_module._create_edge_frames(horizontal_positions, direction)
 
-    assert len(frames) == 5
-    assert all(len(frame) == len(horizontal_positions) for frame in frames)
-    bright_counts = [sum(frame) for frame in frames]
-    assert bright_counts == sorted(bright_counts)
-    for receptor_index in range(len(horizontal_positions)):
-        receptor_values = [frame[receptor_index] for frame in frames]
-        assert receptor_values == sorted(receptor_values)
+        assert len(frames) == expected_frame_count
+        assert all(len(frame) == len(horizontal_positions) for frame in frames)
+        pre_stimulus = frames[: smoke_module.EDGE_PRE_STIMULUS_FRAMES]
+        assert all(frame == [0.5] * len(horizontal_positions) for frame in pre_stimulus)
+
+        sweep_start = smoke_module.EDGE_PRE_STIMULUS_FRAMES
+        sweep_stop = sweep_start + smoke_module.EDGE_SWEEP_FRAMES
+        sweep_frames = frames[sweep_start:sweep_stop]
+        bright_counts = [sum(frame) for frame in sweep_frames]
+        assert bright_counts == sorted(bright_counts)
+        for receptor_index in range(len(horizontal_positions)):
+            receptor_values = [frame[receptor_index] for frame in sweep_frames]
+            assert receptor_values == sorted(receptor_values)
+
+        post_stimulus = frames[sweep_stop:]
+        assert all(frame == sweep_frames[-1] for frame in post_stimulus)

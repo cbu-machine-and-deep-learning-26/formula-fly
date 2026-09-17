@@ -20,13 +20,21 @@ MOTION_READOUTS = (
     "T5d",
 )
 FRAME_COUNT = 4
-EDGE_FRAME_COUNT = 10
 HEXAL_COUNT = 721
 FRAME_INTERVAL_SECONDS = 1 / 50
+EDGE_PRE_STIMULUS_FRAMES = 25
+EDGE_SWEEP_FRAMES = 50
+EDGE_POST_STIMULUS_FRAMES = 10
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--direction",
+        choices=("ltr", "rtl"),
+        default="ltr",
+        help="Edge sweep direction (default: ltr).",
+    )
     parser.add_argument(
         "--plot",
         type=Path,
@@ -54,32 +62,45 @@ def _create_ramp_sequence(torch: Any) -> Any:
 
 
 def _create_edge_frames(
-    horizontal_positions: Sequence[float], frame_count: int = EDGE_FRAME_COUNT
+    horizontal_positions: Sequence[float], direction: str
 ) -> list[list[float]]:
     if not horizontal_positions:
         raise ValueError("horizontal_positions must not be empty")
-    if frame_count < 2:
-        raise ValueError("frame_count must be at least 2")
+    if direction not in {"ltr", "rtl"}:
+        raise ValueError("direction must be 'ltr' or 'rtl'")
 
     left_edge = min(horizontal_positions)
     right_edge = max(horizontal_positions)
+    baseline = [0.5] * len(horizontal_positions)
     thresholds = [
-        left_edge + (right_edge - left_edge) * frame / (frame_count - 1)
-        for frame in range(frame_count)
+        left_edge + (right_edge - left_edge) * frame / (EDGE_SWEEP_FRAMES - 1)
+        for frame in range(EDGE_SWEEP_FRAMES)
     ]
-    return [
-        [1.0 if position <= threshold else 0.0 for position in horizontal_positions]
+    if direction == "rtl":
+        thresholds.reverse()
+    sweep_frames = [
+        [
+            1.0
+            if (position <= threshold if direction == "ltr" else position >= threshold)
+            else 0.0
+            for position in horizontal_positions
+        ]
         for threshold in thresholds
     ]
+    return (
+        [baseline.copy() for _ in range(EDGE_PRE_STIMULUS_FRAMES)]
+        + sweep_frames
+        + [sweep_frames[-1].copy() for _ in range(EDGE_POST_STIMULUS_FRAMES)]
+    )
 
 
-def _create_edge_sequence(torch: Any) -> Any:
+def _create_edge_sequence(torch: Any, direction: str) -> Any:
     from flyvis.utils.hex_utils import get_hex_coords, get_hextent, hex_to_pixel
 
     extent = get_hextent(HEXAL_COUNT)
     horizontal_hex, vertical_hex = get_hex_coords(extent)
     horizontal_pixels, _ = hex_to_pixel(horizontal_hex, vertical_hex)
-    frames = _create_edge_frames(horizontal_pixels.tolist())
+    frames = _create_edge_frames(horizontal_pixels.tolist(), direction)
     return torch.tensor(frames, dtype=torch.float32)[None, :, None, :]
 
 
@@ -89,9 +110,53 @@ def _find_missing_readouts(
     return sorted(set(requested_readouts) - set(available_readouts))
 
 
+def _get_plot_frames(stimulus_name: str, frame_count: int) -> list[int]:
+    if stimulus_name != "edge":
+        return list(range(frame_count))
+
+    sweep_start = EDGE_PRE_STIMULUS_FRAMES
+    sweep_frames = [
+        sweep_start
+        + round(
+            sample * (EDGE_SWEEP_FRAMES - 1) / 6,
+        )
+        for sample in range(7)
+    ]
+    return [0, sweep_start - 1, *sweep_frames, frame_count - 1]
+
+
+def _print_edge_metrics(responses: Any, direction: str) -> None:
+    sweep_start = EDGE_PRE_STIMULUS_FRAMES
+    sweep_stop = sweep_start + EDGE_SWEEP_FRAMES
+    means = {
+        readout: float(responses[readout][:, sweep_start:sweep_stop].mean())
+        for readout in MOTION_READOUTS
+    }
+    for readout in MOTION_READOUTS:
+        print(f"edge {direction} sweep mean {readout}: {means[readout]:.6f}")
+
+    for family in ("T4", "T5"):
+        for first_subtype, second_subtype in (("a", "b"), ("c", "d")):
+            first_readout = f"{family}{first_subtype}"
+            second_readout = f"{family}{second_subtype}"
+            denominator = abs(means[first_readout]) + abs(means[second_readout])
+            contrast = (
+                (means[first_readout] - means[second_readout]) / denominator
+                if denominator
+                else 0.0
+            )
+            print(
+                f"edge {direction} contrast ({first_readout}-{second_readout})/"
+                f"(|{first_readout}|+|{second_readout}|): {contrast:.6f}"
+            )
+        horizontal_winner = max((f"{family}a", f"{family}b"), key=means.__getitem__)
+        print(f"edge {direction} horizontal winner {family}: {horizontal_winner}")
+
+
 def _save_plots(
     plot_prefix: Path,
     stimulus_name: str,
+    direction: str,
     sequence: Any,
     responses: Any,
 ) -> tuple[Path, Path]:
@@ -109,18 +174,20 @@ def _save_plots(
     response_path = Path(f"{plot_prefix}_responses.png")
 
     frame_count = sequence.shape[1]
+    plot_frames = _get_plot_frames(stimulus_name, frame_count)
     input_figure, input_axes = plt.subplots(
         1,
-        frame_count,
-        figsize=(1.6 * frame_count, 2),
+        len(plot_frames),
+        figsize=(1.6 * len(plot_frames), 2),
         layout="constrained",
         squeeze=False,
     )
     input_scalarmapper = None
-    for frame in range(frame_count):
+    for column, frame in enumerate(plot_frames):
+        input_axes[0, column].set_facecolor("#808080")
         _, _, (_, input_scalarmapper) = quick_hex_scatter(
             sequence[0, frame, 0],
-            ax=input_axes[0, frame],
+            ax=input_axes[0, column],
             cbar=False,
             cmap=plt.get_cmap("gray"),
             fig=input_figure,
@@ -128,7 +195,10 @@ def _save_plots(
             vmin=0,
             vmax=1,
         )
-    input_figure.suptitle(f"{stimulus_name.capitalize()} input on flyvis retina")
+    stimulus_label = (
+        f"{stimulus_name} {direction}" if stimulus_name == "edge" else stimulus_name
+    )
+    input_figure.suptitle(f"{stimulus_label.capitalize()} input on flyvis retina")
     input_figure.colorbar(
         input_scalarmapper,
         ax=input_axes.ravel().tolist(),
@@ -144,17 +214,18 @@ def _save_plots(
     response_limit = float(motion_responses.abs().max())
     response_figure, response_axes = plt.subplots(
         len(MOTION_READOUTS),
-        frame_count,
-        figsize=(1.6 * frame_count, 1.45 * len(MOTION_READOUTS)),
+        len(plot_frames),
+        figsize=(1.6 * len(plot_frames), 1.45 * len(MOTION_READOUTS)),
         layout="constrained",
         squeeze=False,
     )
     response_scalarmapper = None
     for row, readout in enumerate(MOTION_READOUTS):
-        for frame in range(frame_count):
+        for column, frame in enumerate(plot_frames):
+            response_axes[row, column].set_facecolor("#808080")
             _, _, (_, response_scalarmapper) = quick_hex_scatter(
                 motion_responses[row, frame],
-                ax=response_axes[row, frame],
+                ax=response_axes[row, column],
                 cbar=False,
                 cmap=plt.get_cmap("coolwarm"),
                 fig=response_figure,
@@ -163,8 +234,8 @@ def _save_plots(
                 vmin=-response_limit,
                 vmax=response_limit,
             )
-            if frame == 0:
-                response_axes[row, frame].text(
+            if column == 0:
+                response_axes[row, column].text(
                     -0.2,
                     0.5,
                     readout,
@@ -172,11 +243,11 @@ def _save_plots(
                     fontweight="bold",
                     ha="right",
                     rotation=90,
-                    transform=response_axes[row, frame].transAxes,
+                    transform=response_axes[row, column].transAxes,
                     va="center",
                 )
     response_figure.suptitle(
-        f"T4/T5 responses to {stimulus_name} stimulus (shared scale)"
+        f"T4/T5 responses to {stimulus_label} stimulus (shared scale)"
     )
     response_figure.colorbar(
         response_scalarmapper,
@@ -224,7 +295,7 @@ def main() -> int:
     network.requires_grad_(False)
 
     if args.stimulus == "edge":
-        sequence = _create_edge_sequence(torch)
+        sequence = _create_edge_sequence(torch, args.direction)
     else:
         sequence = _create_ramp_sequence(torch)
     responses = network.simulate(
@@ -256,12 +327,12 @@ def main() -> int:
         print(f"{readout} shape: {tuple(response.shape)}")
     print(f"concatenated readout shape: {tuple(readout_vector.shape)}")
     if args.stimulus == "edge":
-        for readout in MOTION_READOUTS:
-            print(f"edge mean {readout}: {float(responses[readout].mean()):.6f}")
+        _print_edge_metrics(responses, args.direction)
     if args.plot is not None:
         input_path, response_path = _save_plots(
             args.plot,
             args.stimulus,
+            args.direction,
             sequence,
             responses,
         )
