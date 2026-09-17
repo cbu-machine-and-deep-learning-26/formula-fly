@@ -148,6 +148,7 @@ class TestFont:
             "LAST",
             "BEST",
             "LAP 0",
+            "OUT",
             "T",
             "B",
             "-1",
@@ -394,6 +395,11 @@ class TestLapTimesOnThePanel:
     def test_the_best_time_is_picked_out(self):
         img = draw(lap_best=92.117)
         assert (img == np.array(hud._BEST, np.uint8)).all(axis=2).any()
+
+    def test_the_out_lap_is_labelled(self):
+        """Before the first crossing there is no lap time, and a dash would read as a
+        missing value rather than "the clock has not started"."""
+        assert not np.array_equal(draw(on_out_lap=True), draw(on_out_lap=False))
 
     def test_the_lap_counter_changes_the_picture(self):
         assert not np.array_equal(draw(lap_count=1), draw(lap_count=2))

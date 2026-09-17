@@ -628,7 +628,11 @@ def assemble_model_xml(
     a different car. Everything that builds a model goes through here.
     """
     car = car or CarConfig()
-    position, yaw = centerline.pose_at(0.0)
+    scene = scene or SceneConfig()
+    # Behind the start line, not on it, so the first lap is timed from the crossing
+    # rather than from a standing start wherever the simulator booted.
+    grid = (centerline.length - scene.grid_offset_m) % centerline.length
+    position, yaw = centerline.pose_at(grid)
     return build_scene_xml(
         centerline,
         scene,

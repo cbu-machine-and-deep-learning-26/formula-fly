@@ -84,6 +84,13 @@ def parse_lap_time(text: str) -> float | None:
     return value if value > 0 else None
 
 
+def _fraction_of(part: float, whole: float) -> float:
+    """``part / whole`` clamped to [0, 1], for interpolating back within one step."""
+    if whole <= 0:
+        return 0.0
+    return min(1.0, max(0.0, part / whole))
+
+
 @dataclass(frozen=True)
 class LapEntry:
     """One row of the record book.
@@ -117,6 +124,11 @@ class LapTimer:
         max_step_m: Forward progress larger than this in a single update is treated as a
             teleport (a reset, or a car dropped back onto the track) and re-anchors the
             timer instead of counting. At 350 km/h a 50 Hz step covers about 2 m.
+        start_on_crossing: Wait for the car to cross the start line before timing anything.
+            This is what makes the out lap work: the car is parked behind the line, drives
+            up to it, and lap one is timed from the crossing rather than from wherever the
+            simulator happened to boot. Set ``False`` to time from :meth:`reset` instead,
+            which is what a training environment starting on the line wants.
     """
 
     def __init__(
@@ -125,6 +137,7 @@ class LapTimer:
         *,
         min_lap_seconds: float = 20.0,
         max_step_m: float = 50.0,
+        start_on_crossing: bool = True,
     ) -> None:
         if min_lap_seconds < 0:
             raise ValueError(f"min_lap_seconds must be non-negative, got {min_lap_seconds}")
@@ -133,25 +146,39 @@ class LapTimer:
         self.centerline = centerline
         self.min_lap_seconds = float(min_lap_seconds)
         self.max_step_m = float(max_step_m)
+        self.start_on_crossing = bool(start_on_crossing)
         self._previous_s: float | None = None
+        self._previous_time = 0.0
         self._progress = 0.0
         self._lap_started_at = 0.0
+        self._timing = not self.start_on_crossing
         self.last_lap: float | None = None
         self.completed = 0
 
     def reset(self, arclength: float = 0.0, now: float = 0.0) -> None:
-        """Start a fresh lap from here. Call at an episode boundary."""
+        """Start a fresh out lap from here. Call at an episode boundary."""
         self._previous_s = float(arclength)
+        self._previous_time = float(now)
         self._progress = 0.0
         self._lap_started_at = float(now)
+        self._timing = not self.start_on_crossing
+
+    @property
+    def timing(self) -> bool:
+        """False while the car is still on its way to the line for the first time."""
+        return self._timing
 
     def current_lap_time(self, now: float) -> float:
-        """Seconds since the current lap began."""
+        """Seconds since the current lap began, or 0 while still on the out lap."""
+        if not self._timing:
+            return 0.0
         return max(0.0, float(now) - self._lap_started_at)
 
     @property
     def lap_fraction(self) -> float:
         """How far round the current lap the car is, 0 to 1."""
+        if not self._timing:
+            return 0.0
         return min(1.0, max(0.0, self._progress / self.centerline.length))
 
     def update(self, arclength: float, now: float) -> float | None:
@@ -161,27 +188,44 @@ class LapTimer:
             arclength: Distance along the centerline, from :meth:`Centerline.project`.
             now: Simulation time in seconds.
         """
-        arclength = float(arclength)
+        arclength, now = float(arclength), float(now)
         if self._previous_s is None:
             self.reset(arclength, now)
             return None
 
-        delta = self.centerline.progress_delta(self._previous_s, arclength)
-        self._previous_s = arclength
+        previous_s, previous_time = self._previous_s, self._previous_time
+        delta = self.centerline.progress_delta(previous_s, arclength)
+        self._previous_s, self._previous_time = arclength, now
+        step_seconds = now - previous_time
+
         if abs(delta) > self.max_step_m:
             # A jump this big is not driving. Re-anchor without crediting the distance,
             # so a reset or a shortcut across the infield cannot hand out a free lap.
             self._progress = 0.0
-            self._lap_started_at = float(now)
+            self._lap_started_at = now
+            return None
+
+        if not self._timing:
+            # On the out lap, watching for the start line. Crossing it forwards is the
+            # one case where arclength goes *down* while progress goes up.
+            if delta > 0 and arclength < previous_s:
+                self._lap_started_at = now - _fraction_of(arclength, delta) * step_seconds
+                self._progress = arclength
+                self._timing = True
             return None
 
         self._progress += delta
         if self._progress < self.centerline.length:
             return None
 
-        lap_time = float(now) - self._lap_started_at
-        self._progress -= self.centerline.length
-        self._lap_started_at = float(now)
+        # Interpolate back to the instant the line was actually crossed. A whole control
+        # step is 20 ms at 50 Hz, which is a tenth of the gap between a good lap and a
+        # great one, and it would be charged to every lap in the record book.
+        overshoot = self._progress - self.centerline.length
+        crossed_at = now - _fraction_of(overshoot, delta) * step_seconds
+        lap_time = crossed_at - self._lap_started_at
+        self._progress = overshoot
+        self._lap_started_at = crossed_at
         if lap_time < self.min_lap_seconds:
             return None
         self.last_lap = lap_time

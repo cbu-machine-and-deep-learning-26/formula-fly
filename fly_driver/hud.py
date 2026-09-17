@@ -124,6 +124,7 @@ _FONT: dict[str, tuple[str, ...]] = {
     "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
     "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
     "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
     "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
     "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
     "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
@@ -177,6 +178,8 @@ class Telemetry:
         lap_best: The record, read from the lap-time document -- not from anything this
             process remembers, so deleting a row changes what is shown.
         lap_count: Laps completed this session.
+        on_out_lap: True while the car is still driving up to the line for the first
+            time, when there is no lap time to show yet.
     """
 
     speed_kmh: float
@@ -191,6 +194,7 @@ class Telemetry:
     lap_last: float | None = None
     lap_best: float | None = None
     lap_count: int = 0
+    on_out_lap: bool = False
 
 
 def rpm_fraction(rpm: float, limiter_rpm: float) -> float:
@@ -436,8 +440,9 @@ def render(
 
     # Lap times. BEST comes from the lap-time document, so it reflects whatever rows are
     # in the file right now -- delete one and this changes.
+    current = "OUT" if telemetry.on_out_lap else _lap_text(telemetry.lap_current)
     rows = (
-        ("CUR", _lap_text(telemetry.lap_current), _TEXT),
+        ("CUR", current, _TEXT),
         ("LAST", _lap_text(telemetry.lap_last), _DIM),
         ("BEST", _lap_text(telemetry.lap_best), _BEST),
     )

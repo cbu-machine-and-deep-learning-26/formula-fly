@@ -44,6 +44,9 @@ and brake as bars, steering as a bar running -1 to +1 as the ControlVector does,
 of each coilover, lap times, and a map of the circuit with a fly marking where you are.
 ``--no-hud`` suppresses it.
 
+The car starts behind the start line, and the clock only begins when it first crosses:
+the panel shows ``OUT`` until then, so the run-up is not charged to lap one.
+
 Every completed lap is appended to the lap-time document (``lap_times.md`` by default,
 ``--lap-log`` to point elsewhere, ``--no-lap-log`` to time laps without writing them down).
 The best time on the panel is read back out of that document rather than remembered here,
@@ -406,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
                             # while the sim is running changes this immediately.
                             lap_best=None if lap_log is None else lap_log.best(),
                             lap_count=lap_timer.completed,
+                            on_out_lap=not lap_timer.timing,
                         )
                     )
 

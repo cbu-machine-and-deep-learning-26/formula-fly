@@ -68,7 +68,11 @@ class TestParseLapTime:
 
 
 class TestLapTimer:
-    """Driven by feeding arclengths directly, which is what the sim loop does."""
+    """Driven by feeding arclengths directly, which is what the sim loop does.
+
+    These start timing from ``reset`` so they test accumulate-and-complete on its own;
+    the out-lap behaviour that the drive script uses is in :class:`TestOutLap`.
+    """
 
     def _drive(self, timer, centerline, *, laps=1.0, steps=400, start_time=0.0, dt=0.1):
         """Drive smoothly forward, returning every lap time that came back."""
@@ -82,28 +86,28 @@ class TestLapTimer:
         return times
 
     def test_one_lap_round_is_one_lap(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         times = self._drive(timer, square, laps=1.0, steps=400, dt=0.1)
         assert len(times) == 1
         assert times[0] == pytest.approx(40.0, abs=0.2)
 
     def test_three_laps_are_three_laps(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         times = self._drive(timer, square, laps=3.0, steps=1200, dt=0.1)
         assert len(times) == 3
         assert timer.completed == 3
 
     def test_half_a_lap_is_no_lap(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         assert self._drive(timer, square, laps=0.5, steps=200, dt=0.1) == []
 
     def test_reversing_over_the_line_does_not_award_a_lap(self, square):
         """Creep up to the line, back over it, and forward again. That is metres of
         driving, not a lap, and a naive crossing detector would count one or even two."""
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         t = 0.0
         laps = []
@@ -116,7 +120,7 @@ class TestLapTimer:
         assert laps == []
 
     def test_going_backwards_must_be_made_up_again(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         t = 0.0
         for s in np.linspace(0, 300, 60)[1:]:  # three quarters round
@@ -133,34 +137,34 @@ class TestLapTimer:
 
     def test_a_teleport_does_not_count_as_progress(self, square):
         """A reset, or a car dropped back on track, must not gift most of a lap."""
-        timer = LapTimer(square, min_lap_seconds=0.0, max_step_m=50.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, max_step_m=50.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         timer.update(10.0, 0.1)
         assert timer.update(190.0, 0.2) is None  # 180 m in one step
         assert timer.lap_fraction == 0.0
 
     def test_implausibly_fast_laps_are_dropped(self, square):
-        timer = LapTimer(square, min_lap_seconds=30.0)
+        timer = LapTimer(square, min_lap_seconds=30.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         times = self._drive(timer, square, laps=1.0, steps=400, dt=0.01)  # 4 s lap
         assert times == []
 
     def test_lap_fraction_tracks_progress(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         for s in np.linspace(0, 200, 40)[1:]:
             timer.update(float(s), 1.0)
         assert timer.lap_fraction == pytest.approx(0.5, abs=0.02)
 
     def test_current_lap_time_counts_up_and_resets(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         timer.reset(0.0, 100.0)
         assert timer.current_lap_time(105.0) == pytest.approx(5.0)
         self._drive(timer, square, laps=1.0, steps=400, start_time=100.0, dt=0.1)
         assert timer.current_lap_time(140.5) == pytest.approx(0.5, abs=0.2)
 
     def test_the_first_sample_only_anchors(self, square):
-        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
         assert timer.update(123.0, 0.0) is None
         assert timer.lap_fraction == 0.0
 
@@ -303,7 +307,9 @@ class TestOnTheRealCircuit:
         log = LapLog(tmp_path_factory.mktemp("laps") / "lap_times.md")
         timer = LapTimer(centerline)
         laps = []
-        distance, now, dt = 0.0, 0.0, 1.0 / 50.0
+        # Behind the line, exactly as the car is placed, so this exercises the out lap.
+        distance = centerline.length - 150.0
+        now, dt = 0.0, 1.0 / 50.0
         while now < 200.0:
             position, _ = centerline.pose_at(distance % centerline.length)
             projection = centerline.project(float(position[0]), float(position[1]))
@@ -341,3 +347,114 @@ class TestOnTheRealCircuit:
         log.path.write_text(text.split("| 20")[0] + newline.join(kept) + newline, encoding="utf-8")
 
         assert log.best() == pytest.approx(entries[1])
+
+
+class TestOutLap:
+    """Payton: "start the car before the starting line, when it passes start the first lap
+    timer, rather than it starting when booting in."
+
+    So the clock is not running when the simulator opens. It starts the moment the car
+    first crosses the line, and the run-up does not count against the first lap.
+    """
+
+    def _creep(self, timer, square, path, *, dt=0.1, start=0.0):
+        """Feed a sequence of arclengths, returning any completed laps."""
+        laps, t = [], start
+        for s in path:
+            t += dt
+            result = timer.update(float(s) % square.length, t)
+            if result is not None:
+                laps.append(result)
+        return laps
+
+    def test_the_clock_is_not_running_at_boot(self, square):
+        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer.reset(square.length - 40.0, 0.0)
+        assert not timer.timing
+        assert timer.current_lap_time(10.0) == 0.0
+
+    def test_crossing_the_line_starts_it(self, square):
+        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer.reset(square.length - 40.0, 0.0)
+        self._creep(timer, square, np.arange(square.length - 38.0, square.length + 10.0, 2.0))
+        assert timer.timing
+
+    def test_the_run_up_is_not_charged_to_the_first_lap(self, square):
+        """The whole point. Drive 200 m up to the line, then a lap: the lap time is the
+        lap, not the lap plus however long the car sat there at boot."""
+        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer.reset(square.length - 200.0, 0.0)
+        # 200 m of out lap at 2 m per 0.1 s step = 10 s that must not be counted
+        out = np.arange(square.length - 198.0, square.length + 1.0, 2.0)
+        self._creep(timer, square, out)
+        assert timer.completed == 0
+
+        lap = np.arange(2.0, square.length + 3.0, 2.0)
+        laps = self._creep(timer, square, lap, start=len(out) * 0.1)
+        assert len(laps) == 1
+        assert laps[0] == pytest.approx(square.length / 20.0, abs=0.15)
+
+    def test_an_out_lap_that_never_reaches_the_line_times_nothing(self, square):
+        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer.reset(square.length - 100.0, 0.0)
+        self._creep(timer, square, np.arange(square.length - 98.0, square.length - 10.0, 2.0))
+        assert not timer.timing
+        assert timer.completed == 0
+
+    def test_lap_fraction_stays_at_zero_on_the_out_lap(self, square):
+        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer.reset(square.length - 100.0, 0.0)
+        self._creep(timer, square, np.arange(square.length - 98.0, square.length - 20.0, 2.0))
+        assert timer.lap_fraction == 0.0
+
+    def test_reversing_before_the_line_still_does_not_start_it(self, square):
+        timer = LapTimer(square, min_lap_seconds=0.0)
+        timer.reset(square.length - 30.0, 0.0)
+        self._creep(
+            timer, square, [square.length - 20.0, square.length - 25.0, square.length - 15.0]
+        )
+        assert not timer.timing
+
+    def test_timing_from_reset_is_still_available(self, square):
+        """A training env that starts on the line wants the clock running immediately."""
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        assert timer.timing
+        assert timer.current_lap_time(5.0) == pytest.approx(5.0)
+
+
+class TestSubStepAccuracy:
+    """A control step is 20 ms at 50 Hz. Charging a whole one to every lap would put a
+    fifth of a tenth on each time in the record book, always in the same direction."""
+
+    def test_the_lap_time_is_not_quantised_to_the_step(self, square):
+        """Drive a lap whose true time falls between two samples and check the answer is
+        the true time, not the sample boundary."""
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        speed, dt = 7.0, 0.1  # 400 m / 7 = 57.142857 s, not a multiple of 0.1
+        distance, t = 0.0, 0.0
+        got = None
+        while t < 120.0:
+            distance += speed * dt
+            t += dt
+            result = timer.update(distance % square.length, t)
+            if result is not None:
+                got = result
+                break
+        assert got == pytest.approx(square.length / speed, abs=1e-3)
+
+    def test_consecutive_laps_do_not_drift(self, square):
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        speed, dt = 7.0, 0.1
+        distance, t, laps = 0.0, 0.0, []
+        while t < 300.0:
+            distance += speed * dt
+            t += dt
+            result = timer.update(distance % square.length, t)
+            if result is not None:
+                laps.append(result)
+        assert len(laps) >= 4
+        for lap in laps:
+            assert lap == pytest.approx(square.length / speed, abs=1e-3)
