@@ -158,8 +158,12 @@ class CarConfig:
             A ceiling, not a setpoint -- actual torque comes from the powertrain model.
             Wide enough that MuJoCo never silently clips a legitimate command.
         wheel_friction: MuJoCo ``friction`` triple for the tyres: sliding, torsional,
-            rolling. Sliding friction above 1 is what stops an open-wheel car understeering
-            off the road at the first corner.
+            rolling. 1.7 is mid-range for a dry slick (published 1.5-1.8).
+
+            Raising it to chase more grip measurably makes the car **worse**. At 1.8 the
+            front wheels' time on the ground through a corner fell from 71% to 56% and
+            yaw-rate variation doubled, because more grip means more load transfer, which
+            lifts wheels. Measured lateral grip did not improve.
         camera_forward_m: Camera offset ahead of the chassis centre.
         camera_height_m: Camera height above the chassis centre. Together these clear the
             bodywork. Mounted at the chassis centre the car's own nose filled ~38% of the

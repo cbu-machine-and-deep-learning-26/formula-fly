@@ -65,11 +65,12 @@ KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 263, 262, 265, 264
 #: Step size of the longitudinal axis per key press.
 PEDAL_STEP = 0.15
 STEER_STEP = 0.35
-#: Fraction of steering kept per control step with no key pressed. At 50 Hz this is a
-#: time constant, and it was the real cause of "turning is like 5 degrees": 0.90 decays to
-#: a third of lock in 0.2 s, so a press was gone before the car could respond. 0.995 holds
-#: a corner for about four seconds, which is long enough to actually drive one.
-STEER_RECENTRE = 0.995
+#: Fraction of steering kept per control step with no key pressed. At 50 Hz this sets a
+#: time constant, and it has been wrong in both directions. 0.90 decayed in 0.2 s, so a
+#: press was gone before the car could respond ("turning is like 5 degrees"). 0.995 held
+#: for four seconds, so the car would not straighten up after a corner. 0.96 gives about
+#: half a second, which is roughly how fast a real wheel self-centres when released.
+STEER_RECENTRE = 0.96
 CONTROL_HZ = 50
 
 

@@ -120,23 +120,24 @@ class TestSteering:
         state.on_key(drive.KEY_RIGHT)
         assert state.steer > 0
 
-    def test_steering_recentres_when_left_alone(self, state):
-        """Recentring is deliberately slow -- about four seconds at 50 Hz. The previous
-        0.2 s decay was the real cause of "turning is like 5 degrees": a press was gone
-        before the car could respond."""
+    def test_steering_recentres_within_about_a_second(self, state):
+        """Both ends of this have been wrong. At 0.90 the decay was 0.2 s and a press was
+        gone before the car responded; at 0.995 it was four seconds and the car would not
+        straighten after a corner. One second of settling should have it essentially
+        centred."""
         state.on_key(drive.KEY_RIGHT)
-        for _ in range(3000):
+        for _ in range(50):  # one second at 50 Hz
             state.settle()
-        assert state.steer == 0.0
+        assert state.steer < 0.15
 
-    def test_steering_still_holds_a_corner_for_seconds(self, state):
-        """The other half of the same property: at 50 Hz, steering must survive long
-        enough to actually drive a corner."""
+    def test_steering_survives_long_enough_to_turn_in(self, state):
+        """The other half: a press has to last long enough for the car to react. A tenth
+        of a second of settling must not have thrown the input away."""
         state.on_key(drive.KEY_RIGHT)
         held = state.steer
-        for _ in range(100):  # two seconds
+        for _ in range(5):
             state.settle()
-        assert state.steer > 0.3 * held
+        assert state.steer > 0.7 * held
 
     def test_steering_does_not_snap_straight_to_centre(self, state):
         """One settle should decay, not zero it -- otherwise steering is unusable."""
