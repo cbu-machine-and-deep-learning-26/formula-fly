@@ -1,0 +1,26 @@
+name: Chore
+description: Tooling, CI, git hygiene, or non-user-facing cleanup.
+title: "[chore] "
+labels: [documentation]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues; this is not a duplicate.
+          required: true

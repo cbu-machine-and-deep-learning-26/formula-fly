@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/cbu-machine-and-deep-learning-26/formula-fly/security
+    about: Sensitive issues — see SECURITY.md. Do not file exploits in public bugs.
