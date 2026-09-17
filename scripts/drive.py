@@ -9,17 +9,30 @@ Run it::
 
     ./.venv/Scripts/python.exe scripts/drive.py
 
-Controls (press, not hold -- the viewer reports key presses, not key state):
+Controls -- **arrow keys only**, by design:
 
 ===========  ==================================================================
-  W / S      throttle up / down, in steps. Behaves like cruise control: it holds
-             where you leave it.
-  A / D      steer left / right. Recentres on its own when you stop pressing.
-  SPACE      brake. Applies for a short pulse, then releases.
-  TAB        cycle cameras -- press it to sit in the fly's head camera.
-  R          reset to the start line.
-  ESC        quit.
+  UP / DOWN  one longitudinal axis: up adds throttle, down backs it off and then
+             applies the brakes. It holds where you leave it, like cruise
+             control, because the viewer reports key presses and not key state.
+  LEFT/RIGHT steer. Recentres on its own when you stop pressing.
 ===========  ==================================================================
+
+Everything else is MuJoCo's own viewer binding, and those take precedence:
+
+===========  ==================================================================
+  [ and ]    cycle cameras -- press ] to sit in the fly_head camera.
+  ESC        back to the free camera (orbit with the mouse).
+  SPACE      pause / resume the physics.
+  BACKSPACE  reset the simulation to the start line.
+  F1         the viewer's full shortcut list.
+===========  ==================================================================
+
+WASD is deliberately unused. The viewer binds letter keys to render flags -- W
+toggles wireframe, and number keys toggle geom-group visibility -- so a driving
+control on a letter fires the render flag *as well as* the control. An earlier
+version of this script bound throttle to W and the brake to SPACE, which meant
+braking also paused the simulation.
 
 ``--export model.xml`` writes the generated MJCF instead of launching, so you can open it
 with ``python -m mujoco.viewer --mjcf=model.xml`` and drag the raw actuator sliders.
@@ -46,56 +59,53 @@ from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.scene import SceneConfig, build_scene_xml
 
 # GLFW key codes. Spelled out rather than imported so this file does not depend on glfw.
-KEY_ESCAPE, KEY_SPACE = 256, 32
-KEY_A, KEY_D, KEY_R, KEY_S, KEY_W = 65, 68, 82, 83, 87
+# Only the arrows are used: every letter and digit is already a viewer render-flag toggle.
 KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 263, 262, 265, 264
 
-THROTTLE_STEP = 0.15
+#: Step size of the longitudinal axis per key press.
+PEDAL_STEP = 0.15
 STEER_STEP = 0.25
 #: Fraction of steering kept each control step when no key is pressed. Below 1.0 the
 #: wheels drift back to centre, which makes press-only input feel like a real wheel.
 STEER_RECENTRE = 0.90
-#: Control steps a SPACE press keeps the brake applied.
-BRAKE_PULSE_STEPS = 25
 CONTROL_HZ = 50
 
 
 class DriverState:
-    """Mutable control state shared between the key callback and the sim loop."""
+    """Mutable control state shared between the key callback and the sim loop.
+
+    Throttle and brake are one signed ``pedal`` axis rather than two controls. That is
+    what lets the whole thing run on four arrow keys, which is the point: every letter
+    and digit the viewer sees is already bound to a render flag.
+    """
 
     def __init__(self) -> None:
         self.steer = 0.0
-        self.throttle = 0.0
-        self.brake_steps = 0
-        self.reset_requested = False
-        self.quit_requested = False
+        self.pedal = 0.0
 
     def on_key(self, keycode: int) -> None:
-        if keycode in (KEY_W, KEY_UP):
-            self.throttle = min(1.0, self.throttle + THROTTLE_STEP)
-        elif keycode in (KEY_S, KEY_DOWN):
-            self.throttle = max(0.0, self.throttle - THROTTLE_STEP)
-        elif keycode in (KEY_A, KEY_LEFT):
+        if keycode == KEY_UP:
+            self.pedal = min(1.0, self.pedal + PEDAL_STEP)
+        elif keycode == KEY_DOWN:
+            self.pedal = max(-1.0, self.pedal - PEDAL_STEP)
+        elif keycode == KEY_LEFT:
             self.steer = max(-1.0, self.steer - STEER_STEP)
-        elif keycode in (KEY_D, KEY_RIGHT):
+        elif keycode == KEY_RIGHT:
             self.steer = min(1.0, self.steer + STEER_STEP)
-        elif keycode == KEY_SPACE:
-            self.brake_steps = BRAKE_PULSE_STEPS
-        elif keycode == KEY_R:
-            self.reset_requested = True
-        elif keycode == KEY_ESCAPE:
-            self.quit_requested = True
 
     def settle(self) -> None:
-        """Apply per-step decay. Steering recentres; the brake pulse counts down."""
+        """Apply per-step decay. Steering recentres; the pedal axis holds."""
         self.steer *= STEER_RECENTRE
         if abs(self.steer) < 1e-3:
             self.steer = 0.0
-        self.brake_steps = max(0, self.brake_steps - 1)
+
+    @property
+    def throttle(self) -> float:
+        return max(0.0, self.pedal)
 
     @property
     def brake(self) -> float:
-        return 1.0 if self.brake_steps > 0 else 0.0
+        return max(0.0, -self.pedal)
 
 
 def build(car: CarConfig, scene: SceneConfig) -> tuple[Centerline, mujoco.MjModel]:
@@ -170,12 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         model, data, key_callback=state.on_key, show_left_ui=False, show_right_ui=False
     ) as viewer:
         last_report = 0.0
-        while viewer.is_running() and not state.quit_requested:
+        while viewer.is_running():
             step_start = time.perf_counter()
-
-            if state.reset_requested:
-                reset_to_start(model, data)
-                state.reset_requested = False
 
             commands = control_to_ctrl(state.steer, state.throttle, state.brake, car)
             for name, value in commands.items():
@@ -197,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"\r{speed * 3.6:6.1f} km/h | "
                     f"lap {projection.arclength / centerline.length * 100:5.1f}% | "
                     f"{projection.lateral:+6.2f} m {where:>8} | "
-                    f"thr {state.throttle:4.2f} steer {state.steer:+5.2f}",
+                    f"thr {state.throttle:4.2f} brk {state.brake:4.2f} "
+                    f"steer {state.steer:+5.2f}",
                     end="",
                     flush=True,
                 )
