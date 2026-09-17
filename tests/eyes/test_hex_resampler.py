@@ -19,9 +19,7 @@ from fly_driver.eyes.hex_resampler import (
 
 def _random_frame(seed: int = 0) -> np.ndarray:
     random_generator = np.random.default_rng(seed)
-    return random_generator.integers(
-        0, 256, size=DEFAULT_FRAME_SHAPE, dtype=np.uint8
-    )
+    return random_generator.integers(0, 256, size=DEFAULT_FRAME_SHAPE, dtype=np.uint8)
 
 
 def test_frame_to_gray_range_and_shape() -> None:
@@ -63,15 +61,17 @@ def test_top_left_pattern_proves_orientation_and_chirality() -> None:
     output = HexResampler().frame(frame)[0, 0, 0]
     centers = hex_receptor_centers()
     safe_margin = 2 * HEX_KERNEL_SIZE
+    lattice_radius = HEX_EXTENT * HEX_KERNEL_SIZE
+    interior = (centers.abs() <= lattice_radius - HEX_KERNEL_SIZE).all(dim=1)
 
-    top_left = (centers[:, 0] <= -safe_margin) & (
-        centers[:, 1] <= -safe_margin
+    top_left = (
+        interior & (centers[:, 0] <= -safe_margin) & (centers[:, 1] <= -safe_margin)
     )
-    top_right = (centers[:, 0] <= -safe_margin) & (
-        centers[:, 1] >= safe_margin
+    top_right = (
+        interior & (centers[:, 0] <= -safe_margin) & (centers[:, 1] >= safe_margin)
     )
-    bottom_left = (centers[:, 0] >= safe_margin) & (
-        centers[:, 1] <= -safe_margin
+    bottom_left = (
+        interior & (centers[:, 0] >= safe_margin) & (centers[:, 1] <= -safe_margin)
     )
 
     assert output[top_left].min() > 0.99
@@ -134,9 +134,7 @@ def test_batch_and_time_axes_are_independent() -> None:
 def test_matches_real_flyvis_box_eye() -> None:
     """Match flyvis BoxEye numerically when the optional package is installed."""
     flyvis_rendering = pytest.importorskip("flyvis.datasets.rendering")
-    box_eye = flyvis_rendering.BoxEye(
-        extent=HEX_EXTENT, kernel_size=HEX_KERNEL_SIZE
-    )
+    box_eye = flyvis_rendering.BoxEye(extent=HEX_EXTENT, kernel_size=HEX_KERNEL_SIZE)
     frames = np.stack([frame_to_gray(_random_frame(seed)) for seed in range(4)])
     sequence = torch.from_numpy(frames).reshape(2, 2, 96, 96)
 

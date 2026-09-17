@@ -169,9 +169,7 @@ class HexResampler:
                 f"Expected (batch, time, H, W), got {tuple(gray_sequence.shape)}"
             )
         if gray_sequence.dtype != torch.float32:
-            raise TypeError(
-                f"gray_sequence must be float32, got {gray_sequence.dtype}"
-            )
+            raise TypeError(f"gray_sequence must be float32, got {gray_sequence.dtype}")
 
         batch_size, frame_count, height, width = gray_sequence.shape
         expected_height, expected_width = self.expected_frame_shape[:2]
