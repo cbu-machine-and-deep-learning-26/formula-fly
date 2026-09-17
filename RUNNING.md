@@ -157,24 +157,42 @@ Full list: `scripts/drive.py --help`.
 ## Driving it from code
 
 `scripts/drive.py` is for humans. Anything else — a random policy, a trained one, the fly —
-goes through the environment:
+goes through the environment. It speaks the Gymnasium surface the evaluation harness expects,
+so anything that can drive `DummyTrackEnv` can drive this:
 
 ```python
 from fly_driver.envs.practice_track import PracticeTrack
-from fly_driver.interface import ControlVector
 
 with PracticeTrack(max_steps=5_000) as env:
-    frame = env.reset()                     # (96, 96, 3) uint8, from the fly's head camera
+    frame, info = env.reset(seed=0)         # (96, 96, 3) uint8, from the fly's head camera
     while True:
-        result = env.step(ControlVector(steer=0.0, throttle=1.0, brake=0.0))
-        frame = result.frame                # one step = 1/50 s of simulated time
-        if result.done:
+        action = (0.0, 1.0, 0.0)            # (steer, throttle, brake)
+        frame, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:         # one step = 1/50 s of simulated time
             break
 ```
 
-`result.info` carries the raw signals — `progress_m`, `speed_mps`, `off_track_fraction`,
-`lap_time`, `lap_completed` — and deliberately **no reward**. Picking the reward function
-belongs to the training ticket, not to the track.
+The action may be a `ControlVector`, a length-3 array, or a plain tuple. Out-of-range values
+raise rather than being quietly clipped — use `ControlVector.clipped(...)` to squash a raw
+policy output on purpose.
+
+`info` carries the raw signals a reward is built from — `progress_m`, `speed_mps`,
+`lateral_m`, `off_track_fraction` — plus `lap_complete`, `lap_time` (the **completed** lap's
+time, `None` otherwise) and `lap_elapsed_s` (the running clock). Every component of the
+reward is published separately in `info["reward_terms"]`.
+
+The default reward is distance covered, less a small penalty for running wide, plus a bonus
+for a completed lap; its constants match `DummyTrackEnv`'s so scores on the two are
+comparable. Pass your own with `PracticeTrack(reward=...)` — it takes `(info, dt)` and
+returns `(total, terms)`.
+
+### A note on reproducibility
+
+The physics is bit-identical for a given seed and action sequence. The rendering is not
+quite: MuJoCo hands rasterisation to the GPU, and two identical runs occasionally disagree
+by one level out of 255 on a scattering of subpixels along polygon edges. That is far below
+anything the eye can see, but **do not hash frames or compare them exactly** in a
+determinism check — compare the physics, or compare frames with a tolerance.
 
 ### Connecting the fly's eye
 
@@ -192,10 +210,10 @@ from fly_driver.eyes import FlyvisEye
 
 eye = FlyvisEye(frame_shape=env.frame_shape, frame_rate_hz=env.frame_rate_hz)
 
-frame = env.reset()
+frame, info = env.reset(seed=0)
 eye.reset()                      # required at every episode start — the optic lobe keeps
                                  # state between frames
-features = eye.encode(frame)     # (5768,) float32 -> brain -> policy -> ControlVector
+features = eye.encode(frame)     # (5768,) float32 -> brain -> policy -> action
 ```
 
 Two constants in `fly_driver/interface.py` hold the agreement:

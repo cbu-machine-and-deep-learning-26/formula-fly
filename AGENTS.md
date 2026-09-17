@@ -100,7 +100,8 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 
 - Proposal near-final (due Sep 18).
 - Repo scaffolding, git-flow templates, and CI skeleton merged to `develop`. The issue backlog (#13–#34) covers all ten weeks.
-- First feature in progress: the MuJoCo practice track (#16). No other application code exists yet.
+- **Landed on `develop`:** the hexagonal eye resampler (#13), the frozen flyvis eye as the default visual frontend (#14), and the standalone-stack documentation (#19, `docs/running-the-stacks.md`). The evaluation harness (#18) is in review.
+- **In progress:** the MuJoCo practice track (#16) — track, car, head camera, and the env the eye plugs into.
 - Assetto Corsa purchased.
 - Hardware confirmed: 4× DGX Spark cluster + a Windows machine. **Note:** this file says RTX 4090 in §7, but the Windows box in use reports an RTX 4060 Ti 16 GB — confirm which is correct before sizing any run against it.
 - Immediate working focus: the practice-track env (#16), then the **eye + brain track (E)** on top of it.
@@ -113,11 +114,11 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 3. Config-driven experiments (YAML or Hydra): condition = {eye_type, brain, frozen/finetuned, seed}. Logging to CSV + optional W&B. Deterministic eval protocol + video recording utility.
 4. Containerfile based on NGC PyTorch (aarch64-compatible) that installs the full stack; verify it builds and runs on one Spark. Same environment must also run on the 4090 box (x86) — keep the image multi-arch or maintain two lockfiles.
 
-### Phase 1 — the eye
-5. Install flyvis, download pretrained checkpoint(s) (the task-optimized ensemble from Lappalainen et al.).
-6. Push a single static frame through the optic lobe model end to end. Confirm output shapes and which cell-type readouts we expose as features (start with T4/T5 and downstream motion outputs; make the readout set configurable).
-7. Build the **hexagonal resampler**: practice-track camera frame (RGB; resolution and FOV are chosen in the resampler ticket and configured on the env, not fixed here) → grayscale/green channel → flyvis's 721-column hex lattice input format, with correct spatial layout and temporal handling (flyvis expects sequences; define frame-rate handling explicitly).
-8. **Verification test (required):** feed moving-edge / drifting-grating stimuli through the resampler + eye and confirm T4/T5 direction selectivity matches known preferred directions. This test gates everything downstream.
+### Phase 1 — the eye (steps 5–8 done, #13/#14/#19)
+5. ~~Install flyvis, download pretrained checkpoint(s) (the task-optimized ensemble from Lappalainen et al.).~~
+6. ~~Push a single static frame through the optic lobe model end to end. Confirm output shapes and which cell-type readouts we expose as features (start with T4/T5 and downstream motion outputs; make the readout set configurable).~~ `FlyvisEye` exposes all 34 output cell types; T4a–d and T5a–d are the default readout, 5,768 features.
+7. ~~Build the **hexagonal resampler**: practice-track camera frame (RGB; resolution and FOV are chosen in the resampler ticket and configured on the env, not fixed here) → grayscale/green channel → flyvis's 721-column hex lattice input format, with correct spatial layout and temporal handling (flyvis expects sequences; define frame-rate handling explicitly).~~ Settled at `FRAME_SHAPE = (96, 96, 3)` and `FRAME_RATE_HZ = 50.0` in `fly_driver/interface.py`; the env and the eye both read them from there.
+8. ~~**Verification test (required):** feed moving-edge / drifting-grating stimuli through the resampler + eye and confirm T4/T5 direction selectivity matches known preferred directions. This test gates everything downstream.~~ Passing, in `tests/eyes/`.
 9. Implement the three control eyes with matched output dimension: small CNN, fixed random projection, and the degree-matched shuffled-connectome variant of the flyvis network.
 
 ### Phase 2 — first learning
