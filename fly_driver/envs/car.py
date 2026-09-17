@@ -195,35 +195,31 @@ class CarConfig:
         max_actuator_torque_nm: Control range of the drive and brake motors, in N*m.
             A ceiling, not a setpoint -- actual torque comes from the powertrain model.
             Wide enough that MuJoCo never silently clips a legitimate command.
-        wheel_friction: MuJoCo ``friction`` triple for the tyres: sliding, torsional,
-            rolling. 1.7 is mid-range for a dry slick (published 1.5-1.8).
+        wheel_friction: MuJoCo ``friction`` triple for the front tyres: sliding,
+            torsional, rolling.
+        wheel_friction_rear: The same for the rear tyres, and deliberately higher.
 
-            Raising it to chase more grip measurably makes the car **worse**. At 1.8 the
-            front wheels' time on the ground through a corner fell from 71% to 56% and
-            yaw-rate variation doubled, because more grip means more load transfer, which
-            lifts wheels. Measured lateral grip did not improve.
-        wheel_friction_rear: The same triple for the rear tyres, and deliberately higher.
-            Payton asked for enough rear grip that oversteer stops being a constant
-            problem while staying reachable on purpose. MuJoCo's Coulomb friction makes
-            grip exactly proportional to load, and the car's static and aero balance both
-            put 54.5% of the load on the rear axle, so with one mu everywhere the axles
-            are equally grippy and the drive torque the rears also carry tips the car
-            into oversteer. Real rear tyres are 405 mm wide against 305 mm fronts and
-            real rubber gains grip per newton on a bigger patch; the model has no load
-            sensitivity, so the bigger patch is expressed here.
+            Both come from Assetto Corsa's tyre data for this car, but not by copying a
+            number across, because the two models do not have the same shape. AC gives
+            **both axles the same base grip** -- ``DY_REF`` is 1.88 front and rear on the
+            UltraSoft -- and separates them by *load sensitivity* instead: ``LS_EXPY`` is
+            0.78 at the front and 0.83 at the rear, so as vertical load rises the rear
+            tyre holds its grip coefficient better than the front does. That, not a
+            difference in rubber, is what lets the real car run a front-biased aero
+            balance and still put its power down.
 
-            Measured with deliberately clumsy inputs, worst sideslip reached:
+            MuJoCo's contact friction is exactly proportional to load with no way to
+            express that curve, so the axle difference has to be carried by the constant
+            instead. 1.8 and 1.9 average to 1.85, near AC's 1.88, with the spread standing
+            in for the load-sensitivity gap. Both are up from the 1.7/1.8 that preceded
+            them, which were fitted to published slick figures rather than to this car.
 
-            ==========================================  ======  ======
-            Provocation                                 mu 1.7  mu 1.8
-            ==========================================  ======  ======
-            60 km/h, full lock and full throttle        63 deg  21 deg
-            150 km/h, trail-brake then hard on the gas  24 deg   5 deg
-            120 km/h, flick left-right on the power     12 deg   6 deg
-            ==========================================  ======  ======
-
-            1.7 spun; 1.8 slides and gathers itself up. 1.85 was also tried and took even
-            the 60 km/h slide away, which is further than was asked for.
+            The limits of the substitution are measured, not assumed. A constant that
+            matches cornering necessarily over-delivers at a standing start, where the
+            real tyre is deep into load sensitivity and this one is not: at 1.8/2.0 the
+            car reached 100 km/h in 2.17 s against a real 2.6, and only came back into
+            range at 1.9. Equal grip on both axles, which is what AC literally states,
+            spins the car. Both are the same missing curve seen from different ends.
         fly_mount_x_m:
         fly_mount_x_m: Longitudinal position of the ``fly_mount`` site in the body frame:
             the cockpit floor, where GH-21 attaches the tethered flybody. Slightly ahead
@@ -278,8 +274,8 @@ class CarConfig:
     anti_roll_stiffness_front_n_m: float = 50_000.0
     anti_roll_stiffness_rear_n_m: float = 50_000.0
     max_actuator_torque_nm: float = 20_000.0
-    wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
-    wheel_friction_rear: tuple[float, float, float] = (1.8, 0.02, 0.001)
+    wheel_friction: tuple[float, float, float] = (1.8, 0.02, 0.001)
+    wheel_friction_rear: tuple[float, float, float] = (1.9, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
     fly_mount_z_m: float = 0.17
     camera_height_above_mount_m: float = 0.45
@@ -359,8 +355,13 @@ class CarConfig:
         """Longitudinal centre of pressure relative to the body origin, in metres.
 
         Derived from the aerodynamic balance the same way the centre of gravity is derived
-        from the weight split. Placing it slightly *behind* the CoG is what makes a car
-        aerodynamically stable rather than twitchy at speed.
+        from the weight split.
+
+        Sits slightly behind the CoG, which is what makes a car stable rather than twitchy
+        at speed. Worth knowing that the real car does not: the SF70H's own wing data puts
+        its centre of pressure 0.170 m *ahead* of the CoG, and this model cannot run that
+        without a load-sensitive tyre. :data:`~fly_driver.envs.aero.SF70H_AERO` has the
+        measurements.
         """
         from fly_driver.envs.aero import SF70H_AERO
 
@@ -762,25 +763,35 @@ class CarDynamics:
         the car is sliding. Downforce acts along the car's own downward axis rather than
         world -z, so a rolled car is still pressed onto the road instead of sideways.
 
-        Both act at the centre of pressure. ``xfrc_applied`` is applied at the body's
-        centre of mass, so the offset between the two is converted into an explicit
-        moment -- which is what makes ``balance_front`` do anything at all rather than
-        being a decorative config field.
+        ``xfrc_applied`` acts at the body's centre of mass, so the offset from there to the
+        centre of pressure becomes an explicit moment. That moment is taken from the
+        **downforce only**, and drag is applied through the centre of mass.
+
+        That split is deliberate and it matters. ``balance_front`` describes where
+        *downforce* acts -- it is the front/rear load split, a pitch quantity. Drag's line
+        of action is a different thing entirely, and putting it through the same point
+        invents a yaw moment that scales with sideslip: with the centre of pressure ahead
+        of the centre of mass, any slide makes drag push the nose further out instead of
+        straightening it. Measured, that turned a 4.2 g corner into a spin at 250 km/h and
+        a lateral reading of 9.95 g, which is above what the tyres and downforce can
+        physically produce. A real car resists that with fin and bodywork side area well
+        aft of the centre of pressure, which this model does not represent at all, so the
+        honest thing is not to invent the destabilising half either.
         """
         world_velocity = self._world_velocity(data)
         speed = float(np.linalg.norm(world_velocity))
         rotation = data.xmat[self._body].reshape(3, 3)
 
-        force = np.zeros(3)
+        drag = np.zeros(3)
         if speed > 1e-6:
-            force -= float(drag_n(speed, self.aero)) * (world_velocity / speed)
-        force -= float(downforce_n(speed, self.aero)) * rotation[:, 2]
+            drag = -float(drag_n(speed, self.aero)) * (world_velocity / speed)
+        downforce = -float(downforce_n(speed, self.aero)) * rotation[:, 2]
 
         offset_body = np.array(
             [self.car.centre_of_pressure_x_m - self.car.centre_of_gravity_x_m, 0.0, 0.0]
         )
-        data.xfrc_applied[self._body, :3] = force
-        data.xfrc_applied[self._body, 3:] = np.cross(rotation @ offset_body, force)
+        data.xfrc_applied[self._body, :3] = drag + downforce
+        data.xfrc_applied[self._body, 3:] = np.cross(rotation @ offset_body, downforce)
 
     def actuator_commands(self, control: ControlVector, data: mujoco.MjData) -> dict[str, float]:
         """Torques and steering angles for this control input.

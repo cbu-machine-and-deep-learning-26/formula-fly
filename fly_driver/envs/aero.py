@@ -79,18 +79,36 @@ class AeroConfig:
         return self.cla / self.cda
 
 
-#: Ferrari SF70H (2017). Chosen to reproduce published on-track performance rather than
-#: copied from a spec sheet, because teams do not publish ClA or CdA.
+#: Ferrari SF70H (2017). ``cla`` and ``cda`` are summed from Assetto Corsa's own wing data
+#: for this car; ``balance_front`` is deliberately **not**, and that gap is the interesting
+#: part.
 #:
-#: ``cda`` is set by top speed: at ~340 km/h the power available at the wheels equals
-#: ``0.5 * rho * cda * v^3``. ``cla`` is set by cornering: Copse was taken at 290 km/h in
-#: 2017, which needs roughly 5.5 g, which needs this much aero load on top of the car's
-#: weight at ``mu = 1.7``. The resulting lift-to-drag of ~3.0 lands where 2017 cars did,
-#: which is a useful independent check that the two numbers are mutually consistent.
+#: The coefficients used to be inferred -- ``cda`` back-solved from a ~340 km/h top speed,
+#: ``cla`` from Copse being taken at 290 km/h -- which gave 4.0 and 1.35. Kunos models the
+#: car as nine wings, each with a chord, span, angle and lookup tables for lift and drag
+#: against angle of attack and ride height. Summing ``chord * span * C`` over all nine at a
+#: 50 mm ride height gives 3.62 and 1.30, so the guesses were about 11% high on downforce
+#: and 4% high on drag. Lift-to-drag lands at 2.79 against the ~3.0 the inference assumed.
 #:
-#: Replaceable: once Assetto Corsa is installed, the real wing coefficients are in
-#: ``content/cars/ks_ferrari_sf70h/data.acd`` and should supersede these.
-SF70H_AERO = AeroConfig(cla=4.0, cda=1.35, balance_front=0.45)
+#: The same sum puts the centre of pressure 0.170 m **ahead** of the centre of gravity --
+#: a front aero balance of 0.503, not the 0.45 kept here. That is a real number and it is
+#: not adopted, because this model cannot run it. Measured at 250 km/h with 0.503: the car
+#: reaches 28.9 degrees of sideslip in a fast corner at 1.8/2.0 grip and spins outright at
+#: 1.8/1.9, and no friction pair tried both held the car and kept the rest of the envelope.
+#: At 0.45 the same car settles at 4.9 degrees.
+#:
+#: The reason is the tyre model, not the aero. A real front-biased aero balance is stable
+#: because the rear tyre keeps its grip coefficient better under load than the front does
+#: (see :attr:`~fly_driver.envs.car.CarConfig.wheel_friction_rear`), and MuJoCo's friction
+#: is exactly proportional to load with no way to express that. Adopting AC's balance needs
+#: load sensitivity implemented first; until then 0.45 is an honest stand-in and this
+#: comment is the record of what it stands in for.
+#:
+#: Also not modelled, from the same data: DRS, ride-height coupling (ClA runs 3.51 at 30 mm
+#: to 3.56 at 70 mm, but balance swings from +0.296 m to +0.102 m), and the dynamic wing
+#: controllers -- including one that scales front-floor downforce to zero at full steering
+#: lock, modelling the floor stalling in yaw.
+SF70H_AERO = AeroConfig(cla=3.62, cda=1.30, balance_front=0.45)
 
 
 def _dynamic_pressure(speed_mps: npt.ArrayLike, config: AeroConfig) -> npt.NDArray[np.float64]:
