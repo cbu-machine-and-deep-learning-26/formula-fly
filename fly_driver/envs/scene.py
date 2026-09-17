@@ -57,6 +57,19 @@ class SceneConfig:
             It matters beyond looks. The kerb is the outer boundary for the track-limits
             rule (see :func:`~fly_driver.envs.centerline.off_track_fraction`), so its width
             decides how far a car may run wide before the lap is thrown away.
+        racing_line: Paint a static racing line on the road.
+
+            Computed from the track's own geometry rather than recorded from a lap, so it
+            does not depend on anyone having driven well. See
+            :mod:`fly_driver.envs.racing_line`.
+
+            **It is visible to the fly's camera**, which is a real experimental decision
+            rather than a detail. A painted line is a strong, unambiguous visual cue, and
+            a policy that simply follows it is answering an easier question than "can this
+            wiring drive". Turn it off for the RQ1 comparisons, or leave it on
+            deliberately and say so. It is on by default because the people driving this
+            by hand want it.
+        racing_line_width_m: Width of the painted stripe.
         include_walls: Add collidable walls at the track edges. Off by default: the reward
             already penalises leaving the track, and walls add thousands of contact geoms
             that slow every step of every rollout.
@@ -119,6 +132,8 @@ class SceneConfig:
     texture_repeat_m: float = 8.0
     grass_texture_repeat_m: float = 5.0
     kerb_width_m: float = 1.00
+    racing_line: bool = True
+    racing_line_width_m: float = 0.18
     include_walls: bool = False
     wall_height_m: float = 0.6
     timestep: float = 0.002
@@ -466,6 +481,45 @@ def build_scene_xml(
                 f'material="kerb" contype="0" conaffinity="0" group="1"/>'
             )
 
+    line_mesh = ""
+    line_geom = ""
+    if config.racing_line and config.racing_line_width_m > 0:
+        from fly_driver.envs.racing_line import racing_line as _racing_line
+
+        line_points = _racing_line(centerline)
+        line_normals = np.stack(
+            [
+                -(np.roll(line_points, -1, axis=0) - np.roll(line_points, 1, axis=0))[:, 1],
+                (np.roll(line_points, -1, axis=0) - np.roll(line_points, 1, axis=0))[:, 0],
+            ],
+            axis=1,
+        )
+        line_normals /= np.maximum(np.linalg.norm(line_normals, axis=1, keepdims=True), 1e-9)
+        half = config.racing_line_width_m / 2.0
+        line_arclength = np.concatenate(
+            [
+                [0.0],
+                np.cumsum(np.linalg.norm(np.diff(line_points, axis=0), axis=1)),
+            ]
+        )
+        vertex, face, texcoord = _ribbon_mesh(
+            line_points + line_normals * half,
+            line_points - line_normals * half,
+            # Above the kerbs, which already sit above the road, so it is never z-fighting
+            # with either.
+            config.surface_height_m + 0.010,
+            line_arclength,
+            config.texture_repeat_m,
+        )
+        line_mesh = (
+            f'\n    <mesh name="racing_line" inertia="shell" vertex="{vertex}" '
+            f'face="{face}" texcoord="{texcoord}"/>'
+        )
+        line_geom = (
+            '\n    <geom name="racing_line_geom" type="mesh" mesh="racing_line" '
+            'material="racing_line" contype="0" conaffinity="0" group="1"/>'
+        )
+
     walls = ""
     if config.include_walls:
         for side, sign in (("left", 1.0), ("right", -1.0)):
@@ -535,11 +589,12 @@ def build_scene_xml(
              rgb1="0.85 0.1 0.1" rgb2="0.92 0.92 0.92" width="64" height="64"/>
     <material name="kerb" texture="kerb_tex"/>
     <material name="wall" rgba="0.8 0.8 0.85 1"/>
+    <material name="racing_line" rgba="0.15 0.55 0.95 0.85"/>
 
     <mesh name="road" inertia="shell"
           vertex="{road_vertex}"
           face="{road_face}"
-          texcoord="{road_texcoord}"/>{kerb_meshes}
+          texcoord="{road_texcoord}"/>{kerb_meshes}{line_mesh}
 {extra_assets}
   </asset>
 
@@ -549,7 +604,7 @@ def build_scene_xml(
     <geom name="ground" type="plane" size="0 0 1" material="grass" friction="1.0 0.005 0.0001"
           contype="{config.world_contype}" conaffinity="{config.world_conaffinity}"/>
     <geom name="road_geom" type="mesh" mesh="road" material="asphalt"
-          contype="0" conaffinity="0" group="1"/>{kerb_geoms}{walls}{scenery}
+          contype="0" conaffinity="0" group="1"/>{kerb_geoms}{line_geom}{walls}{scenery}
     <site name="start" pos="{start_position[0]:.3f} {start_position[1]:.3f} 0.05"
           euler="0 0 {start_yaw:.5f}" size="0.5 0.1 0.05" type="box" rgba="1 1 1 1"/>
 {extra_bodies}
