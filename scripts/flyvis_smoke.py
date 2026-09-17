@@ -68,7 +68,6 @@ def main() -> int:
         return 0
 
     import torch
-
     from flyvis.utils.activity_utils import LayerActivity
 
     requested_readouts = tuple(_parse_args().readouts or MOTION_READOUTS)
@@ -84,12 +83,10 @@ def main() -> int:
         as_layer_activity=True,
     )
     if not isinstance(responses, LayerActivity):
-        raise RuntimeError("flyvis did not return cell-type-indexed activity")
+        raise TypeError("flyvis did not return cell-type-indexed activity")
 
     available_readouts = tuple(responses.output_cell_types)
-    missing_readouts = _find_missing_readouts(
-        requested_readouts, available_readouts
-    )
+    missing_readouts = _find_missing_readouts(requested_readouts, available_readouts)
     if missing_readouts:
         print(f"ERROR: unavailable readouts: {', '.join(missing_readouts)}")
         return 2

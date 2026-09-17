@@ -23,6 +23,12 @@ readouts (`--readout T4a`, repeated as needed). T4a-d and T5a-d are the defaults
 It exits successfully with a `SKIP` message when the optional package or
 checkpoint is absent, so base CI does not need flyvis.
 
+Observed with flyvis 1.2.0: full response `(1, 4, 45669)`; each T4a-d/T5a-d
+readout `(1, 4, 721)`; concatenated T4/T5 readout `(1, 4, 5768)`. The model
+exposes 34 output types: T1, T2, T2a, T3, T4a-d, T5a-d, Tm1, Tm2, Tm3, Tm4,
+Tm5Y, Tm5a-c, Tm9, Tm16, Tm20, Tm28, Tm30, TmY3, TmY4, TmY5a, TmY9, TmY10,
+TmY13, TmY14, TmY15, and TmY18.
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64
