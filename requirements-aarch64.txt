@@ -1,0 +1,5 @@
+# aarch64 / DGX Spark Python deps.
+# Install inside an NVIDIA NGC PyTorch container so torch/CUDA come from the
+# base image rather than an x86-only wheel. Same scientific Python pins as
+# requirements-lock.txt; do not pip-install torch from this file.
+-r requirements-lock.txt

@@ -1,0 +1,56 @@
+name: Bug
+description: Something is broken or numerically wrong.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One failure mode per issue. Search existing issues first.
+        Numerics bugs (hex geometry, LIF, reward, shuffle degrees, eval seeds)
+        need a failing test or a recorded counterexample, not a screenshot alone.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, versus what should happen.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Commands, config YAML, seed, and platform (x86 / aarch64 / Spark / 4090).
+      placeholder: |
+        pytest tests/test_hex_resampler.py -q
+        python -c "..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: dropdown
+    id: track
+    attributes:
+      label: Track
+      options:
+        - track-e (eye / brain)
+        - track-b (body / cockpit)
+        - track-c (car / training / infra)
+        - track-v (validation / analysis)
+        - infra / docs / ci
+        - unknown
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is one outcome (not a bundle of unrelated bugs).
+          required: true

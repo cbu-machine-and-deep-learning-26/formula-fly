@@ -1,0 +1,17 @@
+condition:
+  eye_type: flyvis
+  brain: identity
+  eye_mode: frozen
+  seed: 0
+logging:
+  csv_path: outputs/metrics.csv
+  wandb: false
+eval:
+  deterministic: true
+  n_episodes: 3
+  record_video: false
+env:
+  name: dummy
+  frame_shape: [96, 96, 3]
+eye:
+  output_size: 256

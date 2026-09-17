@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.venv/
+venv/
+env/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Experiment outputs
+outputs/
+runs/
+wandb/
+checkpoints/
+*.mp4
+*.npz
+!tests/data/**
+
+# Secrets and local env
+.env
+.env.*
+*.pem
+credentials.json
+wandb_api_key
+
+# Jupyter
+.ipynb_checkpoints/

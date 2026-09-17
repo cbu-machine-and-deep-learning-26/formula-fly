@@ -1,0 +1,52 @@
+name: Feature
+description: A single, scoped outcome with acceptance criteria.
+title: "[feat] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One outcome per issue. PRs that implement this must use
+        `Closes #<n>` / `Fixes #<n>` and branch `feature/GH-<n>-<short-name>`.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What is true when this issue is done? One sentence if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist another person can verify.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: dropdown
+    id: track
+    attributes:
+      label: Track
+      options:
+        - track-e (eye / brain)
+        - track-b (body / cockpit)
+        - track-c (car / training / infra)
+        - track-v (validation / analysis)
+        - infra / docs / ci
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / constraints
+      description: Optional. Point at CLAUDE.md section, RQ number, or blocked-by issues.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues; this is not a duplicate.
+          required: true
+        - label: Scope is one outcome, not a phase dump.
+          required: true

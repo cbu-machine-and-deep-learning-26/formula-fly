@@ -1,0 +1,9 @@
+# CPU / x86 lockfile for CI and local smoke tests.
+# Does not pin NGC PyTorch, flyvis, gymnasium, or CUDA wheels.
+numpy==2.2.6
+pyyaml==6.0.2
+pytest==8.3.5
+pytest-cov==6.0.0
+ruff==0.8.6
+setuptools==75.8.0
+wheel==0.45.1
