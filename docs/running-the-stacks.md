@@ -34,6 +34,30 @@ exposes 34 output types: T1, T2, T2a, T3, T4a-d, T5a-d, Tm1, Tm2, Tm3, Tm4,
 Tm5Y, Tm5a-c, Tm9, Tm16, Tm20, Tm28, Tm30, TmY3, TmY4, TmY5a, TmY9, TmY10,
 TmY13, TmY14, TmY15, and TmY18.
 
+### Camera-to-hex geometry
+
+`fly_driver.eyes.hex_resampler.HexResampler` converts a declared
+`96 × 96 × 3` uint8 RGB frame to flyvis input `(batch, time, 1, 721)` without
+requiring flyvis at runtime. It uses BT.601 luminance
+(`0.299 R + 0.587 G + 0.114 B`) and the exact
+`flyvis.utils.hex_utils.get_hex_coords(15)` column order: `u` changes slowest,
+then `v`.
+
+For each axial `(u, v)` coordinate, the Cartesian image offsets are
+`row = 13 × (u + v / 2)` and `column = 13 × v`. Image row zero is the top, so
+negative offsets are above/left of center. At fixed `u`, increasing `v` moves
+down and right; this fixes chirality as well as orientation.
+
+The declared camera frame is deliberately projected to flyvis's 391-pixel
+sampling field, mean-filtered with a 13-pixel kernel, and sampled at receptor
+centers. Undeclared frame sizes error instead of being silently resized. The
+tests prove ordering, orientation, chirality, output parity with `BoxEye`, and
+pretrained T4/T5 direction selectivity:
+
+```bash
+pytest -q tests/eyes
+```
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64
