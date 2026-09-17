@@ -8,7 +8,10 @@ the input: if the steering bar is flicking, the car is being told to flick. The 
 bars exist because F1 springs are so stiff that nothing else shows them working.
 
 The panel is rendered here as a plain RGB array with numpy and handed to the passive
-viewer's ``set_images``, which blits it over the 3D view each frame. That keeps the whole
+viewer's ``set_images``, which blits it over the 3D view each frame. Two things about that
+API are not obvious and both cost a working panel once: it will only draw when a text
+overlay is also set, and it positions from the top of the window rather than the bottom
+that ``viewport`` implies. Both are explained at :class:`ViewerHUD`. That keeps the whole
 thing in one window, needs no toolkit, and makes every pixel testable without a display.
 Digits and labels come from a small bitmap font below rather than the viewer's text
 overlay, so the layout is under our control and the same on every machine.
@@ -293,14 +296,25 @@ def render(telemetry: Telemetry, *, limiter_rpm: float, shift_rpm: float) -> npt
 
 
 class ViewerHUD:
-    """Draws the panel in the bottom-left corner of a passive viewer window.
+    """Draws the panel in the top-left corner of a passive viewer window.
+
+    The top-left corner is not a style choice. ``viewer.viewport`` over-reports the
+    drawable area -- on the machine this was built on it claimed 1706x960 while the real
+    client area was 1365x766 -- and MuJoCo anchors its framebuffer to the window's *top*.
+    Anything placed relative to the bottom therefore lands below the visible region: the
+    first version of this panel used a 12 px bottom margin, drew itself every single frame
+    without error, and was never on screen. Calibration blocks at known offsets put the
+    cutoff at about 197 units above the reported bottom.
+
+    So the rect is measured down from ``viewport.height``, which lines up with the top of
+    the window and is the one edge that can be trusted.
 
     Args:
         viewer: The handle from :func:`mujoco.viewer.launch_passive`, or anything with its
             ``viewport`` and ``set_images``.
         limiter_rpm: The rev limit; the right end of the rpm bar.
         shift_rpm: Where the shift lights all come on.
-        margin_px: Gap from the window's left and bottom edges.
+        margin_px: Gap from the window's left and top edges.
     """
 
     def __init__(
@@ -313,13 +327,37 @@ class ViewerHUD:
         self.shift_rpm = float(shift_rpm)
         self.margin_px = int(margin_px)
 
+    def rect(self, viewport: mujoco.MjrRect) -> mujoco.MjrRect:
+        """Where the panel goes: top-left, measured down from the top of the window.
+
+        ``MjrRect.bottom`` is measured up from the framebuffer's bottom edge, so hugging
+        the top means subtracting the panel's height from the viewport height.
+        """
+        return mujoco.MjrRect(
+            self.margin_px, viewport.height - HEIGHT - self.margin_px, WIDTH, HEIGHT
+        )
+
     def update(self, telemetry: Telemetry) -> None:
-        """Redraw with this frame's telemetry. Skipped while the window is too small."""
-        window = self._viewer.viewport
-        if window is None:
+        """Redraw with this frame's telemetry.
+
+        Call this *before* ``viewer.sync()``: sync is what hands the frame to the render
+        thread. Skipped while the window is too small to hold the panel.
+        """
+        viewport = self._viewer.viewport
+        if viewport is None:
             return
-        if window.width < WIDTH + self.margin_px or window.height < HEIGHT + self.margin_px:
+        if viewport.width < WIDTH + 2 * self.margin_px:
+            return
+        if viewport.height < HEIGHT + 2 * self.margin_px:
             return
         image = render(telemetry, limiter_rpm=self.limiter_rpm, shift_rpm=self.shift_rpm)
-        rect = mujoco.MjrRect(self.margin_px, self.margin_px, WIDTH, HEIGHT)
-        self._viewer.set_images([(rect, image)])
+        # This empty text overlay is load-bearing. MuJoCo's passive viewer only runs its
+        # overlay pass when a text overlay is set, so without it set_images() is accepted
+        # every frame, raises nothing, and draws nothing at all -- which is exactly how
+        # the first version of this panel shipped invisible. Proven by A/B: identical
+        # rect and image, the only difference being this call, panel present vs absent.
+        # The strings are empty so nothing but the panel is drawn.
+        self._viewer.set_texts(
+            (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPRIGHT, "", "")
+        )
+        self._viewer.set_images([(self.rect(viewport), image)])

@@ -232,9 +232,13 @@ class _FakeViewer:
     def __init__(self, width: int, height: int) -> None:
         self.viewport = mujoco.MjrRect(0, 0, width, height)
         self.images: list = []
+        self.texts: list = []
 
     def set_images(self, viewports_images) -> None:
         self.images.append(viewports_images)
+
+    def set_texts(self, texts) -> None:
+        self.texts.append(texts)
 
 
 class TestViewerHUD:
@@ -242,13 +246,40 @@ class TestViewerHUD:
         with pytest.raises(ValueError):
             ViewerHUD(_FakeViewer(1280, 720), limiter_rpm=LIMITER, shift_rpm=LIMITER + 1)
 
-    def test_hands_the_viewer_one_panel_in_the_bottom_left(self):
+    def test_hands_the_viewer_one_panel_in_the_top_left(self):
         viewer = _FakeViewer(1280, 720)
         panel = ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT, margin_px=12)
         panel.update(frame(speed_kmh=100.0))
         [(rect, image)] = viewer.images[-1]
-        assert (rect.left, rect.bottom, rect.width, rect.height) == (12, 12, WIDTH, HEIGHT)
+        assert (rect.left, rect.width, rect.height) == (12, WIDTH, HEIGHT)
+        assert rect.bottom == 720 - HEIGHT - 12
         assert image.shape == (rect.height, rect.width, 3)
+
+    def test_the_panel_hugs_the_top_whatever_the_window_height(self):
+        """The bug this replaced: anchoring to the bottom put the panel below the visible
+        area of the window, where it drew every frame and was never seen. viewport
+        over-reports the drawable height, so only the top edge can be trusted."""
+        for height in (480, 720, 960, 1440):
+            viewer = _FakeViewer(1280, height)
+            ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT, margin_px=12).update(frame())
+            [(rect, _)] = viewer.images[-1]
+            gap_above = height - (rect.bottom + rect.height)
+            assert gap_above == 12, f"panel drifted from the top at height {height}"
+
+    def test_it_also_sets_a_text_overlay(self):
+        """Do not delete this as dead code. MuJoCo's passive viewer only runs its overlay
+        pass when a text overlay is set: without it set_images() is accepted every frame,
+        raises nothing, and draws nothing, which is how this panel first shipped
+        invisible. Proven by A/B capture of the real viewer."""
+        viewer = _FakeViewer(1280, 720)
+        ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT).update(frame())
+        assert viewer.texts, "no text overlay set; the image will not be drawn"
+
+    def test_the_text_overlay_is_empty_so_only_the_panel_shows(self):
+        viewer = _FakeViewer(1280, 720)
+        ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT).update(frame())
+        _, _, left, right = viewer.texts[-1]
+        assert (left, right) == ("", "")
 
     def test_skips_a_window_too_small_for_the_panel(self):
         viewer = _FakeViewer(300, 100)

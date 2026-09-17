@@ -348,7 +348,6 @@ def main(argv: list[str] | None = None) -> int:
                 speed = dynamics.speed_mps(data)
                 control = source.control(speed)
                 dynamics.step(control, data, substeps)
-                viewer.sync()
 
                 if hud is not None:
                     travel = dynamics.suspension_travel(data)
@@ -366,6 +365,9 @@ def main(argv: list[str] | None = None) -> int:
                             ),
                         )
                     )
+
+                # After the panel, because sync is what hands the frame to the renderer.
+                viewer.sync()
 
                 now = time.perf_counter()
                 if now - last_report > 0.5:
