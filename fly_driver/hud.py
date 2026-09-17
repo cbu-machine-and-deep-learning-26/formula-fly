@@ -1,42 +1,146 @@
-"""Telemetry window for hand-driving: speed, gear, rpm with a shift light, and the three
-control inputs as bars (GH-16).
+"""Telemetry overlay drawn inside the MuJoCo viewer window (GH-16).
 
-The kind of overlay a sim-racing game shows in the corner: throttle and brake as vertical
-bars, steering as a horizontal bar whose marker runs from -1 to +1, which is exactly the
-:class:`~fly_driver.interface.ControlVector` range. Watching those three bars is the
-quickest way to tell whether a feel problem is the car or the input -- if the steering bar
-is flicking, the car is being told to flick.
+Speed, gear, an rpm bar with a row of shift lights, throttle and brake as vertical bars,
+steering as a horizontal bar whose marker runs -1 to +1 -- the
+:class:`~fly_driver.interface.ControlVector` range -- and the travel of each coilover.
+Watching the input bars is the quickest way to tell whether a feel problem is the car or
+the input: if the steering bar is flicking, the car is being told to flick. The suspension
+bars exist because F1 springs are so stiff that nothing else shows them working.
 
-tkinter, because it ships with Python on every platform we run and needs no window of its
-own inside MuJoCo. The MuJoCo passive viewer runs its GUI on a background thread; tkinter
-must stay on the main thread, which is the one running the sim loop, so the loop pumps the
-window with :meth:`TelemetryHUD.update` each control step.
+The panel is rendered here as a plain RGB array with numpy and handed to the passive
+viewer's ``set_images``, which blits it over the 3D view each frame. That keeps the whole
+thing in one window, needs no toolkit, and makes every pixel testable without a display.
+Digits and labels come from a small bitmap font below rather than the viewer's text
+overlay, so the layout is under our control and the same on every machine.
 
-The numbers-to-pixels maths lives in small pure functions so it can be tested without a
-display. The window itself is only exercised where one exists.
+The overlay lives only in the viewer's scene. The fly's observation is rendered by
+:class:`mujoco.Renderer` from the ``fly_head`` camera and never sees it.
 """
 
 from __future__ import annotations
 
-import contextlib
+import math
+from dataclasses import dataclass
+
+import mujoco
+import numpy as np
+import numpy.typing as npt
 
 __all__ = [
-    "TelemetryHUD",
+    "HEIGHT",
+    "LED_COUNT",
+    "WIDTH",
+    "Telemetry",
+    "ViewerHUD",
     "bar_fill",
+    "leds_lit",
+    "render",
     "rpm_fraction",
     "shift_light_on",
     "steer_to_x",
+    "text_width",
 ]
 
-WIDTH, HEIGHT = 440, 250
+WIDTH, HEIGHT = 420, 168
+LED_COUNT = 10
 
-# Layout, in pixels. One place, so the drawing code below reads as geometry.
-_RPM_LEFT, _RPM_RIGHT, _RPM_TOP, _RPM_BOTTOM = 20, 340, 92, 118
-_LIGHT_CENTRE, _LIGHT_RADIUS = (385, 105), 16
-_PEDAL_TOP, _PEDAL_BOTTOM = 140, 236
-_THROTTLE_LEFT, _BRAKE_LEFT, _PEDAL_WIDTH = 20, 62, 30
-_STEER_LEFT, _STEER_RIGHT, _STEER_TOP, _STEER_BOTTOM = 130, 420, 176, 200
-_STEER_MARKER_HALF_WIDTH = 5
+#: The first shift light comes on at this fraction of the limiter; the last at the shift
+#: point. Real F1 wheels light theirs over roughly the top quarter of the range.
+LED_START_FRACTION = 0.72
+
+Colour = tuple[int, int, int]
+
+_BACKGROUND: Colour = (16, 18, 20)
+_TRACK: Colour = (52, 56, 62)
+_TEXT: Colour = (232, 232, 232)
+_DIM: Colour = (130, 136, 142)
+_THROTTLE: Colour = (57, 197, 90)
+_BRAKE: Colour = (224, 59, 59)
+_STEER: Colour = (74, 163, 255)
+_RPM: Colour = (208, 208, 208)
+_RPM_RED_ZONE: Colour = (110, 30, 30)
+_SUSP_COMPRESS: Colour = (255, 170, 60)
+_SUSP_EXTEND: Colour = (120, 170, 220)
+_LED_ON: tuple[Colour, ...] = ((40, 200, 80),) * 4 + ((235, 60, 60),) * 4 + ((90, 150, 255),) * 2
+_LED_OFF: tuple[Colour, ...] = ((28, 52, 36),) * 4 + ((60, 28, 28),) * 4 + ((30, 40, 72),) * 2
+_LED_SHIFT: Colour = (120, 180, 255)
+
+# Layout, in panel pixels with y down. One place, so the drawing code reads as geometry.
+_MARGIN = 10
+_SPEED_XY = (10, 10)
+_UNIT_XY = (92, 24)
+_RPM_TEXT_XY = (160, 24)
+_GEAR_LABEL_XY = (334, 24)
+_GEAR_XY = (390, 10)
+_LED_Y = (48, 58)
+_LED_PITCH, _LED_WIDTH = 40, 34
+_RPM_BAR = (10, 64, 410, 74)  # x0, y0, x1, y1
+_PEDAL_Y = (86, 146)
+_THROTTLE_X = (10, 30)
+_BRAKE_X = (38, 58)
+_STEER_BAR = (80, 100, 240, 114)
+_STEER_MARKER_HALF_WIDTH = 4
+_SUSP_Y = (100, 150)
+_SUSP_X = {"fl": (270, 290), "fr": (298, 318), "rl": (334, 354), "rr": (362, 382)}
+
+# 5x7 bitmap font: only what the panel prints. '#' is ink.
+_FONT: dict[str, tuple[str, ...]] = {
+    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
+    "3": ("#####", "...#.", "..#..", "...#.", "....#", "#...#", ".###."),
+    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+    "6": ("..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "/": ("....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."),
+    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
+    " ": (".....",) * 7,
+}
+GLYPH_W, GLYPH_H = 5, 7
+
+
+@dataclass(frozen=True)
+class Telemetry:
+    """One frame of what the panel shows.
+
+    Args:
+        speed_kmh: Ground speed.
+        gear: Engaged gear, 1-indexed, as a driver counts them.
+        rpm: Engine speed.
+        throttle: 0 to 1.
+        brake: 0 to 1.
+        steer: -1 to 1, the ControlVector's own range.
+        suspension: Coilover travel for ``fl, fr, rl, rr`` as a fraction of the bump-stop
+            travel, compression positive, so -1 to 1.
+    """
+
+    speed_kmh: float
+    gear: int
+    rpm: float
+    throttle: float
+    brake: float
+    steer: float
+    suspension: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 def rpm_fraction(rpm: float, limiter_rpm: float) -> float:
@@ -47,8 +151,21 @@ def rpm_fraction(rpm: float, limiter_rpm: float) -> float:
 
 
 def shift_light_on(rpm: float, shift_rpm: float) -> bool:
-    """The light comes on at the shift point, not the limiter: it is a cue to shift."""
+    """All lights on at the shift point, not the limiter: it is a cue to shift."""
     return rpm >= shift_rpm
+
+
+def leds_lit(rpm: float, limiter_rpm: float, shift_rpm: float, count: int = LED_COUNT) -> int:
+    """How many shift lights are on: none below :data:`LED_START_FRACTION` of the limiter,
+    all at the shift point, filling in linearly between."""
+    if not 0 < shift_rpm <= limiter_rpm:
+        raise ValueError("need 0 < shift_rpm <= limiter_rpm")
+    start = LED_START_FRACTION * limiter_rpm
+    if rpm >= shift_rpm:
+        return count
+    if rpm <= start or shift_rpm <= start:
+        return 0
+    return int(math.ceil(count * (rpm - start) / (shift_rpm - start)))
 
 
 def bar_fill(value: float) -> float:
@@ -64,193 +181,145 @@ def steer_to_x(steer: float, left_px: float, right_px: float) -> float:
     return left_px + (steer + 1.0) / 2.0 * (right_px - left_px)
 
 
-class TelemetryHUD:
-    """A small always-on-top window drawn with a tkinter canvas.
+def _rect(
+    img: npt.NDArray[np.uint8], x0: float, y0: float, x1: float, y1: float, colour: Colour
+) -> None:
+    """Fill [x0, x1) x [y0, y1), clipped to the panel. Coordinates may be floats."""
+    xa, xb = sorted((int(round(x0)), int(round(x1))))
+    ya, yb = sorted((int(round(y0)), int(round(y1))))
+    xa, xb = max(0, xa), min(img.shape[1], xb)
+    ya, yb = max(0, ya), min(img.shape[0], yb)
+    if xa < xb and ya < yb:
+        img[ya:yb, xa:xb] = colour
+
+
+def _text(img: npt.NDArray[np.uint8], x: int, y: int, text: str, scale: int, colour: Colour) -> int:
+    """Draw ``text`` with its top-left at (x, y). Returns the x just past the last glyph."""
+    for char in text.upper():
+        glyph = _FONT.get(char, _FONT[" "])
+        for row, line in enumerate(glyph):
+            for col, ink in enumerate(line):
+                if ink == "#":
+                    _rect(
+                        img,
+                        x + col * scale,
+                        y + row * scale,
+                        x + (col + 1) * scale,
+                        y + (row + 1) * scale,
+                        colour,
+                    )
+        x += (GLYPH_W + 1) * scale
+    return x
+
+
+def text_width(text: str, scale: int) -> int:
+    """Pixel width of ``text`` at ``scale``, including the trailing gap."""
+    return len(text) * (GLYPH_W + 1) * scale
+
+
+def render(telemetry: Telemetry, *, limiter_rpm: float, shift_rpm: float) -> npt.NDArray[np.uint8]:
+    """Draw the panel. Returns an ``(HEIGHT, WIDTH, 3)`` uint8 RGB array, y down."""
+    if not 0 < shift_rpm <= limiter_rpm:
+        raise ValueError("need 0 < shift_rpm <= limiter_rpm, both positive")
+    img = np.empty((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    img[:] = _BACKGROUND
+
+    # Speed, rpm and gear across the top.
+    _text(img, *_SPEED_XY, f"{telemetry.speed_kmh:3.0f}", 4, _TEXT)
+    _text(img, *_UNIT_XY, "KM/H", 2, _DIM)
+    _text(img, *_RPM_TEXT_XY, f"{telemetry.rpm:5.0f} RPM", 2, _DIM)
+    _text(img, *_GEAR_LABEL_XY, "GEAR", 2, _DIM)
+    _text(img, *_GEAR_XY, str(telemetry.gear)[:1], 4, _TEXT)
+
+    # Shift lights.
+    lit = leds_lit(telemetry.rpm, limiter_rpm, shift_rpm)
+    shifting = shift_light_on(telemetry.rpm, shift_rpm)
+    for i in range(LED_COUNT):
+        x0 = _MARGIN + i * _LED_PITCH
+        colour = _LED_SHIFT if shifting else (_LED_ON[i] if i < lit else _LED_OFF[i])
+        _rect(img, x0, _LED_Y[0], x0 + _LED_WIDTH, _LED_Y[1], colour)
+
+    # rpm bar with the red zone from the shift point.
+    x0, y0, x1, y1 = _RPM_BAR
+    _rect(img, x0, y0, x1, y1, _TRACK)
+    shift_x = x0 + rpm_fraction(shift_rpm, limiter_rpm) * (x1 - x0)
+    _rect(img, shift_x, y0, x1, y1, _RPM_RED_ZONE)
+    _rect(img, x0, y0, x0 + rpm_fraction(telemetry.rpm, limiter_rpm) * (x1 - x0), y1, _RPM)
+
+    # Pedals: vertical bars filling upward.
+    top, bottom = _PEDAL_Y
+    for (xa, xb), value, colour, label in (
+        (_THROTTLE_X, telemetry.throttle, _THROTTLE, "T"),
+        (_BRAKE_X, telemetry.brake, _BRAKE, "B"),
+    ):
+        _rect(img, xa, top, xb, bottom, _TRACK)
+        _rect(img, xa, bottom - bar_fill(value) * (bottom - top), xb, bottom, colour)
+        _text(img, (xa + xb) // 2 - GLYPH_W // 2, bottom + 5, label, 1, _DIM)
+
+    # Steering: a horizontal bar, -1 to +1, centre tick, moving marker.
+    x0, y0, x1, y1 = _STEER_BAR
+    _text(img, (x0 + x1) // 2 - text_width("STEER", 1) // 2, y0 - 12, "STEER", 1, _DIM)
+    _rect(img, x0, y0, x1, y1, _TRACK)
+    centre = steer_to_x(0.0, x0, x1)
+    _rect(img, centre - 1, y0 - 3, centre + 1, y1 + 3, _DIM)
+    marker = steer_to_x(telemetry.steer, x0, x1)
+    _rect(
+        img,
+        marker - _STEER_MARKER_HALF_WIDTH,
+        y0 - 2,
+        marker + _STEER_MARKER_HALF_WIDTH,
+        y1 + 2,
+        _STEER,
+    )
+    _text(img, x0, y1 + 5, "-1", 1, _DIM)
+    _text(img, x1 - text_width("+1", 1) + 1, y1 + 5, "+1", 1, _DIM)
+
+    # Suspension: one bar per corner, compression up from the zero line, extension down.
+    top, bottom = _SUSP_Y
+    mid = (top + bottom) / 2
+    label_x = (_SUSP_X["fl"][0] + _SUSP_X["rr"][1]) // 2 - text_width("SUSP", 1) // 2
+    _text(img, label_x, top - 12, "SUSP", 1, _DIM)
+    for corner, travel in zip(("fl", "fr", "rl", "rr"), telemetry.suspension, strict=True):
+        xa, xb = _SUSP_X[corner]
+        _rect(img, xa, top, xb, bottom, _TRACK)
+        fraction = min(1.0, max(-1.0, travel))
+        if fraction >= 0:
+            _rect(img, xa, mid - fraction * (mid - top), xb, mid, _SUSP_COMPRESS)
+        else:
+            _rect(img, xa, mid, xb, mid - fraction * (bottom - mid), _SUSP_EXTEND)
+        _rect(img, xa - 1, mid - 1, xb + 1, mid + 1, _DIM)
+        _text(img, (xa + xb) // 2 - text_width(corner, 1) // 2 + 1, bottom + 5, corner, 1, _DIM)
+    return img
+
+
+class ViewerHUD:
+    """Draws the panel in the bottom-left corner of a passive viewer window.
 
     Args:
+        viewer: The handle from :func:`mujoco.viewer.launch_passive`, or anything with its
+            ``viewport`` and ``set_images``.
         limiter_rpm: The rev limit; the right end of the rpm bar.
-        shift_rpm: Where the shift light comes on.
-        title: Window title.
-
-    Raises:
-        RuntimeError: If no display is available (tkinter cannot open a window). Callers
-            that can run without a HUD should catch this and carry on.
+        shift_rpm: Where the shift lights all come on.
+        margin_px: Gap from the window's left and bottom edges.
     """
 
-    def __init__(self, *, limiter_rpm: float, shift_rpm: float, title: str = "Telemetry") -> None:
+    def __init__(
+        self, viewer, *, limiter_rpm: float, shift_rpm: float, margin_px: int = 12
+    ) -> None:
         if limiter_rpm <= 0 or not 0 < shift_rpm <= limiter_rpm:
             raise ValueError("need 0 < shift_rpm <= limiter_rpm, both positive")
-        try:
-            import tkinter as tk
-        except ImportError as exc:  # pragma: no cover - depends on the Python build
-            raise RuntimeError("tkinter is not available in this Python") from exc
-
+        self._viewer = viewer
         self.limiter_rpm = float(limiter_rpm)
         self.shift_rpm = float(shift_rpm)
-        self.closed = False
+        self.margin_px = int(margin_px)
 
-        try:
-            self._root = tk.Tk()
-        except tk.TclError as exc:  # no display
-            raise RuntimeError(f"cannot open a telemetry window: {exc}") from exc
-        self._root.title(title)
-        self._root.resizable(False, False)
-        self._root.attributes("-topmost", True)
-        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._tk_error = tk.TclError
-
-        canvas = tk.Canvas(
-            self._root, width=WIDTH, height=HEIGHT, bg="#101214", highlightthickness=0
-        )
-        canvas.pack()
-        self._canvas = canvas
-
-        dim, text = "#3a3f45", "#e8e8e8"
-        # Speed and gear.
-        self._speed = canvas.create_text(
-            20, 44, anchor="w", fill=text, font=("Consolas", 34, "bold"), text="0"
-        )
-        canvas.create_text(20, 74, anchor="w", fill=dim, font=("Consolas", 12), text="km/h")
-        canvas.create_text(360, 74, anchor="e", fill=dim, font=("Consolas", 12), text="gear")
-        self._gear = canvas.create_text(
-            405, 44, anchor="e", fill=text, font=("Consolas", 34, "bold"), text="N"
-        )
-        # rpm bar: track, fill, red zone from the shift point, ticks.
-        canvas.create_rectangle(_RPM_LEFT, _RPM_TOP, _RPM_RIGHT, _RPM_BOTTOM, fill=dim, width=0)
-        self._rpm_fill = canvas.create_rectangle(
-            _RPM_LEFT, _RPM_TOP, _RPM_LEFT, _RPM_BOTTOM, fill="#d0d0d0", width=0
-        )
-        shift_x = _RPM_LEFT + rpm_fraction(shift_rpm, limiter_rpm) * (_RPM_RIGHT - _RPM_LEFT)
-        canvas.create_rectangle(shift_x, _RPM_TOP, _RPM_RIGHT, _RPM_BOTTOM, fill="#5a1a1a", width=0)
-        canvas.create_line(shift_x, _RPM_TOP - 4, shift_x, _RPM_BOTTOM + 4, fill="#ff4040")
-        for k in range(0, int(limiter_rpm) + 1, 5000):
-            x = _RPM_LEFT + rpm_fraction(k, limiter_rpm) * (_RPM_RIGHT - _RPM_LEFT)
-            canvas.create_text(
-                x, _RPM_BOTTOM + 10, fill=dim, font=("Consolas", 9), text=f"{k // 1000}k"
-            )
-        self._rpm_text = canvas.create_text(
-            _RPM_RIGHT, _RPM_TOP - 8, anchor="e", fill=dim, font=("Consolas", 10), text="0 rpm"
-        )
-        # Shift light.
-        cx, cy = _LIGHT_CENTRE
-        self._light = canvas.create_oval(
-            cx - _LIGHT_RADIUS,
-            cy - _LIGHT_RADIUS,
-            cx + _LIGHT_RADIUS,
-            cy + _LIGHT_RADIUS,
-            fill="#2a1010",
-            outline="#5a1a1a",
-            width=2,
-        )
-        # Pedals.
-        for left, label in ((_THROTTLE_LEFT, "thr"), (_BRAKE_LEFT, "brk")):
-            canvas.create_rectangle(
-                left, _PEDAL_TOP, left + _PEDAL_WIDTH, _PEDAL_BOTTOM, fill=dim, width=0
-            )
-            canvas.create_text(
-                left + _PEDAL_WIDTH / 2,
-                _PEDAL_BOTTOM + 8,
-                fill=dim,
-                font=("Consolas", 9),
-                text=label,
-            )
-        self._throttle = canvas.create_rectangle(
-            _THROTTLE_LEFT,
-            _PEDAL_BOTTOM,
-            _THROTTLE_LEFT + _PEDAL_WIDTH,
-            _PEDAL_BOTTOM,
-            fill="#39c55a",
-            width=0,
-        )
-        self._brake = canvas.create_rectangle(
-            _BRAKE_LEFT,
-            _PEDAL_BOTTOM,
-            _BRAKE_LEFT + _PEDAL_WIDTH,
-            _PEDAL_BOTTOM,
-            fill="#e03b3b",
-            width=0,
-        )
-        # Steering: a horizontal bar, -1 to +1, centre tick, moving marker.
-        canvas.create_rectangle(
-            _STEER_LEFT, _STEER_TOP, _STEER_RIGHT, _STEER_BOTTOM, fill=dim, width=0
-        )
-        centre = steer_to_x(0.0, _STEER_LEFT, _STEER_RIGHT)
-        canvas.create_line(centre, _STEER_TOP - 4, centre, _STEER_BOTTOM + 4, fill="#8a8f95")
-        canvas.create_text(
-            _STEER_LEFT, _STEER_BOTTOM + 12, fill=dim, font=("Consolas", 9), text="-1"
-        )
-        canvas.create_text(
-            _STEER_RIGHT, _STEER_BOTTOM + 12, fill=dim, font=("Consolas", 9), text="1"
-        )
-        canvas.create_text(centre, _STEER_TOP - 10, fill=dim, font=("Consolas", 9), text="steer")
-        self._steer = canvas.create_rectangle(
-            centre - _STEER_MARKER_HALF_WIDTH,
-            _STEER_TOP - 2,
-            centre + _STEER_MARKER_HALF_WIDTH,
-            _STEER_BOTTOM + 2,
-            fill="#4aa3ff",
-            width=0,
-        )
-        self._root.update()
-
-    def _on_close(self) -> None:
-        self.closed = True
-        with contextlib.suppress(self._tk_error):
-            self._root.destroy()
-
-    def update(
-        self,
-        *,
-        speed_kmh: float,
-        gear: int,
-        rpm: float,
-        throttle: float,
-        brake: float,
-        steer: float,
-    ) -> None:
-        """Redraw with the latest telemetry and pump the window's events.
-
-        Safe to call after the user has closed the window: it becomes a no-op.
-        """
-        if self.closed:
+    def update(self, telemetry: Telemetry) -> None:
+        """Redraw with this frame's telemetry. Skipped while the window is too small."""
+        window = self._viewer.viewport
+        if window is None:
             return
-        canvas = self._canvas
-        canvas.itemconfigure(self._speed, text=f"{speed_kmh:.0f}")
-        canvas.itemconfigure(self._gear, text=str(gear))
-        fill_x = _RPM_LEFT + rpm_fraction(rpm, self.limiter_rpm) * (_RPM_RIGHT - _RPM_LEFT)
-        canvas.coords(self._rpm_fill, _RPM_LEFT, _RPM_TOP, fill_x, _RPM_BOTTOM)
-        canvas.itemconfigure(self._rpm_text, text=f"{rpm:.0f} rpm")
-        lit = shift_light_on(rpm, self.shift_rpm)
-        canvas.itemconfigure(
-            self._light,
-            fill="#ff2020" if lit else "#2a1010",
-            outline="#ffb0b0" if lit else "#5a1a1a",
-        )
-        throttle_top = _PEDAL_BOTTOM - bar_fill(throttle) * (_PEDAL_BOTTOM - _PEDAL_TOP)
-        canvas.coords(
-            self._throttle,
-            _THROTTLE_LEFT,
-            throttle_top,
-            _THROTTLE_LEFT + _PEDAL_WIDTH,
-            _PEDAL_BOTTOM,
-        )
-        brake_top = _PEDAL_BOTTOM - bar_fill(brake) * (_PEDAL_BOTTOM - _PEDAL_TOP)
-        canvas.coords(
-            self._brake, _BRAKE_LEFT, brake_top, _BRAKE_LEFT + _PEDAL_WIDTH, _PEDAL_BOTTOM
-        )
-        x = steer_to_x(steer, _STEER_LEFT, _STEER_RIGHT)
-        canvas.coords(
-            self._steer,
-            x - _STEER_MARKER_HALF_WIDTH,
-            _STEER_TOP - 2,
-            x + _STEER_MARKER_HALF_WIDTH,
-            _STEER_BOTTOM + 2,
-        )
-        try:
-            self._root.update()
-        except self._tk_error:  # window destroyed underneath us
-            self.closed = True
-
-    def close(self) -> None:
-        if not self.closed:
-            self._on_close()
+        if window.width < WIDTH + self.margin_px or window.height < HEIGHT + self.margin_px:
+            return
+        image = render(telemetry, limiter_rpm=self.limiter_rpm, shift_rpm=self.shift_rpm)
+        rect = mujoco.MjrRect(self.margin_px, self.margin_px, WIDTH, HEIGHT)
+        self._viewer.set_images([(rect, image)])

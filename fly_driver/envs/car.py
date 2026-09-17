@@ -44,6 +44,7 @@ from fly_driver.envs.powertrain import (
     abs_factor,
     brake_torque,
     drive_torque,
+    engine_speed_rads,
     select_gear,
 )
 from fly_driver.envs.scene import SceneConfig, build_scene_xml
@@ -708,6 +709,13 @@ class CarDynamics:
             self._wheel_dof[side] = dof
             self._wheel_inertia[side] = float(model.dof_M0[dof])
 
+        self._suspension_qpos: dict[str, int] = {}
+        for side in ("fl", "fr", "rl", "rr"):
+            joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"susp_{side}")
+            if joint < 0:
+                raise ValueError(f"model has no joint named 'susp_{side}'")
+            self._suspension_qpos[side] = int(model.jnt_qposadr[joint])
+
         self._gear = 0
 
     @property
@@ -729,6 +737,19 @@ class CarDynamics:
     def speed_mps(self, data: mujoco.MjData) -> float:
         """Ground speed of the car, in m/s."""
         return float(np.linalg.norm(self._world_velocity(data)[:2]))
+
+    def engine_rpm(self, data: mujoco.MjData) -> float:
+        """Engine speed for a gauge: ground speed through the engaged gear.
+
+        Referenced to the ground rather than the rear wheels, so a gauge does not flick
+        to the limiter on every wheelspin; the torque calculation uses the wheels.
+        """
+        wheel_rads = self.speed_mps(data) / self.car.wheel_radius_m
+        return engine_speed_rads(wheel_rads, self._gear, self.powertrain) * 60.0 / (2.0 * np.pi)
+
+    def suspension_travel(self, data: mujoco.MjData) -> dict[str, float]:
+        """Each coilover's travel in metres, compression positive, keyed ``fl fr rl rr``."""
+        return {side: float(data.qpos[address]) for side, address in self._suspension_qpos.items()}
 
     def apply_aero(self, data: mujoco.MjData) -> None:
         """Write this step's aerodynamic force and moment into ``data.xfrc_applied``.

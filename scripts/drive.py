@@ -38,9 +38,10 @@ right stick, Payton's preference after driving with the left:
   left trigger    brake, 0 to 1.
 ===========  ==================================================================
 
-A telemetry window opens beside the viewer -- speed, gear, an rpm bar with a shift light
-(the box shifts for itself; the light is where it will), and throttle, brake and steering as
-bars, steering running -1 to +1 as the ControlVector does. ``--no-hud`` suppresses it.
+A telemetry panel sits in the bottom-left of the viewer window: speed, gear, an rpm bar
+with a row of shift lights (the box shifts for itself; the lights show where it will),
+throttle and brake as bars, steering as a bar running -1 to +1 as the ControlVector does,
+and the travel of each coilover. ``--no-hud`` suppresses it.
 
 Everything else is MuJoCo's own viewer binding, and those take precedence:
 
@@ -75,9 +76,8 @@ import numpy as np
 
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.powertrain import SF70H_POWERTRAIN, engine_speed_rads
 from fly_driver.envs.scene import SceneConfig
-from fly_driver.hud import TelemetryHUD
+from fly_driver.hud import Telemetry, ViewerHUD
 from fly_driver.interface import ControlVector
 
 CONTROL_HZ = 50
@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         help="keyboard: literal full lock at any speed, as the fly would get for steer=1",
     )
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
-    parser.add_argument("--no-hud", action="store_true", help="do not open the telemetry window")
+    parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
     args = parser.parse_args(argv)
 
     car = CarConfig(camera_fovy_deg=args.fovy) if args.fovy else CarConfig()
@@ -315,18 +315,6 @@ def main(argv: list[str] | None = None) -> int:
     # thread before the viewer starts its own GLFW work.
     source = choose_input(args.input, raw_steer=args.raw_steer)
 
-    hud = None
-    if not args.no_hud:
-        limiter_rpm = SF70H_POWERTRAIN.max_engine_rads * 60.0 / (2.0 * np.pi)
-        try:
-            hud = TelemetryHUD(
-                limiter_rpm=limiter_rpm,
-                shift_rpm=limiter_rpm * SF70H_POWERTRAIN.shift_up_fraction,
-                title="Formula Fly -- telemetry",
-            )
-        except RuntimeError as exc:
-            print(f"telemetry window unavailable ({exc}); continuing without it")
-
     data = mujoco.MjData(model)
     reset_to_start(model, data)
 
@@ -345,6 +333,14 @@ def main(argv: list[str] | None = None) -> int:
         with mujoco.viewer.launch_passive(
             model, data, show_left_ui=False, show_right_ui=False
         ) as viewer:
+            hud = None
+            if not args.no_hud:
+                limiter_rpm = dynamics.powertrain.max_engine_rads * 60.0 / (2.0 * np.pi)
+                hud = ViewerHUD(
+                    viewer,
+                    limiter_rpm=limiter_rpm,
+                    shift_rpm=limiter_rpm * dynamics.powertrain.shift_up_fraction,
+                )
             last_report = 0.0
             while viewer.is_running():
                 step_start = time.perf_counter()
@@ -355,21 +351,20 @@ def main(argv: list[str] | None = None) -> int:
                 viewer.sync()
 
                 if hud is not None:
-                    # Ground-referenced engine speed, as the gearbox sees it: a gauge that
-                    # followed the wheels would flick to the limiter on every wheelspin.
-                    wheel_rads = speed / car.wheel_radius_m
-                    rpm = (
-                        engine_speed_rads(wheel_rads, dynamics.gear, dynamics.powertrain)
-                        * 60.0
-                        / (2.0 * np.pi)
-                    )
+                    travel = dynamics.suspension_travel(data)
                     hud.update(
-                        speed_kmh=speed * 3.6,
-                        gear=dynamics.gear + 1,
-                        rpm=rpm,
-                        throttle=control.throttle,
-                        brake=control.brake,
-                        steer=control.steer,
+                        Telemetry(
+                            speed_kmh=speed * 3.6,
+                            gear=dynamics.gear + 1,
+                            rpm=dynamics.engine_rpm(data),
+                            throttle=control.throttle,
+                            brake=control.brake,
+                            steer=control.steer,
+                            suspension=tuple(
+                                travel[side] / car.suspension_travel_m
+                                for side in ("fl", "fr", "rl", "rr")
+                            ),
+                        )
                     )
 
                 now = time.perf_counter()
@@ -395,8 +390,6 @@ def main(argv: list[str] | None = None) -> int:
                     time.sleep(remaining)
     finally:
         source.stop()
-        if hud is not None:
-            hud.close()
 
     print()
     return 0
