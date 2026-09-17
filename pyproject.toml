@@ -21,7 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+# pynput is only for scripts/drive.py: the MuJoCo viewer reports key presses but not
+# releases, and held-key driving needs both edges. GLFW (a mujoco dependency) covers
+# gamepads on its own.
+dev = ["pytest>=8.0", "ruff>=0.6", "pynput>=1.7"]
 
 [tool.setuptools.packages.find]
 include = ["fly_driver*"]

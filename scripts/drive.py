@@ -8,16 +8,33 @@ bodywork. Driving the thing yourself is the fastest way to catch the next one.
 Run it::
 
     ./.venv/Scripts/python.exe scripts/drive.py
+    ./.venv/Scripts/python.exe scripts/drive.py --input keyboard
+    ./.venv/Scripts/python.exe scripts/drive.py --raw-steer
 
-Controls -- **arrow keys only**, by design:
+The first uses a gamepad if one is plugged in and the keyboard otherwise. ``--raw-steer``
+gives the keyboard literal full lock at any speed -- what the fly gets for ``steer=1``.
+
+The car always receives a :class:`~fly_driver.interface.ControlVector`, and that vector is
+**analog** -- steer in [-1, 1], throttle and brake in [0, 1]. Whoever drives decides how
+much of the range they use. The fly (GH-21) and a gamepad can command 50%; a keyboard key
+cannot, so it commands all or nothing. The car does not know the difference.
+
+Keyboard -- arrows only, **held** keys:
 
 ===========  ==================================================================
-  UP / DOWN  one longitudinal axis. UP adds throttle a step at a time. DOWN
-             lifts off completely in one press; a second press is half brake
-             and a third is full brake. It holds where you leave it, like
-             cruise control, because the viewer reports presses, not held keys.
-  LEFT/RIGHT steer. Recentres on its own when you stop pressing, and a press
-             means less lock the faster you go (see ``steering_gain``).
+  UP         100% throttle while held, 0 when released.
+  DOWN       100% brake while held.
+  LEFT/RIGHT full steering lock while held. Scaled down with speed unless
+             ``--raw-steer``, because on a keyboard there is no such thing as
+             a small correction at 250 km/h (see ``steering_gain``).
+===========  ==================================================================
+
+Gamepad (Xbox or PlayStation, through GLFW's built-in mappings) -- analog:
+
+===========  ==================================================================
+  left stick X    steering, with a small deadzone so a resting stick is centred.
+  right trigger   throttle, 0 to 1.
+  left trigger    brake, 0 to 1.
 ===========  ==================================================================
 
 Everything else is MuJoCo's own viewer binding, and those take precedence:
@@ -30,11 +47,11 @@ Everything else is MuJoCo's own viewer binding, and those take precedence:
   F1         the viewer's full shortcut list.
 ===========  ==================================================================
 
-WASD is deliberately unused. The viewer binds letter keys to render flags -- W
-toggles wireframe, and number keys toggle geom-group visibility -- so a driving
-control on a letter fires the render flag *as well as* the control. An earlier
-version of this script bound throttle to W and the brake to SPACE, which meant
-braking also paused the simulation.
+Why a separate keyboard listener: the viewer's own ``key_callback`` reports *presses* only
+-- no releases and no held state -- which is what forced every earlier version of this
+script into stepped inputs and decay constants that were wrong in both directions. pynput
+reports both edges, so a held key can mean what it says. It listens globally, whichever
+window has focus; fine for a dev tool, worth knowing.
 
 ``--export model.xml`` writes the generated MJCF instead of launching, so you can open it
 with ``python -m mujoco.viewer --mjcf=model.xml`` and drag the raw actuator sliders.
@@ -46,8 +63,10 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Protocol
 
 import mujoco
+import numpy as np
 
 from fly_driver.envs.car import (
     CarConfig,
@@ -60,34 +79,30 @@ from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.scene import SceneConfig, build_scene_xml
 from fly_driver.interface import ControlVector
 
-# GLFW key codes. Spelled out rather than imported so this file does not depend on glfw.
-# Only the arrows are used: every letter and digit is already a viewer render-flag toggle.
-KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 263, 262, 265, 264
-
-#: Throttle added per UP press.
-PEDAL_STEP = 0.15
-#: Brake added per DOWN press. Deliberately much coarser than the throttle: from coasting,
-#: two presses is full brake. At the throttle's step it took seven presses to get there,
-#: which is what "the brakes barely work" turned out to mean -- the car was fine, the
-#: pedal was slow.
-BRAKE_STEP = 0.5
-STEER_STEP = 0.35
-#: Fraction of steering kept per control step with no key pressed. At 50 Hz this sets a
-#: time constant, and it has been wrong in both directions. 0.90 decayed in 0.2 s, so a
-#: press was gone before the car could respond ("turning is like 5 degrees"). 0.995 held
-#: for four seconds, so the car would not straighten up after a corner. 0.96 gives about
-#: half a second, which is roughly how fast a real wheel self-centres when released.
-STEER_RECENTRE = 0.96
 CONTROL_HZ = 50
 
-#: Speed-sensitive steering, for the keyboard and only the keyboard. A key press gives a
-#: fixed STEER_STEP of lock; at 300 km/h that is far more than any driver would apply and
-#: the car snaps sideways. The gain scales the *input* down with speed, so a press is a
+#: Speed-sensitive steering, for the keyboard and only the keyboard. A held key is full
+#: lock; at 300 km/h that is far more than any driver would apply and the car snaps
+#: sideways. The gain scales the *keyboard* input down with speed, so a held key is a
 #: small correction at racing speed and a full turn-in at walking pace. It is not part of
-#: the car and is never applied to anyone else's ControlVector: a wheel, or the fly's
+#: the car and never touches anyone else's ControlVector: a gamepad stick, or the fly's
 #: wingbeat asymmetry (GH-21), are analog and can be gentle on their own.
 STEER_GAIN_REFERENCE_MPS = 40.0
 STEER_GAIN_FLOOR = 0.2
+
+#: Keyboard keys used, by pynput name. Arrows only: the viewer owns letters and digits
+#: (W toggles wireframe, digits toggle geom groups) and handles them as well as passing
+#: them on, so a driving control on a letter fires a render flag too.
+KEYS = ("up", "down", "left", "right")
+
+#: GLFW gamepad axis indices. Spelled out so the mapping is testable without GLFW; a test
+#: checks them against the real constants.
+AXIS_LEFT_X = 0
+AXIS_LEFT_TRIGGER = 4
+AXIS_RIGHT_TRIGGER = 5
+#: Stick travel below this is treated as centred. A resting stick rarely reads exactly 0,
+#: and without a deadzone the car creeps sideways with nobody touching anything.
+GAMEPAD_DEADZONE = 0.08
 
 
 def steering_gain(speed_mps: float) -> float:
@@ -96,43 +111,157 @@ def steering_gain(speed_mps: float) -> float:
     return max(STEER_GAIN_FLOOR, 1.0 / (1.0 + ratio * ratio))
 
 
-class DriverState:
-    """Mutable control state shared between the key callback and the sim loop.
+class InputSource(Protocol):
+    name: str
 
-    Throttle and brake are one signed ``pedal`` axis rather than two controls. That is
-    what lets the whole thing run on four arrow keys, which is the point: every letter
-    and digit the viewer sees is already bound to a render flag.
+    def control(self, speed_mps: float) -> ControlVector: ...
+    def stop(self) -> None: ...
+
+
+class KeyboardInput:
+    """Held arrow keys, all or nothing.
+
+    ``held`` is the set of key names currently down. The pynput listener mutates it from
+    its own thread; :meth:`control` reads it. Tests set it directly, which is why the
+    mapping does not depend on pynput being installed.
+
+    Args:
+        raw_steer: Command literal full lock regardless of speed, which is exactly what
+            the fly gets for ``steer=1.0``. Off by default because on a keyboard it makes
+            anything above ~100 km/h untestable by hand.
     """
 
-    def __init__(self) -> None:
-        self.steer = 0.0
-        self.pedal = 0.0
+    name = "keyboard"
 
-    def on_key(self, keycode: int) -> None:
-        if keycode == KEY_UP:
-            # From the brakes, UP releases them; only then does it add throttle.
-            self.pedal = 0.0 if self.pedal < 0.0 else min(1.0, self.pedal + PEDAL_STEP)
-        elif keycode == KEY_DOWN:
-            # From the throttle, DOWN is a full lift in one press; from coasting it brakes.
-            self.pedal = 0.0 if self.pedal > 0.0 else max(-1.0, self.pedal - BRAKE_STEP)
-        elif keycode == KEY_LEFT:
-            self.steer = max(-1.0, self.steer - STEER_STEP)
-        elif keycode == KEY_RIGHT:
-            self.steer = min(1.0, self.steer + STEER_STEP)
+    def __init__(self, *, raw_steer: bool = False) -> None:
+        self.held: set[str] = set()
+        self.raw_steer = raw_steer
+        self._listener = None
 
-    def settle(self) -> None:
-        """Apply per-step decay. Steering recentres; the pedal axis holds."""
-        self.steer *= STEER_RECENTRE
-        if abs(self.steer) < 1e-3:
-            self.steer = 0.0
+    def start(self) -> None:
+        try:
+            from pynput import keyboard
+        except ImportError as exc:  # pragma: no cover - depends on the local install
+            raise SystemExit(
+                "keyboard driving needs pynput: "
+                "./.venv/Scripts/python.exe -m pip install -e '.[dev]'"
+            ) from exc
 
-    @property
-    def throttle(self) -> float:
-        return max(0.0, self.pedal)
+        names = {
+            keyboard.Key.up: "up",
+            keyboard.Key.down: "down",
+            keyboard.Key.left: "left",
+            keyboard.Key.right: "right",
+        }
 
-    @property
-    def brake(self) -> float:
-        return max(0.0, -self.pedal)
+        def on_press(key):
+            name = names.get(key)
+            if name:
+                self.held.add(name)
+
+        def on_release(key):
+            name = names.get(key)
+            if name:
+                self.held.discard(name)
+
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._listener.daemon = True
+        self._listener.start()
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            self._listener.stop()
+            self._listener = None
+
+    def control(self, speed_mps: float) -> ControlVector:
+        steer = float("right" in self.held) - float("left" in self.held)
+        if not self.raw_steer:
+            steer *= steering_gain(speed_mps)
+        return ControlVector.clipped(
+            steer=steer,
+            throttle=float("up" in self.held),
+            brake=float("down" in self.held),
+        )
+
+
+def gamepad_axes_to_control(
+    axes: list[float] | np.ndarray, *, deadzone: float = GAMEPAD_DEADZONE
+) -> ControlVector:
+    """Map GLFW gamepad axes onto a ControlVector.
+
+    GLFW reports every axis in [-1, 1], including the triggers, where -1 is released and
+    +1 is fully pressed -- hence the ``(x + 1) / 2``. The stick is rescaled past the
+    deadzone so the edge of the deadzone is 0 and full deflection is still 1; a plain cut
+    would leave the first 8% of travel dead and the rest unreachable.
+    """
+    if len(axes) <= AXIS_RIGHT_TRIGGER:
+        raise ValueError(f"expected at least {AXIS_RIGHT_TRIGGER + 1} axes, got {len(axes)}")
+    if not 0.0 <= deadzone < 1.0:
+        raise ValueError(f"deadzone must be in [0, 1), got {deadzone}")
+
+    raw = float(axes[AXIS_LEFT_X])
+    if abs(raw) < deadzone:
+        steer = 0.0
+    else:
+        steer = float(np.sign(raw)) * (abs(raw) - deadzone) / (1.0 - deadzone)
+    throttle = (float(axes[AXIS_RIGHT_TRIGGER]) + 1.0) / 2.0
+    brake = (float(axes[AXIS_LEFT_TRIGGER]) + 1.0) / 2.0
+    return ControlVector.clipped(steer=steer, throttle=throttle, brake=brake)
+
+
+class GamepadInput:
+    """An analog controller through GLFW's gamepad API, which the viewer already ships.
+
+    Must be created on the main thread before the viewer launches: GLFW's joystick
+    functions are main-thread only, and the passive viewer runs its own GLFW work on a
+    background thread.
+    """
+
+    name = "gamepad"
+
+    def __init__(self, joystick_id: int, label: str) -> None:
+        self._jid = joystick_id
+        self.name = f"gamepad ({label})"
+
+    @classmethod
+    def detect(cls) -> GamepadInput | None:
+        """The first connected controller GLFW recognises as a gamepad, or None."""
+        import glfw
+
+        if not glfw.init():
+            return None
+        for jid in range(glfw.JOYSTICK_1, glfw.JOYSTICK_LAST + 1):
+            if glfw.joystick_present(jid) and glfw.joystick_is_gamepad(jid):
+                label = glfw.get_gamepad_name(jid)
+                if isinstance(label, bytes):
+                    label = label.decode(errors="replace")
+                return cls(jid, str(label))
+        return None
+
+    def control(self, speed_mps: float) -> ControlVector:
+        del speed_mps  # analog input needs no speed assist
+        import glfw
+
+        state = glfw.get_gamepad_state(self._jid)
+        if state is None:  # unplugged mid-run: coast rather than hold the last input
+            return ControlVector.neutral()
+        return gamepad_axes_to_control(list(state.axes))
+
+    def stop(self) -> None:
+        return None
+
+
+def choose_input(mode: str, *, raw_steer: bool) -> InputSource:
+    """``auto`` prefers a connected gamepad and falls back to the keyboard."""
+    if mode in ("auto", "gamepad"):
+        pad = GamepadInput.detect()
+        if pad is not None:
+            return pad
+        if mode == "gamepad":
+            raise SystemExit("no gamepad detected -- plug one in, or use --input keyboard")
+    keyboard = KeyboardInput(raw_steer=raw_steer)
+    keyboard.start()
+    return keyboard
 
 
 def build(car: CarConfig, scene: SceneConfig) -> tuple[Centerline, mujoco.MjModel]:
@@ -159,13 +288,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--export", type=Path, help="write the MJCF here instead of driving")
     parser.add_argument("--fovy", type=float, default=None, help="camera vertical FOV, degrees")
     parser.add_argument(
-        "--no-walls", action="store_true", help="disable track walls (they are off by default)"
+        "--input",
+        choices=("auto", "keyboard", "gamepad"),
+        default="auto",
+        help="auto uses a gamepad if one is plugged in, otherwise the keyboard",
+    )
+    parser.add_argument(
+        "--raw-steer",
+        action="store_true",
+        help="keyboard: literal full lock at any speed, as the fly would get for steer=1",
     )
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
     args = parser.parse_args(argv)
 
     car = CarConfig(camera_fovy_deg=args.fovy) if args.fovy else CarConfig()
-    scene = SceneConfig(include_walls=args.walls and not args.no_walls)
+    scene = SceneConfig(include_walls=args.walls)
     centerline, model = build(car, scene)
 
     if args.export:
@@ -190,6 +327,10 @@ def main(argv: list[str] | None = None) -> int:
         print("mujoco.viewer is unavailable; this needs a desktop with OpenGL.", file=sys.stderr)
         return 1
 
+    # Input is chosen before the viewer launches: gamepad detection must run on the main
+    # thread before the viewer starts its own GLFW work.
+    source = choose_input(args.input, raw_steer=args.raw_steer)
+
     data = mujoco.MjData(model)
     reset_to_start(model, data)
 
@@ -198,50 +339,48 @@ def main(argv: list[str] | None = None) -> int:
     # downforce while the trained policy drove a different one.
     dynamics = CarDynamics(model, car)
     car_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car")
-    state = DriverState()
     substeps = max(1, int(round((1.0 / CONTROL_HZ) / model.opt.timestep)))
 
     print(__doc__)
+    print(f"input: {source.name}")
     print(f"lap length {centerline.length:.0f} m\n")
 
-    with mujoco.viewer.launch_passive(
-        model, data, key_callback=state.on_key, show_left_ui=False, show_right_ui=False
-    ) as viewer:
-        last_report = 0.0
-        while viewer.is_running():
-            step_start = time.perf_counter()
+    try:
+        with mujoco.viewer.launch_passive(
+            model, data, show_left_ui=False, show_right_ui=False
+        ) as viewer:
+            last_report = 0.0
+            while viewer.is_running():
+                step_start = time.perf_counter()
 
-            speed = dynamics.speed_mps(data)
-            control = ControlVector.clipped(
-                steer=state.steer * steering_gain(speed),
-                throttle=state.throttle,
-                brake=state.brake,
-            )
-            dynamics.step(control, data, substeps)
-            state.settle()
-            viewer.sync()
+                speed = dynamics.speed_mps(data)
+                control = source.control(speed)
+                dynamics.step(control, data, substeps)
+                viewer.sync()
 
-            now = time.perf_counter()
-            if now - last_report > 0.5:
-                last_report = now
-                position = data.xpos[car_body]
-                projection = centerline.project(float(position[0]), float(position[1]))
-                where = "on track" if projection.is_on_track else "OFF"
-                print(
-                    f"\r{speed * 3.6:6.1f} km/h | "
-                    f"lap {projection.arclength / centerline.length * 100:5.1f}% | "
-                    f"{projection.lateral:+6.2f} m {where:>8} | "
-                    f"gear {dynamics.gear + 1} | "
-                    f"thr {state.throttle:4.2f} brk {state.brake:4.2f} "
-                    f"steer {state.steer:+5.2f}",
-                    end="",
-                    flush=True,
-                )
+                now = time.perf_counter()
+                if now - last_report > 0.5:
+                    last_report = now
+                    position = data.xpos[car_body]
+                    projection = centerline.project(float(position[0]), float(position[1]))
+                    where = "on track" if projection.is_on_track else "OFF"
+                    print(
+                        f"\r{speed * 3.6:6.1f} km/h | "
+                        f"lap {projection.arclength / centerline.length * 100:5.1f}% | "
+                        f"{projection.lateral:+6.2f} m {where:>8} | "
+                        f"gear {dynamics.gear + 1} | "
+                        f"thr {control.throttle:4.2f} brk {control.brake:4.2f} "
+                        f"steer {control.steer:+5.2f}",
+                        end="",
+                        flush=True,
+                    )
 
-            # Keep the sim near wall-clock so it feels like driving rather than a fast-forward.
-            remaining = (1.0 / CONTROL_HZ) - (time.perf_counter() - step_start)
-            if remaining > 0:
-                time.sleep(remaining)
+                # Keep the sim near wall-clock so it feels like driving, not fast-forward.
+                remaining = (1.0 / CONTROL_HZ) - (time.perf_counter() - step_start)
+                if remaining > 0:
+                    time.sleep(remaining)
+    finally:
+        source.stop()
 
     print()
     return 0
