@@ -17,12 +17,10 @@ import pytest
 from fly_driver.envs.car import (
     CHASSIS_CONTYPE,
     CarConfig,
-    car_actuators_xml,
-    car_assets_xml,
-    car_body_xml,
+    assemble_model_xml,
 )
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.scene import SceneConfig, build_scene_xml
+from fly_driver.envs.scene import SceneConfig
 
 CONFIG = CarConfig()
 
@@ -31,15 +29,8 @@ CONFIG = CarConfig()
 def model() -> mujoco.MjModel:
     points = [(0.0, 0.0), (400.0, 0.0), (400.0, 200.0), (0.0, 200.0)]
     track = Centerline(points=points, half_width_right=[8.0] * 4, half_width_left=[8.0] * 4)
-    position, yaw = track.pose_at(0.0)
     return mujoco.MjModel.from_xml_string(
-        build_scene_xml(
-            track,
-            SceneConfig(mesh_spacing_m=50.0),
-            extra_assets=car_assets_xml(CONFIG),
-            extra_bodies=car_body_xml(position, yaw, CONFIG),
-            extra_actuators=car_actuators_xml(CONFIG),
-        )
+        assemble_model_xml(track, SceneConfig(mesh_spacing_m=50.0), CONFIG)
     )
 
 

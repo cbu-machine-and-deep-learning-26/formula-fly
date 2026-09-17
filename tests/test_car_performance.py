@@ -199,6 +199,44 @@ class TestBrakingStability:
         assert result["brake 150->0 km/h (m)"] < 55.0
 
 
+class TestSuspensionAtSpeed:
+    def test_roll_stays_flat_in_a_fast_corner(self, bed):
+        """F1 cars roll about a degree. Much more and the springs or bars are too soft;
+        the aero platform would move and downforce with it."""
+
+        from fly_driver.interface import ControlVector
+
+        bed.reset()
+        bed.accelerate_to(200.0 / 3.6)
+        rolls = []
+        for i in range(int(2.0 / bed.dt)):
+            bed.dynamics.step(ControlVector(steer=-0.25, throttle=0.55, brake=0.0), bed.data, 1)
+            if i > int(1.0 / bed.dt):
+                rotation = bed.data.xmat[bed.dynamics._body].reshape(3, 3)
+                rolls.append(abs(np.degrees(np.arctan2(rotation[2, 1], rotation[2, 2]))))
+        assert np.mean(rolls) < 1.5, f"{np.mean(rolls):.2f} degrees of roll"
+
+    def test_floor_never_touches_the_road(self, bed):
+        """Aero load compresses the springs ~20 mm at top speed and braking pitches the
+        nose; the collision box must clear the ground through all of it, or the chassis
+        grinds and the car stops dead."""
+        import mujoco
+
+        from fly_driver.interface import ControlVector
+
+        chassis = mujoco.mj_name2id(bed.model, mujoco.mjtObj.mjOBJ_GEOM, "chassis")
+        bed.reset()
+        bed.accelerate_to(320.0 / 3.6)
+        clearance = float("inf")
+        for _ in range(int(4.0 / bed.dt)):
+            bed.dynamics.step(ControlVector(steer=0.0, throttle=0.0, brake=1.0), bed.data, 1)
+            bottom = bed.data.geom_xpos[chassis][2] - bed.model.geom_size[chassis][2]
+            clearance = min(clearance, float(bottom))
+            if bed.speed() < 2.0:
+                break
+        assert clearance > 0.05, f"box came within {1000 * clearance:.0f} mm of the road"
+
+
 class TestNumericalStability:
     def test_no_nan_over_a_long_hard_rollout(self, bed):
         """`AGENTS.md` §11. Two separate blow-ups happened while building this: the car

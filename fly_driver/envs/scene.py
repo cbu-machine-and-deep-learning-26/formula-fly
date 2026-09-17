@@ -185,6 +185,7 @@ def build_scene_xml(
     extra_assets: str = "",
     extra_bodies: str = "",
     extra_actuators: str = "",
+    extra_tendons: str = "",
 ) -> str:
     """Generate the complete MJCF document for the practice track.
 
@@ -195,6 +196,8 @@ def build_scene_xml(
         extra_assets: MJCF fragment inserted into ``<asset>``, for the car's materials.
         extra_bodies: MJCF fragment inserted into ``<worldbody>``, for the car itself.
         extra_actuators: MJCF fragment inserted into ``<actuator>``.
+        extra_tendons: MJCF fragment inserted into ``<tendon>``, for the car's anti-roll
+            bars. The element is only emitted when non-empty.
 
     Returns:
         An MJCF document string, ready for ``mujoco.MjModel.from_xml_string``.
@@ -265,6 +268,7 @@ def build_scene_xml(
                 )
 
     start_position, start_yaw = centerline.pose_at(0.0)
+    tendon_block = f"\n\n  <tendon>{extra_tendons}\n  </tendon>" if extra_tendons.strip() else ""
     # texuniform makes texrepeat world-scaled, so this is tiles per metre.
     grass_repeat = 1.0 / config.grass_texture_repeat_m
 
@@ -329,6 +333,6 @@ def build_scene_xml(
   </worldbody>
 
   <actuator>{extra_actuators}
-  </actuator>
+  </actuator>{tendon_block}
 </mujoco>
 """

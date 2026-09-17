@@ -20,13 +20,11 @@ from fly_driver.envs.car import (
     SF70H_REFERENCE,
     CarConfig,
     CarDynamics,
-    car_actuators_xml,
-    car_assets_xml,
-    car_body_xml,
+    assemble_model_xml,
     steering_angle_rad,
 )
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.scene import SceneConfig, build_scene_xml
+from fly_driver.envs.scene import SceneConfig
 from fly_driver.interface import ControlVector
 
 CONFIG = CarConfig()
@@ -41,15 +39,9 @@ def track() -> Centerline:
 
 @pytest.fixture(scope="module")
 def model(track) -> mujoco.MjModel:
-    position, yaw = track.pose_at(0.0)
-    xml = build_scene_xml(
-        track,
-        SceneConfig(mesh_spacing_m=50.0),
-        extra_assets=car_assets_xml(CONFIG),
-        extra_bodies=car_body_xml(position, yaw, CONFIG),
-        extra_actuators=car_actuators_xml(CONFIG),
+    return mujoco.MjModel.from_xml_string(
+        assemble_model_xml(track, SceneConfig(mesh_spacing_m=50.0), CONFIG)
     )
-    return mujoco.MjModel.from_xml_string(xml)
 
 
 @pytest.fixture
@@ -358,6 +350,56 @@ class TestSteeringDamping:
         assert abs(float(data.qpos[address])) > 0.9 * CONFIG.max_steer_rad
 
 
+class TestSuspension:
+    """Coilovers on all four corners plus an anti-roll bar per axle."""
+
+    def test_every_corner_has_a_slide_joint(self, model):
+        for side in ("fl", "fr", "rl", "rr"):
+            joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"susp_{side}")
+            assert joint != -1
+            assert model.jnt_type[joint] == mujoco.mjtJoint.mjJNT_SLIDE
+
+    def test_springs_are_stiffer_at_the_rear(self, model):
+        front = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_fl")
+        rear = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_rl")
+        assert model.jnt_stiffness[rear] > model.jnt_stiffness[front] > 0
+
+    def test_anti_roll_bars_exist_per_axle(self, model):
+        for axle in ("f", "r"):
+            assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TENDON, f"arb_{axle}") != -1
+
+    def test_static_sag_is_small_and_equal_left_to_right(self, model, data):
+        """F1 springs are stiff: a few millimetres under the car's own weight. Unequal
+        sag means an asymmetric car, which would pull under braking."""
+        _drive(model, data, 0.0, 0.0, 0.0, 2.0)
+        # The slide axis is +z on the hub, so under load the chassis drops relative to
+        # the hub and the joint coordinate goes *positive*: compression = +q.
+        sag = {}
+        for side in ("fl", "fr", "rl", "rr"):
+            joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"susp_{side}")
+            sag[side] = float(data.qpos[model.jnt_qposadr[joint]])
+        assert all(0.003 < value < 0.015 for value in sag.values()), sag
+        assert sag["fl"] == pytest.approx(sag["fr"], abs=5e-4)
+        assert sag["rl"] == pytest.approx(sag["rr"], abs=5e-4)
+
+    def test_car_rests_level(self, model, data):
+        _drive(model, data, 0.0, 0.0, 0.0, 2.0)
+        rotation = data.xmat[_body_id(model)].reshape(3, 3)
+        assert abs(np.degrees(np.arcsin(-rotation[2, 0]))) < 0.3  # pitch
+        assert abs(np.degrees(np.arctan2(rotation[2, 1], rotation[2, 2]))) < 0.3  # roll
+
+    def test_wheel_hop_is_overdamped(self, model):
+        """The unsprung corner is ~21 kg on a very stiff spring, a ~17 Hz mode; the damper
+        must be well past critical for it or the wheels bounce on every contact impulse."""
+        joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_fl")
+        dof = model.jnt_dofadr[joint]
+        inertia = float(model.dof_M0[dof])
+        ratio = float(model.dof_damping[dof]) / (
+            2.0 * np.sqrt(model.jnt_stiffness[joint] * inertia)
+        )
+        assert ratio > 1.0, f"wheel-hop damping ratio {ratio:.2f}"
+
+
 class TestCarConfigValidation:
     @pytest.mark.parametrize(
         "kwargs",
@@ -428,7 +470,7 @@ class TestMassProperties:
         """Chassis geom carries mass=0 and the explicit <inertial> holds it all, so a
         mistake here would silently double-count the car's weight."""
         total = float(model.body_mass.sum())
-        wheels_and_hubs = 4 * CONFIG.wheel_mass_kg + 2 * CONFIG.hub_mass_kg
+        wheels_and_hubs = 4 * CONFIG.wheel_mass_kg + 4 * CONFIG.hub_mass_kg
         assert total == pytest.approx(CONFIG.mass_kg + wheels_and_hubs, rel=0.01)
 
     def test_yaw_inertia_is_not_the_box_default(self, model):

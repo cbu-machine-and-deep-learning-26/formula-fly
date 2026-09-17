@@ -25,15 +25,9 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from fly_driver.envs.car import (
-    CarConfig,
-    CarDynamics,
-    car_actuators_xml,
-    car_assets_xml,
-    car_body_xml,
-)
+from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.scene import SceneConfig, build_scene_xml
+from fly_driver.envs.scene import SceneConfig
 from fly_driver.interface import ControlVector
 
 __all__ = [
@@ -71,15 +65,8 @@ class PerformanceBed:
         centerline = Centerline(
             points=points, half_width_right=[60.0] * 4, half_width_left=[60.0] * 4
         )
-        position, yaw = centerline.pose_at(0.0)
         model = mujoco.MjModel.from_xml_string(
-            build_scene_xml(
-                centerline,
-                SceneConfig(mesh_spacing_m=500.0, kerb_width_m=0.0),
-                extra_assets=car_assets_xml(car),
-                extra_bodies=car_body_xml(position, yaw, car),
-                extra_actuators=car_actuators_xml(car),
-            )
+            assemble_model_xml(centerline, SceneConfig(mesh_spacing_m=500.0, kerb_width_m=0.0), car)
         )
         data = mujoco.MjData(model)
         return cls(model=model, data=data, dynamics=CarDynamics(model, car), car=car)

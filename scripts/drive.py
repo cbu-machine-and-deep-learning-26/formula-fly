@@ -69,15 +69,9 @@ from typing import Protocol
 import mujoco
 import numpy as np
 
-from fly_driver.envs.car import (
-    CarConfig,
-    CarDynamics,
-    car_actuators_xml,
-    car_assets_xml,
-    car_body_xml,
-)
+from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.scene import SceneConfig, build_scene_xml
+from fly_driver.envs.scene import SceneConfig
 from fly_driver.interface import ControlVector
 
 CONTROL_HZ = 50
@@ -267,15 +261,7 @@ def choose_input(mode: str, *, raw_steer: bool) -> InputSource:
 
 def build(car: CarConfig, scene: SceneConfig) -> tuple[Centerline, mujoco.MjModel]:
     centerline = Centerline.load()
-    position, yaw = centerline.pose_at(0.0)
-    xml = build_scene_xml(
-        centerline,
-        scene,
-        extra_assets=car_assets_xml(car),
-        extra_bodies=car_body_xml(position, yaw, car),
-        extra_actuators=car_actuators_xml(car),
-    )
-    return centerline, mujoco.MjModel.from_xml_string(xml)
+    return centerline, mujoco.MjModel.from_xml_string(assemble_model_xml(centerline, scene, car))
 
 
 def reset_to_start(model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -307,17 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     centerline, model = build(car, scene)
 
     if args.export:
-        position, yaw = centerline.pose_at(0.0)
-        args.export.write_text(
-            build_scene_xml(
-                centerline,
-                scene,
-                extra_assets=car_assets_xml(car),
-                extra_bodies=car_body_xml(position, yaw, car),
-                extra_actuators=car_actuators_xml(car),
-            ),
-            encoding="utf-8",
-        )
+        args.export.write_text(assemble_model_xml(centerline, scene, car), encoding="utf-8")
         print(f"wrote {args.export}")
         print(f"open it with:  python -m mujoco.viewer --mjcf={args.export}")
         return 0

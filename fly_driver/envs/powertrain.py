@@ -76,6 +76,12 @@ class PowertrainConfig:
         final_drive: Differential ratio, applied on top of the gear ratio.
         driveline_efficiency: Fraction of crank torque reaching the wheels.
         shift_up_fraction: Upshift when engine speed passes this fraction of the limiter.
+            Must sit below the start of the limiter taper, with margin. Gear selection is
+            referenced to ground speed while drive torque follows the wheel's true speed,
+            which runs a few percent faster under load; with the upshift at 97% and the
+            taper from 96%, that slip put the engine into the taper before the box would
+            shift, the cut torque could no longer beat drag, and the car was trapped at
+            284 km/h -- the 7th-to-8th shift point -- in 7th. Validated and tested.
         shift_down_fraction: Downshift below this fraction. The gap between the two is
             what stops the box hunting between gears at a steady speed.
         max_brake_torque_nm: Total braking torque across all four wheels at full pedal.
@@ -109,7 +115,7 @@ class PowertrainConfig:
     gear_ratios: tuple[float, ...] = _DEFAULT_GEAR_RATIOS
     final_drive: float = _DEFAULT_FINAL_DRIVE
     driveline_efficiency: float = 0.90
-    shift_up_fraction: float = 0.97
+    shift_up_fraction: float = 0.94
     shift_down_fraction: float = 0.55
     brake_bias_front: float = 0.57
     limiter_taper_fraction: float = 0.04
@@ -143,6 +149,12 @@ class PowertrainConfig:
                 f"need 0 < shift_down_fraction < shift_up_fraction <= 1, got "
                 f"{self.shift_down_fraction} and {self.shift_up_fraction}; overlapping "
                 f"thresholds make the gearbox hunt"
+            )
+        if self.shift_up_fraction > 1.0 - self.limiter_taper_fraction - 0.01:
+            raise ValueError(
+                f"shift_up_fraction={self.shift_up_fraction} is inside the limiter taper "
+                f"(from {1.0 - self.limiter_taper_fraction}); torque is cut before the box "
+                f"shifts and the car can be trapped below the shift point"
             )
         if not 0.0 <= self.abs_slip_full < self.abs_slip_release <= 1.0:
             raise ValueError(

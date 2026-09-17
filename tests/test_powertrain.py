@@ -101,6 +101,25 @@ class TestGearbox:
             wheel = wheel_rads_at(kmh)
             assert all(select_gear(wheel, gear, P) == gear for _ in range(20))
 
+    def test_every_upshift_is_reachable_through_the_limiter_taper(self):
+        """The 7th-to-8th shift trapped the car at 284 km/h. Gear selection is referenced
+        to ground speed; drive torque to the wheel's true speed, which runs a few percent
+        faster under load. With the upshift at 97% of the limiter and the taper from 96%,
+        that slip put the engine into the taper before the box would shift, and the cut
+        torque could no longer beat drag. So: at every shift point, with 3% slip, the car
+        must still out-pull drag."""
+        for gear in range(P.num_gears - 1):
+            wheel_rads = P.max_engine_rads * P.shift_up_fraction / P.total_ratio(gear)
+            speed = wheel_rads * WHEEL_RADIUS
+            slipping = wheel_rads * 1.03
+            tractive = 2.0 * drive_torque(1.0, slipping, gear, P) / WHEEL_RADIUS
+            assert tractive > float(drag_n(speed, SF70H_AERO)), (
+                f"trapped at the {gear + 1}->{gear + 2} shift, {speed * 3.6:.0f} km/h"
+            )
+
+    def test_upshift_sits_below_the_limiter_taper(self):
+        assert P.shift_up_fraction < 1.0 - P.limiter_taper_fraction
+
     def test_downshifts_when_slowing(self):
         fast = settled_gear(300.0)
         assert select_gear(wheel_rads_at(60.0), fast, P) < fast
@@ -278,6 +297,7 @@ class TestPowertrainConfigValidation:
             {"brake_bias_front": 0.0},
             {"idle_engine_rads": 2000.0},  # above the limiter
             {"shift_up_fraction": 0.4, "shift_down_fraction": 0.6},  # inverted
+            {"shift_up_fraction": 0.99},  # inside the limiter taper
             {"abs_slip_full": 0.5, "abs_slip_release": 0.3},  # inverted
             {"abs_slip_release": 1.5},
             {"abs_min_speed_mps": -1.0},

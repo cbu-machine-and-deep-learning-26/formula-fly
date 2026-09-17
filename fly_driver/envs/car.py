@@ -37,6 +37,7 @@ import numpy as np
 import numpy.typing as npt
 
 from fly_driver.envs.aero import SF70H_AERO, AeroConfig, downforce_n, drag_n
+from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.powertrain import (
     SF70H_POWERTRAIN,
     PowertrainConfig,
@@ -45,6 +46,7 @@ from fly_driver.envs.powertrain import (
     drive_torque,
     select_gear,
 )
+from fly_driver.envs.scene import SceneConfig, build_scene_xml
 from fly_driver.interface import ControlVector
 
 __all__ = [
@@ -52,9 +54,11 @@ __all__ = [
     "SF70H_REFERENCE",
     "CarConfig",
     "CarDynamics",
+    "assemble_model_xml",
     "car_assets_xml",
     "car_body_xml",
     "car_actuators_xml",
+    "car_tendons_xml",
     "steering_angle_rad",
 ]
 
@@ -140,7 +144,9 @@ class CarConfig:
         track_width_rear_m: Rear track. Narrower than the front on an SF70H.
         chassis_length_m: Visual body length.
         chassis_width_m: Visual body width.
-        chassis_height_m: Visual body height.
+        chassis_height_m: Height of the collision box. Shallow, so that the box bottom
+            stays clear of the road when the suspension compresses under aero load; the
+            visible bodywork is separate and sets its own heights.
         wheel_radius_m: Wheel radius; also sets the chassis ride height.
         wheel_width_front_m: Front tyre width. 305 mm on a 2017 car.
         wheel_width_rear_m: Rear tyre width. 405 mm -- rears are much wider than fronts.
@@ -165,6 +171,25 @@ class CarConfig:
             reported. 150 gives a ratio near 0.8: settles in a few cycles, still snappy.
             A test computes the realised ratio from the compiled model so a heavier
             wheel cannot quietly bring the shimmy back.
+        suspension_stiffness_front_n_m: Front coilover wheel rate. F1 springs are very
+            stiff -- hundreds of N/mm -- because the car is held down by aerodynamic load,
+            not by suspension travel, and the floor must not touch the road.
+        suspension_stiffness_rear_n_m: Rear rate, stiffer than the front, as a
+            single-seater runs it.
+        suspension_damping_ns_m: Coilover damper rate. About 0.75 of critical for a
+            quarter of the car on the front spring, and well over critical for the
+            ~21 kg unsprung corner, so the wheels do not hop.
+        suspension_travel_m: Bump-stop each way. Static sag is ~7 mm and aero load at
+            top speed adds ~15 mm, so 40 mm leaves headroom for kerbs and braking.
+        anti_roll_stiffness_n_m: Anti-roll bar rate per axle, applied as a fixed tendon
+            on the difference between the two sides' suspension travel. Resists roll,
+            does nothing in pure heave.
+
+            An earlier attempt at suspension was abandoned because it cost grip and top
+            speed. That attempt also softened the tyre contact and was measured with
+            contact counts; separated out, the contact softening was the whole loss
+            (326 -> 284 km/h on its own). This version leaves the contacts alone and is
+            measured on settled lateral g, top speed and stopping distance.
         max_actuator_torque_nm: Control range of the drive and brake motors, in N*m.
             A ceiling, not a setpoint -- actual torque comes from the powertrain model.
             Wide enough that MuJoCo never silently clips a legitimate command.
@@ -208,7 +233,7 @@ class CarConfig:
     track_width_rear_m: float = 1.55
     chassis_length_m: float = 5.00
     chassis_width_m: float = 1.10
-    chassis_height_m: float = 0.60
+    chassis_height_m: float = 0.40
     wheel_radius_m: float = 0.335
     wheel_width_front_m: float = 0.305
     wheel_width_rear_m: float = 0.405
@@ -221,6 +246,11 @@ class CarConfig:
     max_steer_rad: float = 0.35
     steer_gain: float = 12000.0
     steer_damping_nms: float = 150.0
+    suspension_stiffness_front_n_m: float = 250_000.0
+    suspension_stiffness_rear_n_m: float = 300_000.0
+    suspension_damping_ns_m: float = 10_000.0
+    suspension_travel_m: float = 0.04
+    anti_roll_stiffness_n_m: float = 50_000.0
     max_actuator_torque_nm: float = 20_000.0
     wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
@@ -246,7 +276,15 @@ class CarConfig:
             "hub_mass_kg": self.hub_mass_kg,
             "steer_gain": self.steer_gain,
             "steer_damping_nms": self.steer_damping_nms,
+            "suspension_stiffness_front_n_m": self.suspension_stiffness_front_n_m,
+            "suspension_stiffness_rear_n_m": self.suspension_stiffness_rear_n_m,
+            "suspension_damping_ns_m": self.suspension_damping_ns_m,
+            "suspension_travel_m": self.suspension_travel_m,
         }
+        if self.anti_roll_stiffness_n_m < 0:
+            raise ValueError(
+                f"anti_roll_stiffness_n_m must be non-negative, got {self.anti_roll_stiffness_n_m}"
+            )
         for name, value in positives.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
@@ -334,22 +372,28 @@ def _wheel_body_xml(name: str, x: float, y: float, config: CarConfig, *, steerab
                 rgba="0.08 0.08 0.09 1"/>
         </body>"""
 
-    if not steerable:
-        return f"""
-      <body name="hub_{name}" pos="{x} {y} 0">{wheel}
-      </body>"""
-
+    # Sprung, damped upright. A slide joint carries the coilover; the kingpin, where
+    # present, sits inside it; the wheel rolls inside that. Every body with a joint needs
+    # inertia of its own -- the child wheel's mass does not count -- hence the <inertial>.
+    stiffness = (
+        config.suspension_stiffness_front_n_m
+        if name.startswith("f")
+        else config.suspension_stiffness_rear_n_m
+    )
     hub_inertia = config.hub_mass_kg * 0.01
-    # The kingpin body carries a joint, and MuJoCo requires every *moving* body to have
-    # mass and inertia of its own -- the child wheel's mass does not count. An explicit
-    # <inertial> for the upright is the fix; without it the model refuses to compile.
-    return f"""
-      <body name="hub_{name}" pos="{x} {y} 0">
+    steering = ""
+    if steerable:
+        steering = f"""
         <joint name="steer_{name}" type="hinge" axis="0 0 1"
                range="{-config.max_steer_rad} {config.max_steer_rad}"
-               damping="{config.steer_damping_nms}" armature="0.2"/>
+               damping="{config.steer_damping_nms}" armature="0.2"/>"""
+    return f"""
+      <body name="hub_{name}" pos="{x} {y} 0">
         <inertial pos="0 0 0" mass="{config.hub_mass_kg}"
-                  diaginertia="{hub_inertia} {hub_inertia} {hub_inertia}"/>{wheel}
+                  diaginertia="{hub_inertia} {hub_inertia} {hub_inertia}"/>
+        <joint name="susp_{name}" type="slide" axis="0 0 1"
+               range="{-config.suspension_travel_m} {config.suspension_travel_m}"
+               stiffness="{stiffness}" damping="{config.suspension_damping_ns_m}"/>{steering}{wheel}
       </body>"""
 
 
@@ -520,6 +564,48 @@ def car_actuators_xml(config: CarConfig | None = None) -> str:
         for side in ("fl", "fr", "rl", "rr")
     )
     return steer + drive + brakes
+
+
+def car_tendons_xml(config: CarConfig | None = None) -> str:
+    """MJCF ``<tendon>`` fragment: the anti-roll bars.
+
+    A fixed tendon whose length is ``q_left - q_right`` of an axle's two suspension
+    slides, given a stiffness, is exactly an anti-roll bar: it resists the two sides
+    compressing differently and does nothing in pure heave.
+    """
+    config = config or CarConfig()
+    return "".join(
+        f"""
+    <fixed name="arb_{axle}" stiffness="{config.anti_roll_stiffness_n_m}">
+      <joint joint="susp_{axle}l" coef="1"/>
+      <joint joint="susp_{axle}r" coef="-1"/>
+    </fixed>"""
+        for axle in ("f", "r")
+    )
+
+
+def assemble_model_xml(
+    centerline: Centerline,
+    scene: SceneConfig | None = None,
+    car: CarConfig | None = None,
+) -> str:
+    """The complete MJCF for the car on a track, with every car fragment wired in.
+
+    The one place that knows the car needs assets, bodies, actuators *and* tendons.
+    Before this existed each caller assembled the fragments by hand, and forgetting one
+    -- the anti-roll bars are the easy one to miss -- compiled fine and quietly produced
+    a different car. Everything that builds a model goes through here.
+    """
+    car = car or CarConfig()
+    position, yaw = centerline.pose_at(0.0)
+    return build_scene_xml(
+        centerline,
+        scene,
+        extra_assets=car_assets_xml(car),
+        extra_bodies=car_body_xml(position, yaw, car),
+        extra_actuators=car_actuators_xml(car),
+        extra_tendons=car_tendons_xml(car),
+    )
 
 
 def steering_angle_rad(steer: float, config: CarConfig | None = None) -> float:
