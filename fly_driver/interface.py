@@ -26,18 +26,50 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-__all__ = ["CONTROL_DTYPE", "FRAME_DTYPE", "ControlVector", "Frame", "validate_frame"]
+__all__ = [
+    "CONTROL_DTYPE",
+    "FRAME_DTYPE",
+    "FRAME_RATE_HZ",
+    "FRAME_SHAPE",
+    "ControlVector",
+    "Frame",
+    "validate_frame",
+]
 
 #: Frames are ``(height, width, 3)`` uint8 in ``[0, 255]`` -- what MuJoCo's offscreen
-#: renderer returns and what an Assetto Corsa screen capture gives us. The contract fixes
-#: the dtype and channel count but never the resolution: that belongs to whichever env is
-#: in the loop, and is configured there.
+#: renderer returns and what an Assetto Corsa screen capture gives us. The dtype and the
+#: channel count are the hard part of the contract; the resolution is
+#: :data:`FRAME_SHAPE`, which is the project's agreed default and still an argument on
+#: whichever env is in the loop.
 FRAME_DTYPE = np.uint8
 
 #: Actions are float32 -- the dtype a policy head emits, so no conversion at the seam.
 CONTROL_DTYPE = np.float32
 
 Frame = npt.NDArray[np.uint8]
+
+#: The camera frame every stage of the pipeline agrees on, ``(height, width, 3)``.
+#:
+#: **This is a choice, not a constraint.** It reaches us from an earlier draft that used
+#: Gymnasium CarRacing, whose FPS and frame size the eye was first written against; the
+#: practice track replaced that design (`AGENTS.md` §6) but the number was worth keeping --
+#: it is what the hex resampler's geometry was verified at, and 96x96 renders fast enough
+#: to leave the eye as the bottleneck rather than the renderer. Both
+#: :class:`~fly_driver.eyes.HexResampler` and :class:`~fly_driver.eyes.FlyvisEye` take it as
+#: a constructor argument, so changing it here is legitimate as long as the eye is
+#: constructed from :attr:`~fly_driver.envs.practice_track.PracticeTrack.frame_shape` rather
+#: than from a number typed out again at the call site.
+FRAME_SHAPE: tuple[int, int, int] = (96, 96, 3)
+
+#: Frames per second of simulated time: one frame per environment step.
+#:
+#: **This one is not negotiable.** flyvis is a dynamical system integrated with Euler steps
+#: of ``dt`` seconds and one frame is one step, so the environment's frame rate *is* the
+#: optic lobe's integration rate. ``FlyvisEye`` raises below 50 Hz -- ``dt > 1/50`` is
+#: outside the integration limit the pretrained network was fitted under -- and warns above
+#: it. Anything that steps the car at some other rate and feeds the eye is quietly
+#: simulating a different fly.
+FRAME_RATE_HZ: float = 50.0
 
 #: ``(name, low, high)`` per control component, in :meth:`ControlVector.to_array` order.
 _BOUNDS: tuple[tuple[str, float, float], ...] = (

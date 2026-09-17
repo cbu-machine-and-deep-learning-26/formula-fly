@@ -26,6 +26,13 @@ dependencies = [
 # gamepads on its own.
 dev = ["pytest>=8.0", "ruff>=0.6", "pynput>=1.7"]
 
+# There is deliberately no `flyvis` extra here, and torch does not belong in this file.
+# The optic lobe installs into its own virtualenv from `requirements-flyvis.txt` --
+# flyvis 1.2.0 needs Python >=3.9,<3.13 and drags in platform-specific PyTorch/CUDA
+# wheels, which is exactly the aarch64 trap AGENTS.md §7 says to keep out of the default
+# install. See `docs/running-the-stacks.md` for the `.venv-flyvis` recipe. The practice
+# track never imports the eye; it hands it a frame (see fly_driver/envs/practice_track.py).
+
 [tool.setuptools.packages.find]
 include = ["fly_driver*"]
 

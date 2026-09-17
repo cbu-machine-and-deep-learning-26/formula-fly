@@ -154,6 +154,63 @@ Full list: `scripts/drive.py --help`.
 
 ---
 
+## Driving it from code
+
+`scripts/drive.py` is for humans. Anything else — a random policy, a trained one, the fly —
+goes through the environment:
+
+```python
+from fly_driver.envs.practice_track import PracticeTrack
+from fly_driver.interface import ControlVector
+
+with PracticeTrack(max_steps=5_000) as env:
+    frame = env.reset()                     # (96, 96, 3) uint8, from the fly's head camera
+    while True:
+        result = env.step(ControlVector(steer=0.0, throttle=1.0, brake=0.0))
+        frame = result.frame                # one step = 1/50 s of simulated time
+        if result.done:
+            break
+```
+
+`result.info` carries the raw signals — `progress_m`, `speed_mps`, `off_track_fraction`,
+`lap_time`, `lap_completed` — and deliberately **no reward**. Picking the reward function
+belongs to the training ticket, not to the track.
+
+### Connecting the fly's eye
+
+The environment never imports flyvis or torch, and it should stay that way: the optic lobe
+needs Python < 3.13 and platform-specific CUDA wheels, so it lives in **its own virtualenv**.
+Do not `pip install torch` into `.venv` — follow
+[`docs/running-the-stacks.md`](docs/running-the-stacks.md), which builds `.venv-flyvis` from
+`requirements-flyvis.txt`.
+
+What makes the two halves fit is that the frame this env emits is exactly the frame the eye
+declares. Take the numbers from the env rather than typing them again:
+
+```python
+from fly_driver.eyes import FlyvisEye
+
+eye = FlyvisEye(frame_shape=env.frame_shape, frame_rate_hz=env.frame_rate_hz)
+
+frame = env.reset()
+eye.reset()                      # required at every episode start — the optic lobe keeps
+                                 # state between frames
+features = eye.encode(frame)     # (5768,) float32 -> brain -> policy -> ControlVector
+```
+
+Two constants in `fly_driver/interface.py` hold the agreement:
+
+| | |
+|---|---|
+| `FRAME_SHAPE = (96, 96, 3)` | ours to change, as long as both sides read it from here |
+| `FRAME_RATE_HZ = 50.0` | **fixed.** One frame is one Euler step of flyvis; it raises below 50 Hz |
+
+Measured on this machine: the env runs about **400 steps/s** with rendering (≈2.5 ms/step,
+of which ≈1.5 ms is the render), against the eye's 7.9 ms per frame. So the optic lobe is
+the bottleneck, not the track, and one environment comfortably feeds one eye in real time.
+
+---
+
 ## Running the tests
 
 ```bash
