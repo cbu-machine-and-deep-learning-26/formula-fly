@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import operator
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -78,11 +79,10 @@ def _create_edge_frames(
     ]
     if direction == "rtl":
         thresholds.reverse()
+    is_bright = operator.le if direction == "ltr" else operator.ge
     sweep_frames = [
         [
-            1.0
-            if (position <= threshold if direction == "ltr" else position >= threshold)
-            else 0.0
+            1.0 if is_bright(position, threshold) else 0.0
             for position in horizontal_positions
         ]
         for threshold in thresholds
