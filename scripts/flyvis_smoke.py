@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -52,10 +53,13 @@ def main() -> int:
         import flyvis
     except ModuleNotFoundError as error:
         if error.name == "flyvis":
-            print(
-                "SKIP: flyvis is not installed; run "
-                "`python -m pip install -r requirements-flyvis.txt`."
-            )
+            if sys.version_info >= (3, 13):
+                print("SKIP: flyvis needs Python 3.9-3.12.")
+            else:
+                print(
+                    "SKIP: flyvis is not installed; run "
+                    "`python -m pip install -r requirements-flyvis.txt`."
+                )
             return 0
         raise
 

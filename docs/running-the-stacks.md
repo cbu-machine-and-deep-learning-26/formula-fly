@@ -4,11 +4,12 @@ These checks keep the eye, body, and car integrations independent.
 
 ## flyvis (optic lobe)
 
-Run on Linux for development and on the DGX Sparks for experiments. Use an NGC
-PyTorch image on Spark rather than resolving PyTorch wheels directly on ARM.
+flyvis requires Python 3.9-3.12. Run on Linux for development and on the DGX
+Sparks for experiments. Use an NGC PyTorch image on Spark rather than resolving
+PyTorch wheels directly on ARM.
 
 ```bash
-python3 -m venv .venv-flyvis
+python3.12 -m venv .venv-flyvis
 source .venv-flyvis/bin/activate
 python -m pip install -r requirements-flyvis.txt
 export FLYVIS_ROOT_DIR="$HOME/.cache/flyvis"
@@ -76,6 +77,8 @@ and was not tested for this ticket.
 
 ## Known failures and sharp edges
 
+- Python 3.13+ cannot install flyvis 1.2.0 and pip reports
+  `ERROR: No matching distribution found for flyvis==1.2.0`.
 - `flyvis` from PyPI pulls platform-specific PyTorch/CUDA wheels. Do not assume
   those resolve on aarch64; validate the NGC Spark image first.
 - The pretrained checkpoint is a separate download. The smoke script skips
