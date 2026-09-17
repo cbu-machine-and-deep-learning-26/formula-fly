@@ -373,18 +373,28 @@ class TestSuspension:
         assert model.tendon_stiffness[front] == pytest.approx(CONFIG.anti_roll_stiffness_front_n_m)
         assert model.tendon_stiffness[rear] == pytest.approx(CONFIG.anti_roll_stiffness_rear_n_m)
 
-    def test_springs_are_stiffer_at_the_rear(self, model):
+    def test_the_front_springs_are_the_stiffer_pair(self, model):
+        """This used to assert the opposite, on the general principle that the driven
+        axle carries more weight so wants more spring. The SF70H's own data says the
+        front is stiffer -- 40 kN/m per wheel against 30 at the rear, and 100 against 90
+        once the heave springs are folded in. Stated as a fact about this car, not a rule
+        about cars."""
         front = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_fl")
         rear = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_rl")
-        assert model.jnt_stiffness[rear] > model.jnt_stiffness[front] > 0
+        assert model.jnt_stiffness[front] > model.jnt_stiffness[rear] > 0
 
     def test_anti_roll_bars_exist_per_axle(self, model):
         for axle in ("f", "r"):
             assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TENDON, f"arb_{axle}") != -1
 
     def test_static_sag_is_small_and_equal_left_to_right(self, model, data):
-        """F1 springs are stiff: a few millimetres under the car's own weight. Unequal
-        sag means an asymmetric car, which would pull under braking."""
+        """Unequal sag means an asymmetric car, which would pull under braking.
+
+        The window used to be 3-15 mm, from springs guessed at 250/300 kN/m. The real car
+        is far softer than that -- 100/90 kN/m once AC's heave springs are folded in --
+        and sits 16 mm down at the front and 22 at the rear on its own weight. That is the
+        point of a soft spring and a stiff heave spring: compliant over kerbs, rigid under
+        aero load."""
         _drive(model, data, 0.0, 0.0, 0.0, 2.0)
         # The slide axis is +z on the hub, so under load the chassis drops relative to
         # the hub and the joint coordinate goes *positive*: compression = +q.
@@ -392,9 +402,12 @@ class TestSuspension:
         for side in ("fl", "fr", "rl", "rr"):
             joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"susp_{side}")
             sag[side] = float(data.qpos[model.jnt_qposadr[joint]])
-        assert all(0.003 < value < 0.015 for value in sag.values()), sag
+        assert all(0.010 < value < 0.030 for value in sag.values()), sag
         assert sag["fl"] == pytest.approx(sag["fr"], abs=5e-4)
         assert sag["rl"] == pytest.approx(sag["rr"], abs=5e-4)
+        # Softer rear springs under a rear-biased weight distribution: the car sits
+        # nose-up at rest, which is the rake a real one runs.
+        assert sag["rl"] > sag["fl"]
 
     def test_car_rests_level(self, model, data):
         _drive(model, data, 0.0, 0.0, 0.0, 2.0)

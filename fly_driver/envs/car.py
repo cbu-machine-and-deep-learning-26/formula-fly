@@ -173,25 +173,54 @@ class CarConfig:
             Raised from 150 after Payton asked for a little more.
             A test computes the realised ratio from the compiled model so a heavier
             wheel cannot quietly bring the shimmy back.
-        suspension_stiffness_front_n_m: Front coilover wheel rate. F1 springs are very
-            stiff -- hundreds of N/mm -- because the car is held down by aerodynamic load,
-            not by suspension travel, and the floor must not touch the road.
-        suspension_stiffness_rear_n_m: Rear rate, stiffer than the front, as a
-            single-seater runs it.
-        suspension_damping_ns_m: Coilover damper rate. About 0.75 of critical for a
-            quarter of the car on the front spring, and well over critical for the
-            ~21 kg unsprung corner, so the wheels do not hop.
-        suspension_travel_m: Bump-stop each way. Static sag is ~7 mm and aero load at
-            top speed adds ~15 mm, so 40 mm leaves headroom for kerbs and braking.
-        anti_roll_stiffness_front_n_m: Front anti-roll bar rate, applied as a fixed tendon
-            on the difference between the two sides' suspension travel. Resists roll,
-            does nothing in pure heave.
+        suspension_stiffness_front_n_m: Front coilover wheel rate.
+        suspension_stiffness_rear_n_m: Rear wheel rate.
 
-            An earlier attempt at suspension was abandoned because it cost grip and top
-            speed. That attempt also softened the tyre contact and was measured with
-            contact counts; separated out, the contact softening was the whole loss
-            (326 -> 284 km/h on its own). This version leaves the contacts alone and is
-            measured on settled lateral g, top speed and stopping distance.
+            Both come from Assetto Corsa's suspension data for this car, but translated
+            rather than copied, because a real F1 car has two springs per axle and this
+            model has one per corner.
+
+            AC runs 40 kN/m per front wheel and 30 kN/m per rear, plus a 120 kN/m *heave*
+            spring on each axle that only resists both wheels moving together. So the car
+            is soft in roll and very stiff in heave: 2*40 + 120 = 200 kN/m per front axle,
+            100 kN/m per wheel, and 90 kN/m per wheel at the rear.
+
+            These springs are matched to the **heave** rate, because that is the mode
+            aerodynamic load acts through and it is what sets ride height -- and ride
+            height is what the floor, the diffuser and the camera all depend on. Roll is
+            then recovered with the anti-roll bars. Matching the wheel rate instead would
+            have put the car 141 mm into its own suspension at 300 km/h, past the bump
+            stop and through the floor.
+
+            They are also 2.5 to 3 times softer than the 250/300 kN/m guessed before,
+            which is why Payton could not tell the suspension had been added: it was
+            barely moving.
+        suspension_damping_ns_m: Coilover damper rate, compression and rebound alike.
+            AC separates the two (3500 bump, 3850 rebound at the front, plus the heave
+            damper) and splits front from rear; this model has one number, so it takes the
+            heave-equivalent average of about 6.5 kN s/m. That lands at a damping ratio of
+            0.76 front and 0.80 rear against the sprung corner mass, which is the range a
+            race car runs.
+        suspension_travel_m: Bump stop each way. AC allows 105 mm of compression and 150 mm
+            of droop at the front; 100 mm symmetric is the closest this model's single
+            range can get. The old 40 mm was less than the car's own aero squat.
+        anti_roll_stiffness_front_n_m: Front anti-roll bar rate, applied as a fixed tendon
+            on the difference between the two sides' suspension travel. Resists roll, does
+            nothing in pure heave.
+        anti_roll_stiffness_rear_n_m: The same at the rear, and zero on purpose.
+
+            These are not AC's bar rates (64 kN/m front, 15 kN/m rear) and cannot be,
+            because the springs above carry the heave rate rather than the wheel rate, so
+            they are already stiffer in roll than the real car's springs are. The bars are
+            therefore set to recover AC's roll-stiffness *distribution* rather than its
+            absolute numbers.
+
+            AC's axles work out at roughly 143 kN m/rad front against 54 rear, so the front
+            takes 72.6% of the roll stiffness. With heave-rate springs the rear is already
+            past its share at 108 kN m/rad with no bar at all, so the rear bar goes to zero
+            and the front bar comes up to 108 kN/m to restore the split. Roll balance is
+            what decides whether a car understeers, so the ratio is the part worth getting
+            right; the absolute stiffness is set by the springs either way.
         max_actuator_torque_nm: Control range of the drive and brake motors, in N*m.
             A ceiling, not a setpoint -- actual torque comes from the powertrain model.
             Wide enough that MuJoCo never silently clips a legitimate command.
@@ -267,12 +296,12 @@ class CarConfig:
     max_steer_rad: float = 0.35
     steer_gain: float = 12000.0
     steer_damping_nms: float = 200.0
-    suspension_stiffness_front_n_m: float = 250_000.0
-    suspension_stiffness_rear_n_m: float = 300_000.0
-    suspension_damping_ns_m: float = 10_000.0
-    suspension_travel_m: float = 0.04
-    anti_roll_stiffness_front_n_m: float = 50_000.0
-    anti_roll_stiffness_rear_n_m: float = 50_000.0
+    suspension_stiffness_front_n_m: float = 100_000.0
+    suspension_stiffness_rear_n_m: float = 90_000.0
+    suspension_damping_ns_m: float = 6_500.0
+    suspension_travel_m: float = 0.10
+    anti_roll_stiffness_front_n_m: float = 108_000.0
+    anti_roll_stiffness_rear_n_m: float = 0.0
     max_actuator_torque_nm: float = 20_000.0
     wheel_friction: tuple[float, float, float] = (1.8, 0.02, 0.001)
     wheel_friction_rear: tuple[float, float, float] = (1.9, 0.02, 0.001)
