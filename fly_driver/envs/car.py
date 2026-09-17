@@ -46,6 +46,7 @@ from fly_driver.envs.powertrain import (
     drive_torque,
     engine_speed_rads,
     select_gear,
+    traction_factor,
 )
 from fly_driver.envs.scene import SceneConfig, build_scene_xml
 from fly_driver.interface import ControlVector
@@ -857,12 +858,12 @@ class CarDynamics:
         # the wheel: wheelspin revs it and the limiter cut is what bounds the spin.
         # Referencing this to ground speed instead let a wheel accelerate without limit.
         for side in ("rl", "rr"):
-            commands[f"drive_{side}"] = drive_torque(
-                control.throttle,
-                float(data.qvel[self._wheel_dof[side]]),
-                self._gear,
-                self.powertrain,
-            )
+            wheel_rads = float(data.qvel[self._wheel_dof[side]])
+            torque = drive_torque(control.throttle, wheel_rads, self._gear, self.powertrain)
+            # Traction control, which AC has active on this car. Without it the rears light
+            # up out of slow corners and the car swaps ends on the throttle.
+            torque *= traction_factor(speed, wheel_rads, self.car.wheel_radius_m, self.powertrain)
+            commands[f"drive_{side}"] = torque
 
         dt = float(self._model.opt.timestep)
         for side in ("fl", "fr", "rl", "rr"):

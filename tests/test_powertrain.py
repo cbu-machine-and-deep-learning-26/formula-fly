@@ -267,6 +267,65 @@ class TestBrakes:
             brake_torque(1.0, 100.0, True, P, **kwargs)
 
 
+class TestTractionFactor:
+    """Traction control, which Assetto Corsa has active on this car (slip ratio 0.10,
+    above 30 km/h) while having ABS switched off -- the opposite of what this model had.
+
+    Measured without it: full lock and full throttle at 60 km/h put the car 16.5 degrees
+    sideways and spinning. With it, 2.1 degrees, and nothing lost anywhere else (0-100
+    and 0-300 are unchanged, because it only cuts a wheel that is already spinning).
+    """
+
+    R = WHEEL_RADIUS
+
+    def _factor(self, speed, wheel_rads, config=P):
+        from fly_driver.envs.powertrain import traction_factor
+
+        return traction_factor(speed, wheel_rads, self.R, config)
+
+    def test_a_wheel_matching_the_road_gets_full_torque(self):
+        assert self._factor(40.0, 40.0 / self.R) == 1.0
+
+    def test_a_wheel_spinning_far_faster_than_the_car_gets_none(self):
+        assert self._factor(40.0, 400.0 / self.R) == 0.0
+
+    def test_ramps_between_the_thresholds(self):
+        mid = (P.traction_slip_full + P.traction_slip_cut) / 2
+        # slip = (surface - ground) / surface, so surface = ground / (1 - slip)
+        surface = 40.0 / (1.0 - mid)
+        assert self._factor(40.0, surface / self.R) == pytest.approx(0.5)
+
+    def test_a_wheel_slower_than_the_car_is_not_limited(self):
+        """Engine braking and downshifts make the wheel lag the road. That is the brake
+        limiter's business, not this one's."""
+        assert self._factor(40.0, 30.0 / self.R) == 1.0
+
+    def test_stands_down_below_the_minimum_speed(self):
+        """Or it would strangle every standing start, where slip is how a car launches."""
+        assert self._factor(P.traction_min_speed_mps * 0.5, 400.0 / self.R) == 1.0
+
+    def test_a_stationary_wheel_is_not_a_division_by_zero(self):
+        assert self._factor(40.0, 0.0) == 1.0
+
+    def test_disabled_means_no_limiting(self):
+        from dataclasses import replace
+
+        off = replace(P, traction_control_enabled=False)
+        assert self._factor(40.0, 400.0 / self.R, off) == 1.0
+
+    def test_it_is_on_for_the_sf70h(self):
+        assert P.traction_control_enabled
+
+    def test_the_slip_limit_matches_the_data(self):
+        assert P.traction_slip_full == pytest.approx(0.10)
+
+    def test_rejects_inverted_thresholds(self):
+        from dataclasses import replace
+
+        with pytest.raises(ValueError):
+            replace(P, traction_slip_full=0.5, traction_slip_cut=0.2)
+
+
 class TestAbsFactor:
     """The slip limiter. Measured without it: 40% pedal at 150 km/h locked the fronts
     88% of the time, and the car went straight on while the steering shook."""

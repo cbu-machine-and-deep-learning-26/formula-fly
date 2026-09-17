@@ -45,6 +45,7 @@ __all__ = [
     "PowertrainConfig",
     "SF70H_POWERTRAIN",
     "abs_factor",
+    "traction_factor",
     "brake_torque",
     "drive_torque",
     "limiter_fraction",
@@ -104,6 +105,18 @@ class PowertrainConfig:
             between the two, which settles the wheel near 12-18% slip rather than
             bang-banging between rolling and locked. Tightened from 12/30% after Payton
             asked for a little more.
+        traction_control_enabled: Slip-limit the drive torque so the rear wheels cannot
+            spin up. Assetto Corsa has this **active** on the SF70H --
+            ``SLIP_RATIO_LIMIT=0.10``, ``ACTIVE=1``, above 30 km/h -- and has ABS switched
+            off, which is the opposite of what this model had. Without it the car spins on
+            the throttle out of slow corners, which is what Payton hit.
+        traction_slip_full: Wheelspin slip below which the engine gets full torque. AC's
+            0.10, matched.
+        traction_slip_cut: Slip at which drive torque is cut to zero, ramping linearly from
+            ``traction_slip_full``. AC cuts on a curve rather than a ramp; this is the same
+            shape the brake limiter already uses, so the two read alike.
+        traction_min_speed_mps: Below this the limiter stands down, or it would strangle
+            every standing start. AC uses 30 km/h.
         abs_min_speed_mps: Below this ground speed slip is ill-conditioned and the limiter
             stands down, so the car can be braked to a dead stop.
 
@@ -129,6 +142,10 @@ class PowertrainConfig:
     abs_slip_full: float = 0.10
     abs_slip_release: float = 0.25
     abs_min_speed_mps: float = 2.0
+    traction_control_enabled: bool = True
+    traction_slip_full: float = 0.10
+    traction_slip_cut: float = 0.25
+    traction_min_speed_mps: float = 8.3
 
     def __post_init__(self) -> None:
         positives = {
@@ -161,6 +178,11 @@ class PowertrainConfig:
                 f"shift_up_fraction={self.shift_up_fraction} is inside the limiter taper "
                 f"(from {1.0 - self.limiter_taper_fraction}); torque is cut before the box "
                 f"shifts and the car can be trapped below the shift point"
+            )
+        if not 0 <= self.traction_slip_full < self.traction_slip_cut <= 1:
+            raise ValueError(
+                "need 0 <= traction_slip_full < traction_slip_cut <= 1, got "
+                f"{self.traction_slip_full} and {self.traction_slip_cut}"
             )
         if not 0.0 <= self.abs_slip_full < self.abs_slip_release <= 1.0:
             raise ValueError(
@@ -378,6 +400,37 @@ def abs_factor(
     if slip >= config.abs_slip_release:
         return 0.0
     return 1.0 - (slip - config.abs_slip_full) / (config.abs_slip_release - config.abs_slip_full)
+
+
+def traction_factor(
+    ground_speed_mps: float, wheel_rads: float, wheel_radius_m: float, config: PowertrainConfig
+) -> float:
+    """Multiplier on one driven wheel's torque from traction control: 1 gripping, 0 spinning.
+
+    The mirror image of :func:`abs_factor`. Wheelspin slip is
+    ``(omega * r - v) / (omega * r)``: 0 for a wheel matching the road, approaching 1 for
+    one spinning freely against a stationary car. Full torque up to ``traction_slip_full``,
+    nothing at ``traction_slip_cut``, linear between.
+
+    Referenced to the wheel rather than the road because that is the term that blows up:
+    at the moment of a spin the car is barely moving and the wheel is doing hundreds of
+    rad/s, so dividing by ground speed would give a slip of thousands and no useful ramp.
+    """
+    if not config.traction_control_enabled:
+        return 1.0
+    if ground_speed_mps < config.traction_min_speed_mps:
+        return 1.0
+    surface = abs(float(wheel_rads)) * wheel_radius_m
+    if surface <= 1e-6:
+        return 1.0
+    slip = (surface - ground_speed_mps) / surface
+    if slip <= config.traction_slip_full:
+        return 1.0
+    if slip >= config.traction_slip_cut:
+        return 0.0
+    return 1.0 - (slip - config.traction_slip_full) / (
+        config.traction_slip_cut - config.traction_slip_full
+    )
 
 
 def brake_torque(

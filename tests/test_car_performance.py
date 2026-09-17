@@ -174,10 +174,30 @@ class TestHandlingBalance:
         angle = provoked["sideslip at 60 km/h (deg)"]
         assert angle < self.SPIN_DEG, f"spun to {angle:.0f} degrees of sideslip"
 
-    def test_but_the_back_still_steps_out(self, provoked):
-        """Not a rail. If this ever reads near zero the rear grip has gone too far and
-        the car can no longer be made to oversteer on purpose."""
-        assert provoked["sideslip at 60 km/h (deg)"] > 8.0
+    def test_the_car_underneath_is_still_lively(self, bed):
+        """Not a rail. Traction control now holds the same provocation to about 2 degrees,
+        which is what Payton asked for after spinning on the throttle -- but the aid should
+        be doing that work, not an inherently inert car. Switch it off and the back must
+        still step out, or the rear grip has gone too far.
+
+        Assetto Corsa runs traction control on this car too (slip ratio 0.10 above
+        30 km/h), so having it on by default is the faithful setting, not a crutch."""
+        from dataclasses import replace
+
+        from fly_driver.envs.car import CarDynamics
+        from fly_driver.envs.powertrain import SF70H_POWERTRAIN
+
+        no_tc = replace(SF70H_POWERTRAIN, traction_control_enabled=False)
+        bed.dynamics = CarDynamics(bed.model, bed.car, powertrain=no_tc)
+        try:
+            loose = measure_sideslip(bed, 60.0)["sideslip at 60 km/h (deg)"]
+        finally:
+            bed.dynamics = CarDynamics(bed.model, bed.car)
+        assert loose > 8.0, f"only {loose:.1f} degrees with the aid off"
+
+    def test_traction_control_is_what_tames_it(self, provoked):
+        """With the aid on, the same input barely moves the car."""
+        assert provoked["sideslip at 60 km/h (deg)"] < 6.0
 
     def test_a_fast_corner_stays_planted(self, bed):
         """Where downforce dominates, nothing the driver does should unstick it."""
