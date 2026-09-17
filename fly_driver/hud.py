@@ -29,11 +29,15 @@ import mujoco
 import numpy as np
 import numpy.typing as npt
 
+from fly_driver.envs.lap import format_lap_time
+
 __all__ = [
     "HEIGHT",
     "LED_COUNT",
     "WIDTH",
     "Telemetry",
+    "MAP_RECT",
+    "TrackMap",
     "ViewerHUD",
     "bar_fill",
     "leds_lit",
@@ -44,7 +48,7 @@ __all__ = [
     "text_width",
 ]
 
-WIDTH, HEIGHT = 420, 168
+WIDTH, HEIGHT = 650, 244
 LED_COUNT = 10
 
 #: The first shift light comes on at this fraction of the limiter; the last at the shift
@@ -67,6 +71,12 @@ _SUSP_EXTEND: Colour = (120, 170, 220)
 _LED_ON: tuple[Colour, ...] = ((40, 200, 80),) * 4 + ((235, 60, 60),) * 4 + ((90, 150, 255),) * 2
 _LED_OFF: tuple[Colour, ...] = ((28, 52, 36),) * 4 + ((60, 28, 28),) * 4 + ((30, 40, 72),) * 2
 _LED_SHIFT: Colour = (120, 180, 255)
+_MAP_BACKGROUND: Colour = (24, 27, 30)
+_MAP_TRACK: Colour = (108, 116, 124)
+_MAP_START: Colour = (235, 235, 235)
+_FLY_BODY: Colour = (255, 82, 62)
+_FLY_WING: Colour = (198, 216, 246)
+_BEST: Colour = (255, 205, 90)
 
 # Layout, in panel pixels with y down. One place, so the drawing code reads as geometry.
 _MARGIN = 10
@@ -85,6 +95,11 @@ _STEER_BAR = (80, 100, 240, 114)
 _STEER_MARKER_HALF_WIDTH = 4
 _SUSP_Y = (100, 150)
 _SUSP_X = {"fl": (270, 290), "fr": (298, 318), "rl": (334, 354), "rr": (362, 382)}
+_LAP_X = 10
+_LAP_ROWS = (176, 198, 220)
+_LAP_VALUE_X = 76
+_LAP_COUNT_X = 250
+MAP_RECT = (432, 8, 642, 236)  # x0, y0, x1, y1
 
 # 5x7 bitmap font: only what the panel prints. '#' is ink.
 _FONT: dict[str, tuple[str, ...]] = {
@@ -100,6 +115,7 @@ _FONT: dict[str, tuple[str, ...]] = {
     "9": (".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."),
     "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
     "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
     "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
     "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
     "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####"),
@@ -114,12 +130,31 @@ _FONT: dict[str, tuple[str, ...]] = {
     "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
     "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
     "/": ("....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."),
+    ":": (".....", "..##.", "..##.", ".....", "..##.", "..##.", "....."),
     "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
     "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
     ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
     " ": (".....",) * 7,
 }
 GLYPH_W, GLYPH_H = 5, 7
+
+#: The marker on the map. Payton asked for "a simple fly icon", so it is one shape read
+#: from above: dark body down the middle, pale wings swept out either side. 'B' body,
+#: 'W' wing, '.' transparent -- the map shows through the dots.
+_FLY: tuple[str, ...] = (
+    "....BBB....",
+    "...BBBBB...",
+    "..BBBBBBB..",
+    ".WBBBBBBBW.",
+    "WWWBBBBBWWW",
+    "WWWWBBBWWWW",
+    ".WWWBBBWWW.",
+    "...BBBBB...",
+    "....BBB....",
+    "....BBB....",
+    ".....B.....",
+)
+FLY_W, FLY_H = len(_FLY[0]), len(_FLY)
 
 
 @dataclass(frozen=True)
@@ -135,6 +170,13 @@ class Telemetry:
         steer: -1 to 1, the ControlVector's own range.
         suspension: Coilover travel for ``fl, fr, rl, rr`` as a fraction of the bump-stop
             travel, compression positive, so -1 to 1.
+        position: The car's ``(x, y)`` in world metres, for the map marker. ``None`` hides
+            the marker but still draws the outline.
+        lap_current: Seconds into the lap being driven.
+        lap_last: The lap just completed.
+        lap_best: The record, read from the lap-time document -- not from anything this
+            process remembers, so deleting a row changes what is shown.
+        lap_count: Laps completed this session.
     """
 
     speed_kmh: float
@@ -144,6 +186,11 @@ class Telemetry:
     brake: float
     steer: float
     suspension: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    position: tuple[float, float] | None = None
+    lap_current: float | None = None
+    lap_last: float | None = None
+    lap_best: float | None = None
+    lap_count: int = 0
 
 
 def rpm_fraction(rpm: float, limiter_rpm: float) -> float:
@@ -220,7 +267,101 @@ def text_width(text: str, scale: int) -> int:
     return len(text) * (GLYPH_W + 1) * scale
 
 
-def render(telemetry: Telemetry, *, limiter_rpm: float, shift_rpm: float) -> npt.NDArray[np.uint8]:
+def _line(
+    img: npt.NDArray[np.uint8],
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    colour: Colour,
+    width: int = 1,
+) -> None:
+    """A straight line of square dots. Enough for a track outline, no anti-aliasing."""
+    steps = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+    half = width / 2.0
+    for x, y in zip(np.linspace(x0, x1, steps), np.linspace(y0, y1, steps), strict=True):
+        _rect(img, x - half, y - half, x + half, y + half, colour)
+
+
+class TrackMap:
+    """The track outline, scaled once into a fixed box, plus world-to-pixel mapping.
+
+    The outline never changes, so it is drawn once into :attr:`base` and copied each
+    frame; only the marker is redrawn. That keeps a 700-point polyline off the per-frame
+    path entirely.
+
+    The aspect ratio is preserved and the drawing centred, so the circuit keeps its real
+    shape rather than being stretched to the box -- a squashed Silverstone would be
+    actively misleading about where you are.
+
+    Args:
+        points: ``(N, 2)`` centerline points in world metres.
+        width: Box width in pixels.
+        height: Box height in pixels.
+        padding: Pixels of clear space inside the box.
+
+    Raises:
+        ValueError: If fewer than two points are given, or the box is too small to draw in.
+    """
+
+    def __init__(
+        self, points: npt.ArrayLike, *, width: int, height: int, padding: int = 10
+    ) -> None:
+        pts = np.asarray(points, dtype=float).reshape(-1, 2)
+        if len(pts) < 2:
+            raise ValueError(f"need at least two centerline points, got {len(pts)}")
+        if width - 2 * padding < 2 or height - 2 * padding < 2:
+            raise ValueError(f"{width}x{height} box is too small for {padding} px padding")
+
+        self.width, self.height, self.padding = int(width), int(height), int(padding)
+        low, high = pts.min(axis=0), pts.max(axis=0)
+        span = np.maximum(high - low, 1e-9)
+        usable = np.array([width - 2 * padding, height - 2 * padding], dtype=float)
+        self._scale = float(np.min(usable / span))
+        # Centre whatever room is left over once the aspect ratio has been preserved.
+        self._offset = (usable - span * self._scale) / 2.0 + padding
+        self._low = low
+
+        base = np.empty((self.height, self.width, 3), dtype=np.uint8)
+        base[:] = _MAP_BACKGROUND
+        pixels = [self.to_pixel(float(x), float(y)) for x, y in pts]
+        for (xa, ya), (xb, yb) in zip(pixels, pixels[1:] + pixels[:1], strict=True):
+            _line(base, xa, ya, xb, yb, _MAP_TRACK, width=2)
+        # Start/finish, so "where am I" has a reference point.
+        sx, sy = pixels[0]
+        _rect(base, sx - 3, sy - 3, sx + 3, sy + 3, _MAP_START)
+        self.base = base
+
+    def to_pixel(self, x: float, y: float) -> tuple[float, float]:
+        """World metres to pixels inside the box. World +y is north, so pixel y flips."""
+        px = self._offset[0] + (x - self._low[0]) * self._scale
+        py = self.height - (self._offset[1] + (y - self._low[1]) * self._scale)
+        return px, py
+
+
+def _draw_fly(img: npt.NDArray[np.uint8], cx: float, cy: float) -> None:
+    """Stamp the fly marker centred on ``(cx, cy)``, leaving '.' pixels untouched."""
+    left, top = int(round(cx)) - FLY_W // 2, int(round(cy)) - FLY_H // 2
+    for row, line in enumerate(_FLY):
+        for col, mark in enumerate(line):
+            if mark == ".":
+                continue
+            colour = _FLY_BODY if mark == "B" else _FLY_WING
+            _rect(img, left + col, top + row, left + col + 1, top + row + 1, colour)
+
+
+def _lap_text(seconds: float | None) -> str:
+    """A lap time for the panel, or a dash when there is not one yet."""
+    return "--" if seconds is None else format_lap_time(seconds)
+
+
+def render(
+    telemetry: Telemetry,
+    *,
+    limiter_rpm: float,
+    shift_rpm: float,
+    track: TrackMap | None = None,
+) -> npt.NDArray[np.uint8]:
     """Draw the panel. Returns an ``(HEIGHT, WIDTH, 3)`` uint8 RGB array, y down."""
     if not 0 < shift_rpm <= limiter_rpm:
         raise ValueError("need 0 < shift_rpm <= limiter_rpm, both positive")
@@ -292,6 +433,26 @@ def render(telemetry: Telemetry, *, limiter_rpm: float, shift_rpm: float) -> npt
             _rect(img, xa, mid, xb, mid - fraction * (bottom - mid), _SUSP_EXTEND)
         _rect(img, xa - 1, mid - 1, xb + 1, mid + 1, _DIM)
         _text(img, (xa + xb) // 2 - text_width(corner, 1) // 2 + 1, bottom + 5, corner, 1, _DIM)
+
+    # Lap times. BEST comes from the lap-time document, so it reflects whatever rows are
+    # in the file right now -- delete one and this changes.
+    rows = (
+        ("CUR", _lap_text(telemetry.lap_current), _TEXT),
+        ("LAST", _lap_text(telemetry.lap_last), _DIM),
+        ("BEST", _lap_text(telemetry.lap_best), _BEST),
+    )
+    for y, (label, value, colour) in zip(_LAP_ROWS, rows, strict=True):
+        _text(img, _LAP_X, y, label, 2, _DIM)
+        _text(img, _LAP_VALUE_X, y, value, 2, colour)
+    _text(img, _LAP_COUNT_X, _LAP_ROWS[0], f"LAP {telemetry.lap_count}", 2, _DIM)
+
+    # The map, with the fly where the car is.
+    if track is not None:
+        x0, y0, x1, y1 = MAP_RECT
+        img[y0:y1, x0:x1] = track.base
+        if telemetry.position is not None:
+            px, py = track.to_pixel(*telemetry.position)
+            _draw_fly(img[y0:y1, x0:x1], px, py)
     return img
 
 
@@ -315,14 +476,22 @@ class ViewerHUD:
         limiter_rpm: The rev limit; the right end of the rpm bar.
         shift_rpm: Where the shift lights all come on.
         margin_px: Gap from the window's left and top edges.
+        track: Outline to draw the map from. ``None`` leaves that corner empty.
     """
 
     def __init__(
-        self, viewer, *, limiter_rpm: float, shift_rpm: float, margin_px: int = 12
+        self,
+        viewer,
+        *,
+        limiter_rpm: float,
+        shift_rpm: float,
+        margin_px: int = 12,
+        track: TrackMap | None = None,
     ) -> None:
         if limiter_rpm <= 0 or not 0 < shift_rpm <= limiter_rpm:
             raise ValueError("need 0 < shift_rpm <= limiter_rpm, both positive")
         self._viewer = viewer
+        self.track = track
         self.limiter_rpm = float(limiter_rpm)
         self.shift_rpm = float(shift_rpm)
         self.margin_px = int(margin_px)
@@ -350,7 +519,12 @@ class ViewerHUD:
             return
         if viewport.height < HEIGHT + 2 * self.margin_px:
             return
-        image = render(telemetry, limiter_rpm=self.limiter_rpm, shift_rpm=self.shift_rpm)
+        image = render(
+            telemetry,
+            limiter_rpm=self.limiter_rpm,
+            shift_rpm=self.shift_rpm,
+            track=self.track,
+        )
         # This empty text overlay is load-bearing. MuJoCo's passive viewer only runs its
         # overlay pass when a text overlay is set, so without it set_images() is accepted
         # every frame, raises nothing, and draws nothing at all -- which is exactly how

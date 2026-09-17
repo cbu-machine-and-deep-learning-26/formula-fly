@@ -14,8 +14,10 @@ from fly_driver import hud
 from fly_driver.hud import (
     HEIGHT,
     LED_COUNT,
+    MAP_RECT,
     WIDTH,
     Telemetry,
+    TrackMap,
     ViewerHUD,
     bar_fill,
     leds_lit,
@@ -130,6 +132,36 @@ class TestFont:
         assert len(set(digits)) == 10
 
     def test_everything_the_panel_prints_has_a_glyph(self):
+        """Built from the real strings rather than a hand-kept list, because a hand-kept
+        list is what let "CUR" ship rendering as "UR" and lap times without their colon:
+        a missing glyph falls back to blank and nothing complains."""
+        from fly_driver.envs.lap import format_lap_time
+
+        printed = [
+            "0123456789",
+            "KM/H",
+            "RPM",
+            "GEAR",
+            "STEER",
+            "SUSP",
+            "CUR",
+            "LAST",
+            "BEST",
+            "LAP 0",
+            "T",
+            "B",
+            "-1",
+            "+1",
+            "--",
+            format_lap_time(87.097),
+            format_lap_time(3.2),
+            *(corner.upper() for corner in ("fl", "fr", "rl", "rr")),
+        ]
+        for text in printed:
+            for char in text:
+                assert char in hud._FONT, f"no glyph for {char!r} in {text!r}"
+
+    def test_legacy_glyph_coverage(self):
         for text in (
             "0123456789",
             "KM/H",
@@ -226,6 +258,145 @@ class TestRender:
     def test_out_of_range_inputs_still_draw(self):
         img = draw(throttle=5.0, brake=-1.0, steer=9.0, rpm=1e6, suspension=(3.0, -3.0, 0.0, 0.0))
         assert img.shape == (HEIGHT, WIDTH, 3)
+
+
+SQUARE = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+
+
+class TestTrackMap:
+    def test_base_layer_matches_the_box(self):
+        track = TrackMap(SQUARE, width=200, height=160)
+        assert track.base.shape == (160, 200, 3)
+        assert track.base.dtype == np.uint8
+
+    def test_the_outline_is_actually_drawn(self):
+        track = TrackMap(SQUARE, width=200, height=160)
+        drawn = (track.base != np.array(hud._MAP_BACKGROUND, np.uint8)).any(axis=2)
+        assert drawn.sum() > 200, "the track outline is missing"
+
+    def test_everything_stays_inside_the_padding(self):
+        track = TrackMap(SQUARE, width=200, height=160, padding=10)
+        for x, y in SQUARE:
+            px, py = track.to_pixel(x, y)
+            assert 9 <= px <= 191
+            assert 9 <= py <= 151
+
+    def test_the_shape_is_not_stretched_to_the_box(self):
+        """A square lap must stay square in a rectangular box, or the map lies about
+        where you are on the circuit."""
+        track = TrackMap(SQUARE, width=300, height=150)
+        corners = [track.to_pixel(x, y) for x, y in SQUARE]
+        width = corners[1][0] - corners[0][0]
+        height = corners[0][1] - corners[2][1]
+        assert width == pytest.approx(height, rel=0.02)
+
+    def test_north_is_up(self):
+        """World +y is north; pixel y counts downwards. Getting this backwards flips the
+        circuit and is not obvious from a glance at the outline."""
+        track = TrackMap(SQUARE, width=200, height=160)
+        _, low = track.to_pixel(50.0, 0.0)
+        _, high = track.to_pixel(50.0, 100.0)
+        assert high < low
+
+    def test_east_is_right(self):
+        track = TrackMap(SQUARE, width=200, height=160)
+        left, _ = track.to_pixel(0.0, 50.0)
+        right, _ = track.to_pixel(100.0, 50.0)
+        assert right > left
+
+    def test_a_real_circuit_fits(self):
+        from fly_driver.envs.centerline import Centerline
+
+        centerline = Centerline.load()
+        x0, y0, x1, y1 = MAP_RECT
+        track = TrackMap(centerline.points, width=x1 - x0, height=y1 - y0)
+        pixels = np.array([track.to_pixel(float(x), float(y)) for x, y in centerline.points])
+        assert pixels[:, 0].min() >= 0 and pixels[:, 0].max() <= x1 - x0
+        assert pixels[:, 1].min() >= 0 and pixels[:, 1].max() <= y1 - y0
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"width": 200, "height": 160, "padding": 100},
+            {"width": 4, "height": 160},
+        ],
+    )
+    def test_rejects_a_box_it_cannot_draw_in(self, kwargs):
+        with pytest.raises(ValueError):
+            TrackMap(SQUARE, **kwargs)
+
+    def test_rejects_too_few_points(self):
+        with pytest.raises(ValueError):
+            TrackMap([(0.0, 0.0)], width=200, height=160)
+
+
+class TestMapOnThePanel:
+    def _track(self):
+        x0, y0, x1, y1 = MAP_RECT
+        return TrackMap(SQUARE, width=x1 - x0, height=y1 - y0)
+
+    def test_no_track_leaves_the_corner_alone(self):
+        img = draw()
+        x0, y0, x1, y1 = MAP_RECT
+        corner = img[y0:y1, x0:x1]
+        assert (corner == np.array(hud._BACKGROUND, np.uint8)).all()
+
+    def test_the_outline_appears_when_a_track_is_given(self):
+        img = render(frame(), limiter_rpm=LIMITER, shift_rpm=SHIFT, track=self._track())
+        x0, y0, x1, y1 = MAP_RECT
+        corner = img[y0:y1, x0:x1]
+        assert (corner == np.array(hud._MAP_TRACK, np.uint8)).all(axis=2).sum() > 100
+
+    def test_the_fly_shows_where_the_car_is(self):
+        track = self._track()
+        x0, y0, x1, y1 = MAP_RECT
+        left = render(
+            frame(position=(0.0, 50.0)), limiter_rpm=LIMITER, shift_rpm=SHIFT, track=track
+        )
+        right = render(
+            frame(position=(100.0, 50.0)), limiter_rpm=LIMITER, shift_rpm=SHIFT, track=track
+        )
+
+        def marker_x(img):
+            body = (img[y0:y1, x0:x1] == np.array(hud._FLY_BODY, np.uint8)).all(axis=2)
+            assert body.any(), "no fly drawn"
+            return np.flatnonzero(body.any(axis=0)).mean()
+
+        assert marker_x(left) < marker_x(right)
+
+    def test_no_position_means_no_fly(self):
+        img = render(frame(), limiter_rpm=LIMITER, shift_rpm=SHIFT, track=self._track())
+        x0, y0, x1, y1 = MAP_RECT
+        body = (img[y0:y1, x0:x1] == np.array(hud._FLY_BODY, np.uint8)).all(axis=2)
+        assert not body.any()
+
+    def test_the_fly_never_spills_outside_the_map(self):
+        """A marker drawn at the very corner must not paint over the gauges."""
+        track = self._track()
+        x0, y0, x1, y1 = MAP_RECT
+        for corner in SQUARE:
+            img = render(frame(position=corner), limiter_rpm=LIMITER, shift_rpm=SHIFT, track=track)
+            outside = img.copy()
+            outside[y0:y1, x0:x1] = hud._BACKGROUND
+            body = (outside == np.array(hud._FLY_BODY, np.uint8)).all(axis=2)
+            assert not body.any(), f"fly leaked outside the map at {corner}"
+
+
+class TestLapTimesOnThePanel:
+    def test_dashes_before_any_lap_is_set(self):
+        assert not np.array_equal(draw(lap_last=None), draw(lap_last=95.0))
+
+    def test_the_times_are_drawn(self):
+        blank = draw()
+        timed = draw(lap_current=41.9, lap_last=95.48, lap_best=92.117, lap_count=2)
+        assert not np.array_equal(blank, timed)
+
+    def test_the_best_time_is_picked_out(self):
+        img = draw(lap_best=92.117)
+        assert (img == np.array(hud._BEST, np.uint8)).all(axis=2).any()
+
+    def test_the_lap_counter_changes_the_picture(self):
+        assert not np.array_equal(draw(lap_count=1), draw(lap_count=2))
 
 
 class _FakeViewer:

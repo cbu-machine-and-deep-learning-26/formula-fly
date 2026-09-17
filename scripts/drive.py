@@ -38,10 +38,16 @@ right stick, Payton's preference after driving with the left:
   left trigger    brake, 0 to 1.
 ===========  ==================================================================
 
-A telemetry panel sits in the bottom-left of the viewer window: speed, gear, an rpm bar
-with a row of shift lights (the box shifts for itself; the lights show where it will),
-throttle and brake as bars, steering as a bar running -1 to +1 as the ControlVector does,
-and the travel of each coilover. ``--no-hud`` suppresses it.
+A telemetry panel sits in the top-left of the viewer window: speed, gear, an rpm bar with
+a row of shift lights (the box shifts for itself; the lights show where it will), throttle
+and brake as bars, steering as a bar running -1 to +1 as the ControlVector does, the travel
+of each coilover, lap times, and a map of the circuit with a fly marking where you are.
+``--no-hud`` suppresses it.
+
+Every completed lap is appended to the lap-time document (``lap_times.md`` by default,
+``--lap-log`` to point elsewhere, ``--no-lap-log`` to time laps without writing them down).
+The best time on the panel is read back out of that document rather than remembered here,
+so deleting a row from it changes the record straight away -- even mid-session.
 
 Everything else is MuJoCo's own viewer binding, and those take precedence:
 
@@ -76,8 +82,9 @@ import numpy as np
 
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline
+from fly_driver.envs.lap import DEFAULT_LAP_LOG_PATH, LapLog, LapTimer, format_lap_time
 from fly_driver.envs.scene import SceneConfig
-from fly_driver.hud import Telemetry, ViewerHUD
+from fly_driver.hud import MAP_RECT, Telemetry, TrackMap, ViewerHUD
 from fly_driver.interface import ControlVector
 
 CONTROL_HZ = 50
@@ -293,6 +300,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
     parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
+    parser.add_argument(
+        "--lap-log",
+        type=Path,
+        default=DEFAULT_LAP_LOG_PATH,
+        help="lap-time document to append completed laps to",
+    )
+    parser.add_argument(
+        "--no-lap-log", action="store_true", help="time laps but do not write them down"
+    )
     args = parser.parse_args(argv)
 
     car = CarConfig(camera_fovy_deg=args.fovy) if args.fovy else CarConfig()
@@ -315,6 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     # thread before the viewer starts its own GLFW work.
     source = choose_input(args.input, raw_steer=args.raw_steer)
 
+    lap_timer = LapTimer(centerline)
+    lap_log = None if args.no_lap_log else LapLog(args.lap_log)
+
     data = mujoco.MjData(model)
     reset_to_start(model, data)
 
@@ -336,10 +355,14 @@ def main(argv: list[str] | None = None) -> int:
             hud = None
             if not args.no_hud:
                 limiter_rpm = dynamics.powertrain.max_engine_rads * 60.0 / (2.0 * np.pi)
+                map_x0, map_y0, map_x1, map_y1 = MAP_RECT
                 hud = ViewerHUD(
                     viewer,
                     limiter_rpm=limiter_rpm,
                     shift_rpm=limiter_rpm * dynamics.powertrain.shift_up_fraction,
+                    track=TrackMap(
+                        centerline.points, width=map_x1 - map_x0, height=map_y1 - map_y0
+                    ),
                 )
             last_report = 0.0
             while viewer.is_running():
@@ -348,6 +371,19 @@ def main(argv: list[str] | None = None) -> int:
                 speed = dynamics.speed_mps(data)
                 control = source.control(speed)
                 dynamics.step(control, data, substeps)
+
+                position = data.xpos[car_body]
+                projection = centerline.project(float(position[0]), float(position[1]))
+                completed = lap_timer.update(projection.arclength, float(data.time))
+                if completed is not None:
+                    note = ""
+                    if lap_log is not None and lap_log.record(completed, driver=source.name):
+                        note = "  NEW BEST"
+                    print()
+                    print(
+                        f"lap {lap_timer.completed}: {format_lap_time(completed)}{note}",
+                        flush=True,
+                    )
 
                 if hud is not None:
                     travel = dynamics.suspension_travel(data)
@@ -363,6 +399,13 @@ def main(argv: list[str] | None = None) -> int:
                                 travel[side] / car.suspension_travel_m
                                 for side in ("fl", "fr", "rl", "rr")
                             ),
+                            position=(float(position[0]), float(position[1])),
+                            lap_current=lap_timer.current_lap_time(float(data.time)),
+                            lap_last=lap_timer.last_lap,
+                            # Read back out of the document every frame, so deleting a row
+                            # while the sim is running changes this immediately.
+                            lap_best=None if lap_log is None else lap_log.best(),
+                            lap_count=lap_timer.completed,
                         )
                     )
 
@@ -372,8 +415,6 @@ def main(argv: list[str] | None = None) -> int:
                 now = time.perf_counter()
                 if now - last_report > 0.5:
                     last_report = now
-                    position = data.xpos[car_body]
-                    projection = centerline.project(float(position[0]), float(position[1]))
                     where = "on track" if projection.is_on_track else "OFF"
                     print(
                         f"\r{speed * 3.6:6.1f} km/h | "
