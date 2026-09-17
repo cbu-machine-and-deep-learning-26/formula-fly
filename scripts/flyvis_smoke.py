@@ -20,6 +20,7 @@ MOTION_READOUTS = (
     "T5d",
 )
 FRAME_COUNT = 4
+EDGE_FRAME_COUNT = 10
 HEXAL_COUNT = 721
 FRAME_INTERVAL_SECONDS = 1 / 50
 
@@ -27,18 +28,59 @@ FRAME_INTERVAL_SECONDS = 1 / 50
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--plot",
+        type=Path,
+        help="Output prefix for input and response PNGs.",
+    )
+    parser.add_argument(
         "--readout",
         action="append",
         dest="readouts",
         help="Cell type to report; repeat for multiple types (default: T4/T5).",
     )
+    parser.add_argument(
+        "--stimulus",
+        choices=("ramp", "edge"),
+        default="ramp",
+        help="Synthetic stimulus to simulate (default: ramp).",
+    )
     return parser.parse_args()
 
 
-def _create_sequence(torch: Any) -> Any:
+def _create_ramp_sequence(torch: Any) -> Any:
     base_frame = torch.linspace(0.1, 0.9, HEXAL_COUNT)
     frames = [torch.roll(base_frame, shifts=frame) for frame in range(FRAME_COUNT)]
     return torch.stack(frames)[None, :, None, :]
+
+
+def _create_edge_frames(
+    horizontal_positions: Sequence[float], frame_count: int = EDGE_FRAME_COUNT
+) -> list[list[float]]:
+    if not horizontal_positions:
+        raise ValueError("horizontal_positions must not be empty")
+    if frame_count < 2:
+        raise ValueError("frame_count must be at least 2")
+
+    left_edge = min(horizontal_positions)
+    right_edge = max(horizontal_positions)
+    thresholds = [
+        left_edge + (right_edge - left_edge) * frame / (frame_count - 1)
+        for frame in range(frame_count)
+    ]
+    return [
+        [1.0 if position <= threshold else 0.0 for position in horizontal_positions]
+        for threshold in thresholds
+    ]
+
+
+def _create_edge_sequence(torch: Any, flyvis: Any) -> Any:
+    from flyvis.utils.hex_utils import get_hextent, get_hex_coords, hex_to_pixel
+
+    extent = get_hextent(HEXAL_COUNT)
+    horizontal_hex, vertical_hex = get_hex_coords(extent)
+    horizontal_pixels, _ = hex_to_pixel(horizontal_hex, vertical_hex)
+    frames = _create_edge_frames(horizontal_pixels.tolist())
+    return torch.tensor(frames, dtype=torch.float32)[None, :, None, :]
 
 
 def _find_missing_readouts(
@@ -47,8 +89,109 @@ def _find_missing_readouts(
     return sorted(set(requested_readouts) - set(available_readouts))
 
 
+def _save_plots(
+    plot_prefix: Path,
+    stimulus_name: str,
+    sequence: Any,
+    responses: Any,
+) -> tuple[Path, Path]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import torch
+    from flyvis.analysis.visualization.plots import quick_hex_scatter
+
+    if plot_prefix.suffix.lower() == ".png":
+        plot_prefix = plot_prefix.with_suffix("")
+    plot_prefix.parent.mkdir(parents=True, exist_ok=True)
+    input_path = Path(f"{plot_prefix}_input.png")
+    response_path = Path(f"{plot_prefix}_responses.png")
+
+    frame_count = sequence.shape[1]
+    input_figure, input_axes = plt.subplots(
+        1,
+        frame_count,
+        figsize=(1.6 * frame_count, 2),
+        layout="constrained",
+        squeeze=False,
+    )
+    input_scalarmapper = None
+    for frame in range(frame_count):
+        _, _, (_, input_scalarmapper) = quick_hex_scatter(
+            sequence[0, frame, 0],
+            ax=input_axes[0, frame],
+            cbar=False,
+            cmap=plt.get_cmap("gray"),
+            fig=input_figure,
+            title=f"{frame * FRAME_INTERVAL_SECONDS:.2f} s",
+            vmin=0,
+            vmax=1,
+        )
+    input_figure.suptitle(f"{stimulus_name.capitalize()} input on flyvis retina")
+    input_figure.colorbar(
+        input_scalarmapper,
+        ax=input_axes.ravel().tolist(),
+        label="luminance",
+        shrink=0.7,
+    )
+    input_figure.savefig(input_path, dpi=180)
+    plt.close(input_figure)
+
+    motion_responses = torch.stack(
+        [responses[readout][0] for readout in MOTION_READOUTS]
+    )
+    response_limit = float(motion_responses.abs().max())
+    response_figure, response_axes = plt.subplots(
+        len(MOTION_READOUTS),
+        frame_count,
+        figsize=(1.6 * frame_count, 1.45 * len(MOTION_READOUTS)),
+        layout="constrained",
+        squeeze=False,
+    )
+    response_scalarmapper = None
+    for row, readout in enumerate(MOTION_READOUTS):
+        for frame in range(frame_count):
+            _, _, (_, response_scalarmapper) = quick_hex_scatter(
+                motion_responses[row, frame],
+                ax=response_axes[row, frame],
+                cbar=False,
+                cmap=plt.get_cmap("coolwarm"),
+                fig=response_figure,
+                midpoint=0,
+                title=(f"{frame * FRAME_INTERVAL_SECONDS:.2f} s" if row == 0 else ""),
+                vmin=-response_limit,
+                vmax=response_limit,
+            )
+            if frame == 0:
+                response_axes[row, frame].text(
+                    -0.2,
+                    0.5,
+                    readout,
+                    fontsize=8,
+                    fontweight="bold",
+                    ha="right",
+                    rotation=90,
+                    transform=response_axes[row, frame].transAxes,
+                    va="center",
+                )
+    response_figure.suptitle(
+        f"T4/T5 responses to {stimulus_name} stimulus (shared scale)"
+    )
+    response_figure.colorbar(
+        response_scalarmapper,
+        ax=response_axes.ravel().tolist(),
+        label="response (a.u.)",
+        shrink=0.5,
+    )
+    response_figure.savefig(response_path, dpi=180)
+    plt.close(response_figure)
+    return input_path, response_path
+
+
 def main() -> int:
     """Run the smoke test, or skip successfully when optional data is absent."""
+    args = _parse_args()
     try:
         import flyvis
     except ModuleNotFoundError as error:
@@ -74,13 +217,16 @@ def main() -> int:
     import torch
     from flyvis.utils.activity_utils import LayerActivity
 
-    requested_readouts = tuple(_parse_args().readouts or MOTION_READOUTS)
+    requested_readouts = tuple(args.readouts or MOTION_READOUTS)
     network_view = flyvis.NetworkView(checkpoint_dir)
     network = network_view.init_network()
     network.eval()
     network.requires_grad_(False)
 
-    sequence = _create_sequence(torch)
+    if args.stimulus == "edge":
+        sequence = _create_edge_sequence(torch, flyvis)
+    else:
+        sequence = _create_ramp_sequence(torch)
     responses = network.simulate(
         sequence,
         dt=FRAME_INTERVAL_SECONDS,
@@ -109,6 +255,18 @@ def main() -> int:
     for readout, response in zip(requested_readouts, selected_responses):
         print(f"{readout} shape: {tuple(response.shape)}")
     print(f"concatenated readout shape: {tuple(readout_vector.shape)}")
+    if args.stimulus == "edge":
+        for readout in MOTION_READOUTS:
+            print(f"edge mean {readout}: {float(responses[readout].mean()):.6f}")
+    if args.plot is not None:
+        input_path, response_path = _save_plots(
+            args.plot,
+            args.stimulus,
+            sequence,
+            responses,
+        )
+        print(f"input plot: {input_path}")
+        print(f"response plot: {response_path}")
     return 0
 
 

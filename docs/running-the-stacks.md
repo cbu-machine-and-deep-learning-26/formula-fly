@@ -23,6 +23,9 @@ reports the full activity tensor, and exposes configurable cell-type output
 readouts (`--readout T4a`, repeated as needed). T4a-d and T5a-d are the defaults.
 It exits successfully with a `SKIP` message when the optional package or
 checkpoint is absent, so base CI does not need flyvis.
+Use `--stimulus edge` for a 10-frame sweeping edge instead of the default ramp.
+`--plot PATH` writes `PATH_input.png` and `PATH_responses.png` on flyvis's own
+hex-lattice layout.
 
 Observed with flyvis 1.2.0: full response `(1, 4, 45669)`; each T4a-d/T5a-d
 readout `(1, 4, 721)`; concatenated T4/T5 readout `(1, 4, 5768)`. The model
