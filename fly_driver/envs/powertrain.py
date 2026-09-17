@@ -72,6 +72,10 @@ class PowertrainConfig:
         max_engine_rads: Rev limit in rad/s. 15000 rpm is the 2017 regulation ceiling.
         idle_engine_rads: Below this the engine is treated as off the throttle rather than
             producing negative torque, which keeps a stationary car from creeping.
+        torque_curve: Full-throttle crankshaft torque as ``(rpm, N*m)`` points, rising
+            rpm. Empty falls back to the flat-then-``P/omega`` idealisation built from
+            ``peak_torque_nm`` and ``peak_power_w``, which is what every config without
+            measured data gets.
         gear_ratios: Gearbox ratios, first to top.
         final_drive: Differential ratio, applied on top of the gear ratio.
         driveline_efficiency: Fraction of crank torque reaching the wheels.
@@ -113,6 +117,7 @@ class PowertrainConfig:
     max_engine_rads: float
     idle_engine_rads: float
     max_brake_torque_nm: float
+    torque_curve: tuple[tuple[float, float], ...] = ()
     gear_ratios: tuple[float, ...] = _DEFAULT_GEAR_RATIOS
     final_drive: float = _DEFAULT_FINAL_DRIVE
     driveline_efficiency: float = 0.90
@@ -186,13 +191,58 @@ class PowertrainConfig:
         return self.gear_ratios[gear] * self.final_drive
 
 
-#: Ferrari SF70H. 746 kW is the published ~1000 hp. Peak torque is not published, so it is
-#: set to put the power/torque crossover near 10,000 rpm, where a turbo hybrid's peak sits.
+#: Full-throttle crankshaft torque, in ``(rpm, N*m)``. Derived from Assetto Corsa's data
+#: for this car: its naturally aspirated torque table multiplied by the turbo model in the
+#: same file (3.5 bar maximum, 3.4 bar wastegate, spooled by 5,500 rpm), then sampled at
+#: round engine speeds. Peak torque is 642 N*m at 10,000 rpm and peak power 758 kW
+#: (1,016 hp) at 12,000 -- the ~1000 hp the car is usually quoted at.
+#:
+#: The collapse above 12,000 rpm is real and is the reason this table exists at all. The
+#: old flat-then-``P/omega`` idealisation held peak torque all the way to the limiter,
+#: which made revving it out free; here a third of the torque is gone by 13,000.
+#:
+#: **ERS is not included.** The same data adds 182 N*m of electrical torque at low rpm
+#: falling to 66 at the limiter -- with it, peak power would be 867 kW (1,162 hp). It is
+#: left out because it is energy-limited (4 MJ per lap in the data, the FIA allowance) and
+#: deployed in bursts, so modelling it as always-on would flatter the car everywhere. This
+#: engine is therefore the ERS-depleted case, which is the conservative one.
+SF70H_TORQUE_CURVE: tuple[tuple[float, float], ...] = (
+    (2_000.0, 227.0),
+    (3_000.0, 291.0),
+    (4_000.0, 355.0),
+    (5_000.0, 535.0),
+    (6_000.0, 559.0),
+    (7_000.0, 581.0),
+    (8_000.0, 612.0),
+    (9_000.0, 634.0),
+    (10_000.0, 642.0),
+    (11_000.0, 616.0),
+    (12_000.0, 603.0),
+    (13_000.0, 414.0),
+    (14_000.0, 356.0),
+    (15_000.0, 277.0),
+)
+
+#: Ferrari SF70H, from Assetto Corsa's own drivetrain and engine data for this car.
+#:
+#: The eight ratios and the 4.42 final drive are AC's. They are much taller than the
+#: 6.26 final drive guessed before -- top gear went from 5.57 overall to 4.60 -- which is
+#: what lets eighth reach terminal velocity instead of running into the limiter.
+#:
+#: ``shift_up_fraction`` is computed from the curve rather than set near the limiter.
+#: With roughly a 1.10 step between the upper gears, the crossover where the power after
+#: an upshift matches the power before it sits near 12,300 rpm; above that the torque
+#: collapse costs more than the extra revs are worth. 0.82 of 15,000 puts the shift there.
+#: The old 0.94 shifted at 14,100, deep into the part of the curve that has given up.
 SF70H_POWERTRAIN = PowertrainConfig(
-    peak_power_w=746_000.0,
-    peak_torque_nm=700.0,
+    peak_power_w=758_000.0,
+    peak_torque_nm=642.0,
+    torque_curve=SF70H_TORQUE_CURVE,
     max_engine_rads=15_000.0 * 2.0 * np.pi / 60.0,
-    idle_engine_rads=4_000.0 * 2.0 * np.pi / 60.0,
+    idle_engine_rads=2_950.0 * 2.0 * np.pi / 60.0,
+    gear_ratios=(2.9688, 2.3943, 2.0411, 1.7155, 1.4800, 1.2800, 1.1400, 1.0400),
+    final_drive=4.4200,
+    shift_up_fraction=0.82,
     # Sized so the tyres, not the discs, are the limit everywhere on the speed range. At
     # 300 km/h the rear axle carries ~13.2 kN (static load plus 55% of the downforce),
     # which at mu 1.7 and a 0.335 m radius is ~3.8 kNm of grip per rear wheel. With 16 kNm
@@ -208,11 +258,20 @@ SF70H_POWERTRAIN = PowertrainConfig(
 def engine_torque(engine_rads: float, config: PowertrainConfig) -> float:
     """Crankshaft torque at a given engine speed, in N·m, at full throttle.
 
-    Flat at ``peak_torque_nm`` until the power limit bites, then ``P / omega``. This is a
-    deliberately smooth idealisation of a turbo hybrid's real curve: the shape that matters
-    for lap time is the power ceiling, not the ripples.
+    With a ``torque_curve`` this interpolates it. Without one it falls back to flat at
+    ``peak_torque_nm`` until the power limit bites, then ``P / omega`` -- a smooth
+    idealisation for configs that have no measured data.
+
+    The idealisation turned out to matter more than "the power ceiling is what counts"
+    assumed. A real turbo hybrid does not hold peak torque to the limiter: this engine
+    peaks at 10,000 rpm and has lost a third of it by 13,000, which moves the useful
+    shift point a long way down from the rev limit.
     """
     speed = float(np.clip(engine_rads, config.idle_engine_rads, config.max_engine_rads))
+    if config.torque_curve:
+        rpm = speed * 60.0 / (2.0 * np.pi)
+        points = config.torque_curve
+        return float(np.interp(rpm, [p[0] for p in points], [p[1] for p in points]))
     power_limited = config.peak_power_w / speed
     return float(min(config.peak_torque_nm, power_limited))
 

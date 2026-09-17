@@ -47,17 +47,46 @@ def tractive_n(speed_kmh: float) -> float:
     return 2.0 * drive_torque(1.0, wheel_rads_at(speed_kmh), gear, P) / WHEEL_RADIUS
 
 
+def _rads(rpm: float) -> float:
+    return rpm * 2.0 * np.pi / 60.0
+
+
 class TestEngineTorque:
-    def test_flat_below_the_power_crossover(self):
-        low = engine_torque(P.idle_engine_rads * 1.2, P)
-        assert low == pytest.approx(P.peak_torque_nm)
+    """The curve is Assetto Corsa's for this car, so these describe its real shape.
 
-    def test_falls_as_power_limited_at_high_rpm(self):
-        assert engine_torque(P.max_engine_rads, P) < P.peak_torque_nm
+    They replace two tests that asserted the previous idealisation -- that torque is flat
+    below a power crossover, and that power at the rev limiter equals the rating. Both
+    were true of the old flat-then-P/omega model and are false of any real engine; this
+    one has shed a third of its torque by 13,000 rpm.
+    """
 
-    def test_power_at_the_limiter_matches_the_rating(self):
-        power = engine_torque(P.max_engine_rads, P) * P.max_engine_rads
-        assert power == pytest.approx(P.peak_power_w, rel=0.01)
+    def test_peak_torque_is_where_the_data_says(self):
+        assert engine_torque(_rads(10_000), P) == pytest.approx(P.peak_torque_nm, rel=0.01)
+
+    def test_torque_rises_to_the_peak(self):
+        assert engine_torque(_rads(4_000), P) < engine_torque(_rads(7_000), P)
+        assert engine_torque(_rads(7_000), P) < engine_torque(_rads(10_000), P)
+
+    def test_torque_collapses_above_twelve_thousand(self):
+        """The reason the shift point is nowhere near the limiter."""
+        assert engine_torque(_rads(13_000), P) < 0.75 * engine_torque(_rads(12_000), P)
+
+    def test_peak_power_is_near_twelve_thousand(self):
+        powers = {
+            rpm: engine_torque(_rads(rpm), P) * _rads(rpm) for rpm in range(6_000, 15_001, 500)
+        }
+        best = max(powers, key=lambda rpm: powers[rpm])
+        assert 11_000 <= best <= 13_000, f"peak power at {best} rpm"
+        assert powers[best] == pytest.approx(P.peak_power_w, rel=0.03)
+
+    def test_power_at_the_limiter_is_well_below_peak(self):
+        """Revving it out is not free. Holding gears to 15,000 costs about 40% of peak."""
+        limiter = engine_torque(P.max_engine_rads, P) * P.max_engine_rads
+        assert limiter < 0.7 * P.peak_power_w
+
+    def test_the_shift_point_is_before_the_collapse(self):
+        shift_rpm = P.shift_up_fraction * P.max_engine_rads * 60.0 / (2.0 * np.pi)
+        assert 11_500 <= shift_rpm <= 13_000, f"shifts at {shift_rpm:.0f} rpm"
 
     def test_never_exceeds_rated_power(self):
         for rads in np.linspace(P.idle_engine_rads, P.max_engine_rads, 50):
@@ -66,6 +95,17 @@ class TestEngineTorque:
     def test_below_idle_does_not_go_negative(self):
         """A stationary car must not be dragged backwards by engine braking."""
         assert engine_torque(0.0, P) > 0
+
+    def test_a_config_without_a_curve_still_uses_the_idealisation(self):
+        """Every config that has no measured data falls back to flat-then-P/omega."""
+        from dataclasses import replace
+
+        plain = replace(P, torque_curve=())
+        assert engine_torque(plain.idle_engine_rads * 1.2, plain) == pytest.approx(
+            plain.peak_torque_nm
+        )
+        power = engine_torque(plain.max_engine_rads, plain) * plain.max_engine_rads
+        assert power == pytest.approx(plain.peak_power_w, rel=0.01)
 
 
 class TestGearbox:
