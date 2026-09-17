@@ -61,6 +61,59 @@ pytest -q tests/eyes
 `python scripts/hex_resampler_plot.py PATH.png` renders the bright top-left
 test pattern next to its 721-column resampling (matplotlib only, no flyvis).
 
+### FlyvisEye (default visual frontend)
+
+`fly_driver.eyes.FlyvisEye` wraps the pretrained, frozen optic lobe behind the
+project interface: a `96 × 96 × 3` uint8 camera frame in, a float32 feature
+vector out. `import fly_driver.eyes` works without flyvis; constructing the eye
+without it raises `FlyvisNotInstalledError` with install instructions.
+
+```python
+from fly_driver.eyes import FlyvisEye
+
+eye = FlyvisEye()                     # flow/0000/000 under $FLYVIS_ROOT_DIR/results
+eye.reset()                           # 1 s grey warm-up; call at every episode start
+features = eye.encode(frame)          # (5768,) float32, one call per env frame
+episode = eye.encode_sequence(frames) # (T, 5768); resets first by default
+```
+
+Construction options: `checkpoint` (name under `flyvis.results_dir` or a path),
+`readouts` (default `T4a-d, T5a-d`; any of the 34 output cell types listed
+above, names validated), `frame_shape`, `device`, `frame_rate_hz`,
+`warmup_seconds`, `warmup_luminance`. `feature_dim == len(readouts) * 721`;
+the vector is the readouts concatenated in `readout_names` order, each in
+flyvis hexagonal column order (the same `(u, v)` order as the resampler).
+`trainable_parameters()` is `0`; `state_activity` exposes all 45,669 neurons
+for diagnostics.
+
+**Timing is the design decision.** flyvis is a dynamical system integrated at
+`dt = 1/50` s, and one frame is one Euler step. `encode` keeps the network
+state between calls, so an RL loop that calls it once per environment step runs
+the optic lobe at the environment's frame rate. That rate must be 50 Hz, which
+is Gymnasium CarRacing's `FPS`; slower rates raise (`dt > 1/50` is outside
+flyvis's integration limit) and faster rates warn. Streaming frame by frame and
+`encode_sequence` on the same frames are asserted equal. `reset()` warms up on
+a uniform grey camera frame pushed through the resampler (so the darkened
+boundary columns are already at rest); 1 s is the default because 0.5 s still
+leaves a 0.27 a.u. transient versus 0.027 at 1 s.
+
+Measured on this 4-thread x86 CPU with flyvis 1.2.0 / torch 2.14:
+`encode()` median 7.9 ms per frame (p95 8.1 ms; ~1.5 ms resampler + ~6 ms
+network), `encode_sequence()` 8.4 ms per frame including the reset, `reset()`
+280 ms, checkpoint load 4 s. That is 40% of the 20 ms frame budget at 50 Hz, so
+a single environment can run the eye in real time on CPU. Reproduce with
+`python scripts/flyvis_eye_demo.py --out DIR`, which also writes
+`flyvis_eye_edge_{right,left}.png` (camera frame plus T4/T5 maps over time) and
+`flyvis_eye_direction_preference.png` (per-subtype grating preference), and
+exits with `SKIP` when flyvis or the checkpoint is absent.
+
+Tests: `tests/eyes/test_flyvis_eye.py` runs without flyvis (lazy import,
+validation); `tests/eyes/test_flyvis_eye_pretrained.py` needs the checkpoint and
+covers frozen weights, streaming/sequence equality, reset determinism, warm-up
+settling, T4/T5 direction selectivity through the eye, and 10 s of noise
+staying finite and below 20 a.u. The synthetic gratings and moving edges live
+in `fly_driver.eyes.stimuli`.
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64
