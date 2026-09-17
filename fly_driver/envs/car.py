@@ -182,7 +182,7 @@ class CarConfig:
             ~21 kg unsprung corner, so the wheels do not hop.
         suspension_travel_m: Bump-stop each way. Static sag is ~7 mm and aero load at
             top speed adds ~15 mm, so 40 mm leaves headroom for kerbs and braking.
-        anti_roll_stiffness_n_m: Anti-roll bar rate per axle, applied as a fixed tendon
+        anti_roll_stiffness_front_n_m: Front anti-roll bar rate, applied as a fixed tendon
             on the difference between the two sides' suspension travel. Resists roll,
             does nothing in pure heave.
 
@@ -201,6 +201,29 @@ class CarConfig:
             front wheels' time on the ground through a corner fell from 71% to 56% and
             yaw-rate variation doubled, because more grip means more load transfer, which
             lifts wheels. Measured lateral grip did not improve.
+        wheel_friction_rear: The same triple for the rear tyres, and deliberately higher.
+            Payton asked for enough rear grip that oversteer stops being a constant
+            problem while staying reachable on purpose. MuJoCo's Coulomb friction makes
+            grip exactly proportional to load, and the car's static and aero balance both
+            put 54.5% of the load on the rear axle, so with one mu everywhere the axles
+            are equally grippy and the drive torque the rears also carry tips the car
+            into oversteer. Real rear tyres are 405 mm wide against 305 mm fronts and
+            real rubber gains grip per newton on a bigger patch; the model has no load
+            sensitivity, so the bigger patch is expressed here.
+
+            Measured with deliberately clumsy inputs, worst sideslip reached:
+
+            ==========================================  ======  ======
+            Provocation                                 mu 1.7  mu 1.8
+            ==========================================  ======  ======
+            60 km/h, full lock and full throttle        63 deg  21 deg
+            150 km/h, trail-brake then hard on the gas  24 deg   5 deg
+            120 km/h, flick left-right on the power     12 deg   6 deg
+            ==========================================  ======  ======
+
+            1.7 spun; 1.8 slides and gathers itself up. 1.85 was also tried and took even
+            the 60 km/h slide away, which is further than was asked for.
+        fly_mount_x_m:
         fly_mount_x_m: Longitudinal position of the ``fly_mount`` site in the body frame:
             the cockpit floor, where GH-21 attaches the tethered flybody. Slightly ahead
             of the wheelbase midpoint, as a driver's seat is.
@@ -251,9 +274,11 @@ class CarConfig:
     suspension_stiffness_rear_n_m: float = 300_000.0
     suspension_damping_ns_m: float = 10_000.0
     suspension_travel_m: float = 0.04
-    anti_roll_stiffness_n_m: float = 50_000.0
+    anti_roll_stiffness_front_n_m: float = 50_000.0
+    anti_roll_stiffness_rear_n_m: float = 50_000.0
     max_actuator_torque_nm: float = 20_000.0
     wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
+    wheel_friction_rear: tuple[float, float, float] = (1.8, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
     fly_mount_z_m: float = 0.17
     camera_height_above_mount_m: float = 0.45
@@ -282,10 +307,9 @@ class CarConfig:
             "suspension_damping_ns_m": self.suspension_damping_ns_m,
             "suspension_travel_m": self.suspension_travel_m,
         }
-        if self.anti_roll_stiffness_n_m < 0:
-            raise ValueError(
-                f"anti_roll_stiffness_n_m must be non-negative, got {self.anti_roll_stiffness_n_m}"
-            )
+        for name in ("anti_roll_stiffness_front_n_m", "anti_roll_stiffness_rear_n_m"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative, got {getattr(self, name)}")
         for name, value in positives.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
@@ -359,7 +383,8 @@ def _wheel_body_xml(name: str, x: float, y: float, config: CarConfig, *, steerab
 
     Front and rear wheels differ in width: the SF70H runs 305 mm fronts and 405 mm rears.
     """
-    friction = " ".join(str(value) for value in config.wheel_friction)
+    friction_values = config.wheel_friction if name.startswith("f") else config.wheel_friction_rear
+    friction = " ".join(str(value) for value in friction_values)
     width = config.wheel_width_front_m if name.startswith("f") else config.wheel_width_rear_m
     wheel = f"""
         <body name="wheel_{name}">
@@ -575,9 +600,13 @@ def car_tendons_xml(config: CarConfig | None = None) -> str:
     compressing differently and does nothing in pure heave.
     """
     config = config or CarConfig()
+    stiffness = {
+        "f": config.anti_roll_stiffness_front_n_m,
+        "r": config.anti_roll_stiffness_rear_n_m,
+    }
     return "".join(
         f"""
-    <fixed name="arb_{axle}" stiffness="{config.anti_roll_stiffness_n_m}">
+    <fixed name="arb_{axle}" stiffness="{stiffness[axle]}">
       <joint joint="susp_{axle}l" coef="1"/>
       <joint joint="susp_{axle}r" coef="-1"/>
     </fixed>"""

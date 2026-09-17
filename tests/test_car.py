@@ -359,6 +359,20 @@ class TestSuspension:
             assert joint != -1
             assert model.jnt_type[joint] == mujoco.mjtJoint.mjJNT_SLIDE
 
+    def test_each_axle_has_its_own_anti_roll_bar(self, model):
+        """Front and rear bars are separately adjustable, as on a real car. In this model
+        the split moves balance very little -- measured slip angles barely changed from
+        50/50 to 20/80 -- because MuJoCo's friction is exactly proportional to load, so
+        moving load between wheels does not change an axle's total grip. It becomes a
+        real setup knob once a load-sensitive tyre model lands with AC's data."""
+        for axle in ("f", "r"):
+            tendon = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TENDON, f"arb_{axle}")
+            assert tendon != -1
+        front = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TENDON, "arb_f")
+        rear = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TENDON, "arb_r")
+        assert model.tendon_stiffness[front] == pytest.approx(CONFIG.anti_roll_stiffness_front_n_m)
+        assert model.tendon_stiffness[rear] == pytest.approx(CONFIG.anti_roll_stiffness_rear_n_m)
+
     def test_springs_are_stiffer_at_the_rear(self, model):
         front = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_fl")
         rear = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "susp_rl")
@@ -412,6 +426,8 @@ class TestCarConfigValidation:
             {"camera_fovy_deg": 0.0},
             {"camera_fovy_deg": 180.0},
             {"max_steer_rad": 2.0},
+            {"anti_roll_stiffness_front_n_m": -1.0},
+            {"anti_roll_stiffness_rear_n_m": -1.0},
         ],
     )
     def test_rejects_bad_values(self, kwargs):
@@ -456,6 +472,21 @@ class TestMatchesSF70HSpecification:
 
     def test_tyre_friction_is_in_the_published_slick_range(self):
         assert 1.5 <= CONFIG.wheel_friction[0] <= 1.8
+
+    def test_the_rear_tyres_grip_harder_than_the_fronts(self):
+        """Payton asked for oversteer to stop being a constant problem. With one mu
+        everywhere the axles are equally grippy while the rears also carry the drive
+        torque, so the car spun on the throttle. The wider rear tyre is expressed as
+        more friction because MuJoCo has no tyre load sensitivity."""
+        assert CONFIG.wheel_friction_rear[0] > CONFIG.wheel_friction[0]
+
+    def test_the_rear_grip_advantage_is_small(self):
+        """Too much and the car cannot be made to oversteer at all, which is not what
+        was asked for. 1.85 already took away the last provokable slide."""
+        assert CONFIG.wheel_friction_rear[0] / CONFIG.wheel_friction[0] <= 1.10
+
+    def test_rear_tyre_friction_is_still_in_the_published_slick_range(self):
+        assert 1.5 <= CONFIG.wheel_friction_rear[0] <= 2.0
 
 
 class TestMassProperties:

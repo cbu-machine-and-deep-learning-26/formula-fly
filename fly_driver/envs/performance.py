@@ -36,6 +36,7 @@ __all__ = [
     "measure_acceleration",
     "measure_braking",
     "measure_lateral",
+    "measure_sideslip",
     "measure_top_speed",
 ]
 
@@ -206,3 +207,39 @@ def measure_lateral(bed: PerformanceBed, speed_kmh: float) -> dict[str, float]:
                 samples.append(abs(float(accel[4])) / G)
         best = max(best, float(np.mean(samples)))
     return {key: best}
+
+
+def measure_sideslip(
+    bed: PerformanceBed,
+    speed_kmh: float,
+    *,
+    steer: float = -1.0,
+    throttle: float = 1.0,
+    seconds: float = 3.0,
+) -> dict[str, float]:
+    """Worst body sideslip angle, in degrees, under a deliberately clumsy input.
+
+    Sideslip is the angle between where the car points and where it is going, so it is
+    the direct measure of how far the back has stepped out: a few degrees is a car
+    working its tyres, past about 45 degrees it is spinning.
+
+    This exists because grip balance fails silently. Nothing else in this file would
+    notice a car that posts perfect lap-time numbers and spins whenever the throttle is
+    opened mid-corner, which is exactly what equal front and rear friction produced.
+    """
+    key = f"sideslip at {speed_kmh:.0f} km/h (deg)"
+    bed.reset()
+    if not bed.accelerate_to(speed_kmh / 3.6):
+        return {key: float("nan")}
+
+    control = ControlVector(steer=steer, throttle=throttle, brake=0.0)
+    velocity = np.zeros(6)
+    worst = 0.0
+    for _ in range(int(seconds / bed.dt)):
+        bed.dynamics.step(control, bed.data, 1)
+        mujoco.mj_objectVelocity(
+            bed.model, bed.data, mujoco.mjtObj.mjOBJ_BODY, bed.dynamics._body, velocity, 1
+        )
+        forward = max(float(velocity[3]), 1e-3)
+        worst = max(worst, abs(float(np.degrees(np.arctan2(float(velocity[4]), forward)))))
+    return {key: worst}

@@ -22,6 +22,7 @@ from fly_driver.envs.performance import (
     measure_acceleration,
     measure_braking,
     measure_lateral,
+    measure_sideslip,
     measure_top_speed,
 )
 
@@ -51,6 +52,12 @@ def high_speed_braking(bed) -> dict[str, float]:
 @pytest.fixture(scope="module")
 def lateral(bed) -> dict[str, float]:
     return measure_lateral(bed, 250.0)
+
+
+@pytest.fixture(scope="module")
+def provoked(bed) -> dict[str, float]:
+    """Full lock and full throttle at 60 km/h: the clumsiest input a driver can give."""
+    return measure_sideslip(bed, 60.0)
 
 
 class TestAcceleration:
@@ -142,6 +149,40 @@ class TestCornering:
     def test_exceeds_what_tyres_alone_could_give(self, lateral):
         tyre_only = CarConfig().wheel_friction[0]
         assert lateral["lateral at 250 km/h (g)"] > tyre_only * 1.5
+
+
+class TestHandlingBalance:
+    """Payton: "increase rear grip so oversteer is not a significant issue (but still
+    possible just not as easy)." Both halves of that are asserted here, because a grip
+    balance is exactly the kind of thing that fails silently -- the car posts the same
+    lap-time numbers either way and simply spins whenever you open the throttle.
+
+    Worst sideslip reached under the same clumsy input, measured:
+
+    ======================================  ======  ======
+    Provocation                             mu 1.7  mu 1.8
+    ======================================  ======  ======
+    60 km/h, full lock and full throttle    63 deg  21 deg
+    150 km/h, trail-brake then hard on gas  24 deg   5 deg
+    ======================================  ======  ======
+    """
+
+    #: Past this the car has swapped ends rather than slid.
+    SPIN_DEG = 45.0
+
+    def test_full_lock_and_full_throttle_does_not_spin_the_car(self, provoked):
+        angle = provoked["sideslip at 60 km/h (deg)"]
+        assert angle < self.SPIN_DEG, f"spun to {angle:.0f} degrees of sideslip"
+
+    def test_but_the_back_still_steps_out(self, provoked):
+        """Not a rail. If this ever reads near zero the rear grip has gone too far and
+        the car can no longer be made to oversteer on purpose."""
+        assert provoked["sideslip at 60 km/h (deg)"] > 8.0
+
+    def test_a_fast_corner_stays_planted(self, bed):
+        """Where downforce dominates, nothing the driver does should unstick it."""
+        result = measure_sideslip(bed, 200.0, steer=-0.4, throttle=1.0, seconds=2.0)
+        assert result["sideslip at 200 km/h (deg)"] < 10.0
 
 
 class TestAeroLoad:
