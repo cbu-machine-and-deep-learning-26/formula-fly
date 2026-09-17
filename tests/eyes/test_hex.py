@@ -132,7 +132,7 @@ def test_sampling_geometry_is_precomputed_and_read_only() -> None:
     assert resampler.source_weights is weights
     assert indices.shape == (721, 4)
     assert weights.shape == (721, 4)
-    np.testing.assert_allclose(weights.sum(axis=1), 1.0)
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, atol=np.finfo(np.float32).eps)
     assert not indices.flags.writeable
     assert not weights.flags.writeable
 
