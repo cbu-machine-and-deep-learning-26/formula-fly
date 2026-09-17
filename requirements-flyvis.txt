@@ -1,0 +1,2 @@
+# Optional optic-lobe stack. The base project and CI do not install this file.
+flyvis==1.2.0
