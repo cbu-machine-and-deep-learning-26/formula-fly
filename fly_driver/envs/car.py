@@ -96,8 +96,12 @@ class CarConfig:
             rolling. Sliding friction above 1 is what stops an open-wheel car understeering
             off the road at the first corner.
         camera_forward_m: Camera offset ahead of the chassis centre.
-        camera_height_m: Camera height above the chassis centre. Together these put the
-            eye where a driver's head sits.
+        camera_height_m: Camera height above the chassis centre. Together these clear the
+            bodywork. Mounted at the chassis centre the car's own nose filled ~38% of the
+            frame and the eye saw almost no moving contrast -- straight-line mean frame
+            delta was 0.08/255, effectively blind. Forward and up puts the whole lower
+            field on the road instead. These are tunable because where a "fly's head"
+            belongs is partly a GH-21/GH-25 cockpit question.
         camera_fovy_deg: Vertical field of view. A real fly sees nearly panoramically; a
             single pinhole camera cannot, so this is a compromise **GH-13 should choose**
             once the hex resampler's coverage is known.
@@ -116,7 +120,7 @@ class CarConfig:
     track_width_m: float = 1.6
     chassis_length_m: float = 4.6
     chassis_width_m: float = 1.4
-    chassis_height_m: float = 0.5
+    chassis_height_m: float = 0.35
     wheel_radius_m: float = 0.33
     wheel_width_m: float = 0.30
     wheel_mass_kg: float = 15.0
@@ -125,9 +129,9 @@ class CarConfig:
     drive_gear: float = 900.0
     brake_gain: float = 700.0
     wheel_friction: tuple[float, float, float] = (1.6, 0.01, 0.001)
-    camera_forward_m: float = 0.4
-    camera_height_m: float = 0.55
-    camera_fovy_deg: float = 90.0
+    camera_forward_m: float = 1.8
+    camera_height_m: float = 1.0
+    camera_fovy_deg: float = 75.0
     wheel_damping: float = 0.8
     wheel_armature: float = 0.6
     hub_mass_kg: float = 8.0
