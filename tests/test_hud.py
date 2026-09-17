@@ -31,7 +31,7 @@ LIMITER, SHIFT = 15000.0, 14100.0
 
 
 def frame(**overrides) -> Telemetry:
-    values = dict(speed_kmh=0.0, gear=1, rpm=0.0, throttle=0.0, brake=0.0, steer=0.0)
+    values = dict(speed_mps=0.0, gear=1, rpm=0.0, throttle=0.0, brake=0.0, steer=0.0)
     values.update(overrides)
     return Telemetry(**values)
 
@@ -139,7 +139,7 @@ class TestFont:
 
         printed = [
             "0123456789",
-            "KM/H",
+            "MPH",
             "RPM",
             "GEAR",
             "STEER",
@@ -165,7 +165,7 @@ class TestFont:
     def test_legacy_glyph_coverage(self):
         for text in (
             "0123456789",
-            "KM/H",
+            "MPH",
             "RPM",
             "GEAR",
             "STEER",
@@ -252,8 +252,18 @@ class TestRender:
         assert rl_up.size == 0
         assert rr.size == pytest.approx((mid - top) / 2, abs=2)
 
+    def test_speed_is_shown_in_mph(self):
+        """Payton asked for mph. The panel is handed m/s, so the conversion is the panel's
+        job -- and 100 mph must not render as 100 when the car is doing 100 km/h."""
+        from fly_driver.hud import MPS_TO_MPH
+
+        assert round(MPS_TO_MPH, 6) == 2.236936
+        # 44.704 m/s is exactly 100 mph; 27.778 m/s is exactly 100 km/h.
+        assert np.array_equal(draw(speed_mps=44.704), draw(speed_mps=44.704))
+        assert not np.array_equal(draw(speed_mps=44.704), draw(speed_mps=27.778))
+
     def test_speed_digits_change_the_picture(self):
-        assert not np.array_equal(draw(speed_kmh=100.0), draw(speed_kmh=200.0))
+        assert not np.array_equal(draw(speed_mps=30.0), draw(speed_mps=60.0))
         assert not np.array_equal(draw(gear=3), draw(gear=4))
 
     def test_out_of_range_inputs_still_draw(self):
@@ -426,7 +436,7 @@ class TestViewerHUD:
     def test_hands_the_viewer_one_panel_in_the_top_left(self):
         viewer = _FakeViewer(1280, 720)
         panel = ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT, margin_px=12)
-        panel.update(frame(speed_kmh=100.0))
+        panel.update(frame(speed_mps=30.0))
         [(rect, image)] = viewer.images[-1]
         assert (rect.left, rect.width, rect.height) == (12, WIDTH, HEIGHT)
         assert rect.bottom == 720 - HEIGHT - 12

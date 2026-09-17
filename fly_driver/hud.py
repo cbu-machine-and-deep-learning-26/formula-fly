@@ -1,6 +1,6 @@
 """Telemetry overlay drawn inside the MuJoCo viewer window (GH-16).
 
-Speed, gear, an rpm bar with a row of shift lights, throttle and brake as vertical bars,
+Speed in mph, gear, an rpm bar with a row of shift lights, throttle and brake as bars,
 steering as a horizontal bar whose marker runs -1 to +1 -- the
 :class:`~fly_driver.interface.ControlVector` range -- and the travel of each coilover.
 Watching the input bars is the quickest way to tell whether a feel problem is the car or
@@ -33,6 +33,7 @@ from fly_driver.envs.lap import format_lap_time
 
 __all__ = [
     "HEIGHT",
+    "MPS_TO_MPH",
     "LED_COUNT",
     "WIDTH",
     "Telemetry",
@@ -49,6 +50,11 @@ __all__ = [
 ]
 
 WIDTH, HEIGHT = 650, 244
+
+#: Metres per second to miles per hour. The panel is handed the simulation's own unit and
+#: converts here, once, so no caller has to remember which unit the display wants and a
+#: change of unit stays a one-line change.
+MPS_TO_MPH = 2.236936
 LED_COUNT = 10
 
 #: The first shift light comes on at this fraction of the limiter; the last at the shift
@@ -163,7 +169,7 @@ class Telemetry:
     """One frame of what the panel shows.
 
     Args:
-        speed_kmh: Ground speed.
+        speed_mps: Ground speed in metres per second, shown as mph.
         gear: Engaged gear, 1-indexed, as a driver counts them.
         rpm: Engine speed.
         throttle: 0 to 1.
@@ -182,7 +188,7 @@ class Telemetry:
             time, when there is no lap time to show yet.
     """
 
-    speed_kmh: float
+    speed_mps: float
     gear: int
     rpm: float
     throttle: float
@@ -373,8 +379,8 @@ def render(
     img[:] = _BACKGROUND
 
     # Speed, rpm and gear across the top.
-    _text(img, *_SPEED_XY, f"{telemetry.speed_kmh:3.0f}", 4, _TEXT)
-    _text(img, *_UNIT_XY, "KM/H", 2, _DIM)
+    _text(img, *_SPEED_XY, f"{telemetry.speed_mps * MPS_TO_MPH:3.0f}", 4, _TEXT)
+    _text(img, *_UNIT_XY, "MPH", 2, _DIM)
     _text(img, *_RPM_TEXT_XY, f"{telemetry.rpm:5.0f} RPM", 2, _DIM)
     _text(img, *_GEAR_LABEL_XY, "GEAR", 2, _DIM)
     _text(img, *_GEAR_XY, str(telemetry.gear)[:1], 4, _TEXT)

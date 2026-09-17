@@ -38,7 +38,8 @@ right stick, Payton's preference after driving with the left:
   left trigger    brake, 0 to 1.
 ===========  ==================================================================
 
-A telemetry panel sits in the top-left of the viewer window: speed, gear, an rpm bar with
+A telemetry panel sits in the top-left of the viewer window: speed in mph, gear, an rpm
+bar with
 a row of shift lights (the box shifts for itself; the lights show where it will), throttle
 and brake as bars, steering as a bar running -1 to +1 as the ControlVector does, the travel
 of each coilover, lap times, and a map of the circuit with a fly marking where you are.
@@ -87,7 +88,7 @@ from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.lap import DEFAULT_LAP_LOG_PATH, LapLog, LapTimer, format_lap_time
 from fly_driver.envs.scene import SceneConfig
-from fly_driver.hud import MAP_RECT, Telemetry, TrackMap, ViewerHUD
+from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD
 from fly_driver.interface import ControlVector
 
 CONTROL_HZ = 50
@@ -392,7 +393,7 @@ def main(argv: list[str] | None = None) -> int:
                     travel = dynamics.suspension_travel(data)
                     hud.update(
                         Telemetry(
-                            speed_kmh=speed * 3.6,
+                            speed_mps=speed,
                             gear=dynamics.gear + 1,
                             rpm=dynamics.engine_rpm(data),
                             throttle=control.throttle,
@@ -421,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                     last_report = now
                     where = "on track" if projection.is_on_track else "OFF"
                     print(
-                        f"\r{speed * 3.6:6.1f} km/h | "
+                        f"\r{speed * MPS_TO_MPH:6.1f} mph | "
                         f"lap {projection.arclength / centerline.length * 100:5.1f}% | "
                         f"{projection.lateral:+6.2f} m {where:>8} | "
                         f"gear {dynamics.gear + 1} | "
