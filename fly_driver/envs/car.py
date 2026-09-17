@@ -168,7 +168,8 @@ class CarConfig:
             wheel and upright) against 12 kN m/rad of actuator stiffness, a 20 Hz mode;
             at the original 2.0 N m s/rad its damping ratio was **0.011**, so any
             asymmetry under braking rang the front wheels at 20 Hz -- the "shake" Payton
-            reported. 150 gives a ratio near 0.8: settles in a few cycles, still snappy.
+            reported. 200 gives a ratio just over 1: no overshoot at all, still snappy.
+            Raised from 150 after Payton asked for a little more.
             A test computes the realised ratio from the compiled model so a heavier
             wheel cannot quietly bring the shimmy back.
         suspension_stiffness_front_n_m: Front coilover wheel rate. F1 springs are very
@@ -245,7 +246,7 @@ class CarConfig:
     inertia_yaw_kgm2: float = 750.0
     max_steer_rad: float = 0.35
     steer_gain: float = 12000.0
-    steer_damping_nms: float = 150.0
+    steer_damping_nms: float = 200.0
     suspension_stiffness_front_n_m: float = 250_000.0
     suspension_stiffness_rear_n_m: float = 300_000.0
     suspension_damping_ns_m: float = 10_000.0

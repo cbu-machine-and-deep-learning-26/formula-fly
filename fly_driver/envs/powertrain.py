@@ -97,8 +97,9 @@ class PowertrainConfig:
             -- the car went straight on and shook. See :func:`abs_factor`.
         abs_slip_full: Longitudinal slip below which the brakes get full torque.
         abs_slip_release: Slip at which brake torque is cut to zero. Torque ramps linearly
-            between the two, which settles the wheel near 15-20% slip rather than
-            bang-banging between rolling and locked.
+            between the two, which settles the wheel near 12-18% slip rather than
+            bang-banging between rolling and locked. Tightened from 12/30% after Payton
+            asked for a little more.
         abs_min_speed_mps: Below this ground speed slip is ill-conditioned and the limiter
             stands down, so the car can be braked to a dead stop.
 
@@ -120,8 +121,8 @@ class PowertrainConfig:
     brake_bias_front: float = 0.57
     limiter_taper_fraction: float = 0.04
     abs_enabled: bool = True
-    abs_slip_full: float = 0.12
-    abs_slip_release: float = 0.30
+    abs_slip_full: float = 0.10
+    abs_slip_release: float = 0.25
     abs_min_speed_mps: float = 2.0
 
     def __post_init__(self) -> None:
