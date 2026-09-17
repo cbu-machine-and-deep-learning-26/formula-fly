@@ -116,11 +116,17 @@ class TestTractiveForce:
         is not doing anything."""
         assert tractive_n(340.0) < tractive_n(200.0) < tractive_n(50.0)
 
-    def test_top_gear_force_balances_drag_near_the_top_speed(self):
-        """The independent check that gearing and aero agree: at ~340 km/h the tractive
-        force and the drag force should be close, because that is what a top speed is."""
-        speed = 340.0 / 3.6
-        assert tractive_n(340.0) == pytest.approx(float(drag_n(speed, SF70H_AERO)), rel=0.35)
+    def test_tractive_force_and_drag_cross_at_a_realistic_top_speed(self):
+        """The independent check that gearing and aero agree. Top speed is where tractive
+        force falls to drag, so the car must still be pulling at 300 km/h and be beaten by
+        drag by 350. Gearing and aero were derived separately, so them crossing in the
+        right window is evidence rather than a tuned coincidence.
+
+        Not asserted *at* 340 km/h: that is past this car's top speed, where the rev
+        limiter has already cut torque to near zero, which is correct but makes the
+        comparison meaningless."""
+        assert tractive_n(300.0) > float(drag_n(300.0 / 3.6, SF70H_AERO))
+        assert tractive_n(350.0) < float(drag_n(350.0 / 3.6, SF70H_AERO))
 
     def test_launch_force_exceeds_available_grip(self):
         """Not a defect. A real F1 car has several times more torque than grip in first,

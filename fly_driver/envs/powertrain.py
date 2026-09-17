@@ -41,7 +41,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-__all__ = ["PowertrainConfig", "SF70H_POWERTRAIN", "brake_torque", "drive_torque", "select_gear"]
+__all__ = [
+    "PowertrainConfig",
+    "SF70H_POWERTRAIN",
+    "brake_torque",
+    "drive_torque",
+    "limiter_fraction",
+    "select_gear",
+]
 
 #: Ratios for the SF70H's 8-speed sequential box, plus the final drive. Ferrari do not
 #: publish theirs, so these are derived from the two speeds that are known: first gear
@@ -73,6 +80,8 @@ class PowertrainConfig:
         max_brake_torque_nm: Total braking torque across all four wheels at full pedal.
         brake_bias_front: Fraction of that torque on the front axle. Real cars run
             54-58% front; too far rearward and the car spins under braking.
+        limiter_taper_fraction: Fraction of the rev range over which the limiter tapers
+            torque to zero. A hard cut makes torque chatter on and off every step.
 
     Raises:
         ValueError: On non-positive values, an empty or non-descending gear set, or
@@ -90,6 +99,7 @@ class PowertrainConfig:
     shift_up_fraction: float = 0.97
     shift_down_fraction: float = 0.55
     brake_bias_front: float = 0.57
+    limiter_taper_fraction: float = 0.04
 
     def __post_init__(self) -> None:
         positives = {
@@ -116,6 +126,10 @@ class PowertrainConfig:
                 f"need 0 < shift_down_fraction < shift_up_fraction <= 1, got "
                 f"{self.shift_down_fraction} and {self.shift_up_fraction}; overlapping "
                 f"thresholds make the gearbox hunt"
+            )
+        if not 0.0 <= self.limiter_taper_fraction < 1.0:
+            raise ValueError(
+                f"limiter_taper_fraction must be in [0, 1), got {self.limiter_taper_fraction}"
             )
         if not 0.0 < self.brake_bias_front < 1.0:
             raise ValueError(f"brake_bias_front must be in (0, 1), got {self.brake_bias_front}")
@@ -190,12 +204,34 @@ def select_gear(wheel_rads: float, current_gear: int, config: PowertrainConfig) 
     return gear
 
 
+def limiter_fraction(engine_rads: float, config: PowertrainConfig) -> float:
+    """Throttle multiplier from the rev limiter: 1 below the cut, 0 at it.
+
+    **This is what stops a spinning wheel running away**, and leaving it out is not a
+    subtle error. Without it a driven wheel gets full torque no matter how fast it spins.
+    Measured with it missing: the rear wheel reached 4321 rad/s with 1435 m/s of slip, the
+    car plateaued at 45 km/h on pure wheelspin, and the integrator produced NaN after 30 s.
+
+    Tapered over the last few percent of the rev range rather than cut hard, because a hard
+    cut makes torque chatter on and off every step as friction drags the wheel back below
+    the threshold.
+    """
+    taper = config.max_engine_rads * config.limiter_taper_fraction
+    if taper <= 0.0:
+        return 1.0 if engine_rads < config.max_engine_rads else 0.0
+    return float(np.clip((config.max_engine_rads - engine_rads) / taper, 0.0, 1.0))
+
+
 def drive_torque(throttle: float, wheel_rads: float, gear: int, config: PowertrainConfig) -> float:
     """Torque delivered to **one** driven wheel, in N·m.
 
+    ``wheel_rads`` must be the **actual** angular speed of that wheel, not a value derived
+    from ground speed. The engine is geared to the wheel, so wheelspin revs it, and the
+    resulting limiter cut is the only thing that bounds a spinning wheel.
+
     Args:
         throttle: 0 to 1.
-        wheel_rads: That wheel's angular speed, rad/s.
+        wheel_rads: That wheel's true angular speed, rad/s.
         gear: Engaged 0-indexed gear.
         config: Powertrain parameters.
 
@@ -205,8 +241,9 @@ def drive_torque(throttle: float, wheel_rads: float, gear: int, config: Powertra
     throttle = float(np.clip(throttle, 0.0, 1.0))
     if throttle <= 0.0:
         return 0.0
+    engine_rads = engine_speed_rads(wheel_rads, gear, config)
     ratio = config.total_ratio(gear)
-    crank = engine_torque(engine_speed_rads(wheel_rads, gear, config), config)
+    crank = engine_torque(engine_rads, config) * limiter_fraction(engine_rads, config)
     axle = crank * ratio * config.driveline_efficiency * throttle
     return axle / 2.0
 

@@ -36,6 +36,7 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = [
     "render: needs a working OpenGL context; skipped automatically when none is available",
+    "slow: drives a car to racing speed; seconds per test rather than milliseconds",
 ]
 
 [tool.ruff]

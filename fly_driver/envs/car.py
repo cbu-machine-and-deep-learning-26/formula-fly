@@ -30,15 +30,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import mujoco
 import numpy as np
+import numpy.typing as npt
+
+from fly_driver.envs.aero import SF70H_AERO, AeroConfig, downforce_n, drag_n
+from fly_driver.envs.powertrain import (
+    SF70H_POWERTRAIN,
+    PowertrainConfig,
+    brake_torque,
+    drive_torque,
+    select_gear,
+)
+from fly_driver.interface import ControlVector
 
 __all__ = [
     "ACTUATOR_NAMES",
+    "SF70H_REFERENCE",
     "CarConfig",
+    "CarDynamics",
     "car_assets_xml",
     "car_body_xml",
     "car_actuators_xml",
-    "control_to_ctrl",
+    "steering_angle_rad",
 ]
 
 # Collision classes. MuJoCo lets two geoms touch when
@@ -140,8 +154,9 @@ class CarConfig:
         max_steer_rad: Steering lock at the kingpin, each way.
         steer_gain: Position-actuator stiffness for the steering. High enough that the
             wheels track the command against tyre scrub.
-        drive_gear: Torque per unit of throttle at each driven wheel, in N*m.
-        brake_gain: Damper coefficient per unit of brake at each wheel.
+        max_actuator_torque_nm: Control range of the drive and brake motors, in N*m.
+            A ceiling, not a setpoint -- actual torque comes from the powertrain model.
+            Wide enough that MuJoCo never silently clips a legitimate command.
         wheel_friction: MuJoCo ``friction`` triple for the tyres: sliding, torsional,
             rolling. Sliding friction above 1 is what stops an open-wheel car understeering
             off the road at the first corner.
@@ -155,8 +170,11 @@ class CarConfig:
         camera_fovy_deg: Vertical field of view. A real fly sees nearly panoramically; a
             single pinhole camera cannot, so this is a compromise **GH-13 should choose**
             once the hex resampler's coverage is known.
-        wheel_damping: Small viscous damping on the wheel hinges. Keeps a free-rolling
-            wheel from spinning up indefinitely and settles contact jitter.
+        wheel_damping: Viscous damping on the wheel hinges, standing in for rolling
+            resistance. Small on purpose. At 0.8 -- chosen as a stability aid before the
+            powertrain existed -- the four wheels together absorbed 2242 N at 283 km/h,
+            about 20x a real F1 car's rolling resistance and 30% of total drag. It capped
+            top speed 40 km/h short and looked like an aero problem.
         wheel_armature: Rotor inertia added to the wheel hinges. Mostly a stability aid:
             without it, a light wheel driven by a strong motor needs a much smaller
             timestep.
@@ -184,13 +202,12 @@ class CarConfig:
     inertia_yaw_kgm2: float = 750.0
     max_steer_rad: float = 0.35
     steer_gain: float = 12000.0
-    drive_gear: float = 900.0
-    brake_gain: float = 700.0
+    max_actuator_torque_nm: float = 20_000.0
     wheel_friction: tuple[float, float, float] = (1.7, 0.02, 0.001)
     camera_forward_m: float = 1.8
     camera_height_m: float = 1.0
     camera_fovy_deg: float = 75.0
-    wheel_damping: float = 0.8
+    wheel_damping: float = 0.05
     wheel_armature: float = 0.6
     hub_mass_kg: float = 8.0
 
@@ -205,8 +222,7 @@ class CarConfig:
             "wheel_width_rear_m": self.wheel_width_rear_m,
             "wheel_mass_kg": self.wheel_mass_kg,
             "max_steer_rad": self.max_steer_rad,
-            "drive_gear": self.drive_gear,
-            "brake_gain": self.brake_gain,
+            "max_actuator_torque_nm": self.max_actuator_torque_nm,
             "hub_mass_kg": self.hub_mass_kg,
         }
         for name, value in positives.items():
@@ -250,6 +266,19 @@ class CarConfig:
         midpoint. This is what makes the car rear-biased like a real single-seater.
         """
         from_front = (1.0 - self.front_weight_fraction) * self.wheelbase_m
+        return self.wheelbase_m / 2.0 - from_front
+
+    @property
+    def centre_of_pressure_x_m(self) -> float:
+        """Longitudinal centre of pressure relative to the body origin, in metres.
+
+        Derived from the aerodynamic balance the same way the centre of gravity is derived
+        from the weight split. Placing it slightly *behind* the CoG is what makes a car
+        aerodynamically stable rather than twitchy at speed.
+        """
+        from fly_driver.envs.aero import SF70H_AERO
+
+        from_front = (1.0 - SF70H_AERO.balance_front) * self.wheelbase_m
         return self.wheelbase_m / 2.0 - from_front
 
     @property
@@ -365,7 +394,18 @@ def car_body_xml(
 
 
 def car_actuators_xml(config: CarConfig | None = None) -> str:
-    """MJCF ``<actuator>`` fragment: steering, drive, and brakes."""
+    """MJCF ``<actuator>`` fragment: steering, drive, and brakes.
+
+    Drive and brake actuators are plain ``motor`` elements with ``gear="1"``, so their
+    control value *is* a torque in newton-metres. That is deliberate: the torque is worked
+    out in Python by :class:`CarDynamics` from the engine curve, the engaged gear and the
+    brake model, and MuJoCo is only asked to apply it. Encoding a fixed gear ratio in the
+    MJCF would mean the transmission lived in two places.
+
+    Brakes were previously ``damper`` actuators, whose force is proportional to wheel
+    speed. That made braking fade exactly when trying to stop -- 1.37 g from 150 km/h but
+    0.6 g from 64 km/h. See :mod:`fly_driver.envs.powertrain`.
+    """
     config = config or CarConfig()
     steer = "".join(
         f"""
@@ -375,48 +415,191 @@ def car_actuators_xml(config: CarConfig | None = None) -> str:
     )
     drive = "".join(
         f"""
-    <motor name="drive_{side}" joint="roll_{side}" gear="{config.drive_gear}"
-           ctrlrange="-1 1"/>"""
+    <motor name="drive_{side}" joint="roll_{side}" gear="1"
+           ctrlrange="{-config.max_actuator_torque_nm} {config.max_actuator_torque_nm}"/>"""
         for side in ("rl", "rr")
     )
-    # Dampers oppose motion by construction: force = -kv * ctrl * qvel. A brake can stop a
-    # wheel but can never reverse it, which is what makes a non-negative ctrlrange correct.
     brakes = "".join(
         f"""
-    <damper name="brake_{side}" joint="roll_{side}" kv="{config.brake_gain}"
-            ctrlrange="0 1"/>"""
+    <motor name="brake_{side}" joint="roll_{side}" gear="1"
+           ctrlrange="{-config.max_actuator_torque_nm} {config.max_actuator_torque_nm}"/>"""
         for side in ("fl", "fr", "rl", "rr")
     )
     return steer + drive + brakes
 
 
-def control_to_ctrl(
-    steer: float, throttle: float, brake: float, config: CarConfig | None = None
-) -> dict[str, float]:
-    """Map a normalised control triple onto named actuator commands.
+def steering_angle_rad(steer: float, config: CarConfig | None = None) -> float:
+    """Kingpin angle for a normalised steering input.
 
-    Keeping this a ``dict`` keyed by actuator name, rather than a positional array, means
-    the env can look each one up by MuJoCo id. Reordering the XML then cannot silently
-    swap throttle for brake.
-
-    Args:
-        steer: -1 (full left) to 1 (full right).
-        throttle: 0 to 1.
-        brake: 0 to 1.
-        config: Vehicle parameters, for the steering lock.
-
-    Returns:
-        ``{actuator_name: command}`` covering every entry of :data:`ACTUATOR_NAMES`.
+    Positive ``steer`` means right, and a right turn is a negative rotation about +z.
+    Nothing downstream can detect this being inverted -- a policy would simply learn the
+    mirror image -- so the sign is pinned by tests rather than trusted.
     """
     config = config or CarConfig()
-    # Positive steer means right, and a right turn is a negative rotation about +z.
-    steer_angle = -float(steer) * config.max_steer_rad
-    commands = {
-        "steer_fl": steer_angle,
-        "steer_fr": steer_angle,
-        "drive_rl": float(throttle),
-        "drive_rr": float(throttle),
-    }
-    for side in ("fl", "fr", "rl", "rr"):
-        commands[f"brake_{side}"] = float(brake)
-    return commands
+    return -float(steer) * config.max_steer_rad
+
+
+class CarDynamics:
+    """Applies aerodynamics and powertrain forces to a compiled MuJoCo model.
+
+    This class has to exist. Aerodynamic forces are not part of the MJCF -- MuJoCo knows
+    nothing about wings -- so they must be written into ``data.xfrc_applied`` on **every
+    physics substep**. If each caller did that itself, the env, the manual drive script and
+    the tests would drift apart and only some of them would be simulating an F1 car.
+    Everything goes through :meth:`step`.
+
+    It also owns the one piece of genuinely stateful vehicle behaviour: the engaged gear.
+
+    Args:
+        model: A compiled model containing a body named ``car`` and the actuators in
+            :data:`ACTUATOR_NAMES`.
+        car: Vehicle parameters. Defaults to the SF70H :class:`CarConfig`.
+        aero: Aerodynamic coefficients. Defaults to :data:`~fly_driver.envs.aero.SF70H_AERO`.
+        powertrain: Engine, gearbox and brakes. Defaults to
+            :data:`~fly_driver.envs.powertrain.SF70H_POWERTRAIN`.
+
+    Raises:
+        ValueError: If the model lacks the car body, a wheel joint, or any expected actuator.
+    """
+
+    def __init__(
+        self,
+        model: mujoco.MjModel,
+        car: CarConfig | None = None,
+        aero: AeroConfig | None = None,
+        powertrain: PowertrainConfig | None = None,
+    ) -> None:
+        self._model = model
+        self.car = car or CarConfig()
+        self.aero = aero or SF70H_AERO
+        self.powertrain = powertrain or SF70H_POWERTRAIN
+
+        self._body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car")
+        if self._body < 0:
+            raise ValueError("model has no body named 'car'")
+
+        self._actuator: dict[str, int] = {}
+        for name in ACTUATOR_NAMES:
+            index = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            if index < 0:
+                raise ValueError(f"model has no actuator named {name!r}")
+            self._actuator[name] = index
+
+        # Spin inertia of each wheel including armature, read from the compiled model
+        # rather than recomputed, so the brake's anti-reversal clamp stays correct if the
+        # wheel geometry changes.
+        self._wheel_dof: dict[str, int] = {}
+        self._wheel_inertia: dict[str, float] = {}
+        for side in ("fl", "fr", "rl", "rr"):
+            joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"roll_{side}")
+            if joint < 0:
+                raise ValueError(f"model has no joint named 'roll_{side}'")
+            dof = int(model.jnt_dofadr[joint])
+            self._wheel_dof[side] = dof
+            self._wheel_inertia[side] = float(model.dof_M0[dof])
+
+        self._gear = 0
+
+    @property
+    def gear(self) -> int:
+        """Currently engaged gear, 0-indexed."""
+        return self._gear
+
+    def reset(self) -> None:
+        """Return to first gear. Call at an episode boundary."""
+        self._gear = 0
+
+    def _world_velocity(self, data: mujoco.MjData) -> npt.NDArray[np.float64]:
+        velocity = np.zeros(6)
+        mujoco.mj_objectVelocity(
+            self._model, data, mujoco.mjtObj.mjOBJ_BODY, self._body, velocity, 0
+        )
+        return velocity[3:6]
+
+    def speed_mps(self, data: mujoco.MjData) -> float:
+        """Ground speed of the car, in m/s."""
+        return float(np.linalg.norm(self._world_velocity(data)[:2]))
+
+    def apply_aero(self, data: mujoco.MjData) -> None:
+        """Write this step's aerodynamic force and moment into ``data.xfrc_applied``.
+
+        Drag opposes the **velocity vector**, not the heading, which matters exactly when
+        the car is sliding. Downforce acts along the car's own downward axis rather than
+        world -z, so a rolled car is still pressed onto the road instead of sideways.
+
+        Both act at the centre of pressure. ``xfrc_applied`` is applied at the body's
+        centre of mass, so the offset between the two is converted into an explicit
+        moment -- which is what makes ``balance_front`` do anything at all rather than
+        being a decorative config field.
+        """
+        world_velocity = self._world_velocity(data)
+        speed = float(np.linalg.norm(world_velocity))
+        rotation = data.xmat[self._body].reshape(3, 3)
+
+        force = np.zeros(3)
+        if speed > 1e-6:
+            force -= float(drag_n(speed, self.aero)) * (world_velocity / speed)
+        force -= float(downforce_n(speed, self.aero)) * rotation[:, 2]
+
+        offset_body = np.array(
+            [self.car.centre_of_pressure_x_m - self.car.centre_of_gravity_x_m, 0.0, 0.0]
+        )
+        data.xfrc_applied[self._body, :3] = force
+        data.xfrc_applied[self._body, 3:] = np.cross(rotation @ offset_body, force)
+
+    def actuator_commands(self, control: ControlVector, data: mujoco.MjData) -> dict[str, float]:
+        """Torques and steering angles for this control input.
+
+        Gear selection uses ground speed; drive torque uses each wheel's true speed.
+                The split is deliberate and both halves matter -- see the inline comments.
+        """
+        speed = self.speed_mps(data)
+        # Gear selection is referenced to ground speed. A spinning wheel reports a huge
+        # angular velocity, which would upshift straight to top and collapse the torque.
+        self._gear = select_gear(speed / self.car.wheel_radius_m, self._gear, self.powertrain)
+
+        angle = steering_angle_rad(control.steer, self.car)
+        commands = {"steer_fl": angle, "steer_fr": angle}
+
+        # Drive torque uses each wheel's *actual* speed, because the engine is geared to
+        # the wheel: wheelspin revs it and the limiter cut is what bounds the spin.
+        # Referencing this to ground speed instead let a wheel accelerate without limit.
+        for side in ("rl", "rr"):
+            commands[f"drive_{side}"] = drive_torque(
+                control.throttle,
+                float(data.qvel[self._wheel_dof[side]]),
+                self._gear,
+                self.powertrain,
+            )
+
+        dt = float(self._model.opt.timestep)
+        for side in ("fl", "fr", "rl", "rr"):
+            commands[f"brake_{side}"] = brake_torque(
+                control.brake,
+                float(data.qvel[self._wheel_dof[side]]),
+                front=side.startswith("f"),
+                config=self.powertrain,
+                dt=dt,
+                wheel_inertia=self._wheel_inertia[side],
+            )
+        return commands
+
+    def step(self, control: ControlVector, data: mujoco.MjData, n_substeps: int = 1) -> None:
+        """Advance the simulation, applying aero and powertrain forces each substep.
+
+        The only supported way to step the car. Calling ``mujoco.mj_step`` directly skips
+        aerodynamics entirely, which quietly turns a Formula 1 car back into a shopping
+        trolley -- no downforce means about 1.6 g of grip instead of 6.
+
+        Args:
+            control: Steering, throttle and brake.
+            data: Simulation state to advance, modified in place.
+            n_substeps: Physics steps to take.
+        """
+        if n_substeps < 1:
+            raise ValueError(f"n_substeps must be at least 1, got {n_substeps}")
+        for _ in range(n_substeps):
+            for name, value in self.actuator_commands(control, data).items():
+                data.ctrl[self._actuator[name]] = value
+            self.apply_aero(data)
+            mujoco.mj_step(self._model, data)

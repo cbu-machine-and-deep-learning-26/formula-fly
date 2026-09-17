@@ -46,17 +46,17 @@ import time
 from pathlib import Path
 
 import mujoco
-import numpy as np
 
 from fly_driver.envs.car import (
     CarConfig,
+    CarDynamics,
     car_actuators_xml,
     car_assets_xml,
     car_body_xml,
-    control_to_ctrl,
 )
 from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.scene import SceneConfig, build_scene_xml
+from fly_driver.interface import ControlVector
 
 # GLFW key codes. Spelled out rather than imported so this file does not depend on glfw.
 # Only the arrows are used: every letter and digit is already a viewer render-flag toggle.
@@ -64,10 +64,12 @@ KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 263, 262, 265, 264
 
 #: Step size of the longitudinal axis per key press.
 PEDAL_STEP = 0.15
-STEER_STEP = 0.25
-#: Fraction of steering kept each control step when no key is pressed. Below 1.0 the
-#: wheels drift back to centre, which makes press-only input feel like a real wheel.
-STEER_RECENTRE = 0.90
+STEER_STEP = 0.35
+#: Fraction of steering kept per control step with no key pressed. At 50 Hz this is a
+#: time constant, and it was the real cause of "turning is like 5 degrees": 0.90 decays to
+#: a third of lock in 0.2 s, so a press was gone before the car could respond. 0.995 holds
+#: a corner for about four seconds, which is long enough to actually drive one.
+STEER_RECENTRE = 0.995
 CONTROL_HZ = 50
 
 
@@ -166,9 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     data = mujoco.MjData(model)
     reset_to_start(model, data)
 
-    actuator_ids = {
-        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i): i for i in range(model.nu)
-    }
+    # Everything goes through CarDynamics, which is the only path that applies
+    # aerodynamics. Setting data.ctrl directly here would let you hand-drive a car with no
+    # downforce while the trained policy drove a different one.
+    dynamics = CarDynamics(model, car)
     car_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car")
     state = DriverState()
     substeps = max(1, int(round((1.0 / CONTROL_HZ) / model.opt.timestep)))
@@ -183,12 +186,10 @@ def main(argv: list[str] | None = None) -> int:
         while viewer.is_running():
             step_start = time.perf_counter()
 
-            commands = control_to_ctrl(state.steer, state.throttle, state.brake, car)
-            for name, value in commands.items():
-                data.ctrl[actuator_ids[name]] = value
-
-            for _ in range(substeps):
-                mujoco.mj_step(model, data)
+            control = ControlVector.clipped(
+                steer=state.steer, throttle=state.throttle, brake=state.brake
+            )
+            dynamics.step(control, data, substeps)
             state.settle()
             viewer.sync()
 
@@ -196,13 +197,14 @@ def main(argv: list[str] | None = None) -> int:
             if now - last_report > 0.5:
                 last_report = now
                 position = data.xpos[car_body]
-                speed = float(np.linalg.norm(data.cvel[car_body][3:5]))
+                speed = dynamics.speed_mps(data)
                 projection = centerline.project(float(position[0]), float(position[1]))
                 where = "on track" if projection.is_on_track else "OFF"
                 print(
                     f"\r{speed * 3.6:6.1f} km/h | "
                     f"lap {projection.arclength / centerline.length * 100:5.1f}% | "
                     f"{projection.lateral:+6.2f} m {where:>8} | "
+                    f"gear {dynamics.gear + 1} | "
                     f"thr {state.throttle:4.2f} brk {state.brake:4.2f} "
                     f"steer {state.steer:+5.2f}",
                     end="",
