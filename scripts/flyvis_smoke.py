@@ -73,8 +73,8 @@ def _create_edge_frames(
     ]
 
 
-def _create_edge_sequence(torch: Any, flyvis: Any) -> Any:
-    from flyvis.utils.hex_utils import get_hextent, get_hex_coords, hex_to_pixel
+def _create_edge_sequence(torch: Any) -> Any:
+    from flyvis.utils.hex_utils import get_hex_coords, get_hextent, hex_to_pixel
 
     extent = get_hextent(HEXAL_COUNT)
     horizontal_hex, vertical_hex = get_hex_coords(extent)
@@ -224,7 +224,7 @@ def main() -> int:
     network.requires_grad_(False)
 
     if args.stimulus == "edge":
-        sequence = _create_edge_sequence(torch, flyvis)
+        sequence = _create_edge_sequence(torch)
     else:
         sequence = _create_ramp_sequence(torch)
     responses = network.simulate(

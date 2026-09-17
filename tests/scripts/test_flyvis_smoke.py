@@ -42,9 +42,7 @@ def test_edge_frames_sweep_monotonically() -> None:
     smoke_module = _load_smoke_module()
     horizontal_positions = [-2.0, -1.0, 0.0, 1.0, 2.0]
 
-    frames = smoke_module._create_edge_frames(  # noqa: SLF001
-        horizontal_positions, frame_count=5
-    )
+    frames = smoke_module._create_edge_frames(horizontal_positions, frame_count=5)
 
     assert len(frames) == 5
     assert all(len(frame) == len(horizontal_positions) for frame in frames)
