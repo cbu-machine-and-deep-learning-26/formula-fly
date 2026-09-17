@@ -53,10 +53,5 @@ on FlyWire.
 
 ## Develop
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for git-flow, branch names, tests, and
-optional extras. Project context for agents lives in [CLAUDE.md](CLAUDE.md).
-
-```bash
-python -m pip install -e ".[dev]"
-pytest -q
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for git-flow and branch names. Project
+context for agents lives in [CLAUDE.md](CLAUDE.md).
