@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fly-driver"
+version = "0.1.0"
+description = "A connectome-constrained fly visual system learning to drive a race car"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+# Kept deliberately small. numpy carries the geometry, mujoco carries the practice track.
+# torch, flyvis, flybody and AssettoCorsaGym are heavy, platform-specific, or both, so each
+# arrives with its own ticket and its own extra rather than being forced on anyone who only
+# wants to run the tests (AGENTS.md §7 -- an x86-only wheel discovered in week 5 is the
+# stated failure mode, so the default install stays installable on aarch64).
+dependencies = [
+    "numpy>=1.24",
+    "mujoco>=3.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+include = ["fly_driver*"]
+
+# The vendored Silverstone centerline ships with the package; without this the CSV is missing
+# from any non-editable install and the env fails at import time rather than at build time.
+[tool.setuptools.package-data]
+"fly_driver.envs" = ["data/*.csv", "data/*.md", "data/LICENSE*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "render: needs a working OpenGL context; skipped automatically when none is available",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "NPY"]
