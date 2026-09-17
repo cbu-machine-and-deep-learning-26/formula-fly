@@ -123,7 +123,7 @@ class PowertrainConfig:
     driveline_efficiency: float = 0.90
     shift_up_fraction: float = 0.94
     shift_down_fraction: float = 0.55
-    brake_bias_front: float = 0.57
+    brake_bias_front: float = 0.54
     limiter_taper_fraction: float = 0.04
     abs_enabled: bool = True
     abs_slip_full: float = 0.10
@@ -243,15 +243,20 @@ SF70H_POWERTRAIN = PowertrainConfig(
     gear_ratios=(2.9688, 2.3943, 2.0411, 1.7155, 1.4800, 1.2800, 1.1400, 1.0400),
     final_drive=4.4200,
     shift_up_fraction=0.82,
-    # Sized so the tyres, not the discs, are the limit everywhere on the speed range. At
-    # 300 km/h the rear axle carries ~13.2 kN (static load plus 55% of the downforce),
-    # which at mu 1.7 and a 0.335 m radius is ~3.8 kNm of grip per rear wheel. With 16 kNm
-    # total and a 57% front bias each rear disc could only deliver 3.4 kNm -- the rear
-    # brakes were torque-limited at speed and left grip on the table. 20 kNm puts every
-    # wheel past its grip at any speed, so braking force is set by the tyres alone. The
-    # headroom is also what lets a driver lock a wheel, which is a real thing a policy
-    # can do wrong.
-    max_brake_torque_nm=20_000.0,
+    # Assetto Corsa's brakes.ini gives MAX_TORQUE=3900 for this car, which is per wheel:
+    # read as a whole-car total it stops the car at 1.84 g and takes 111 m from 300 km/h,
+    # which no Formula 1 car does. Read per wheel -- 15.6 kNm across four -- it gives
+    # 4.67 g and 43.4 m, identical to the 20 kNm of headroom guessed before, because in
+    # both cases the tyres run out before the discs do. So this is AC's number, and the
+    # measurement that says which reading of it is the right one.
+    #
+    # The headroom above grip is also what lets a driver lock a wheel, which is a real
+    # thing a policy can do wrong.
+    #
+    # Not modelled: the real car harvests energy through the rear axle under braking
+    # (AC's ers.ini removes rear brake torque in proportion), so its rear discs do less
+    # work than these do.
+    max_brake_torque_nm=15_600.0,
 )
 
 

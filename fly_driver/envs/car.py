@@ -116,8 +116,11 @@ ACTUATOR_NAMES = (
 #: is the bodywork only, so that 2 x (track/2 + tyre width/2) lands near 2 m.
 SF70H_REFERENCE = {
     "mass_kg": 728.0,
-    "power_w": 746_000.0,
-    "wheelbase_m": 3.60,
+    # Peak power and wheelbase are Assetto Corsa's for this car, and differ slightly from
+    # the round published figures they replaced (746 kW and a 3.60 m wheelbase estimated
+    # from the 2017 era). The rest are still public sources.
+    "power_w": 758_000.0,
+    "wheelbase_m": 3.58,
     "overall_width_m": 2.00,
     "wheel_diameter_m": 0.670,
     "top_speed_kmh": 340.0,
@@ -156,6 +159,20 @@ class CarConfig:
             rear-biased; the 2017 regulations floor was 44% front.
         centre_of_gravity_height_m: CoG height above the road. Low, which is what keeps an
             F1 car flat in a corner instead of rolling onto its side.
+
+            Deliberately **not** taken from Assetto Corsa, unlike most of this file. AC's
+            suspension data carries ``BASEY`` offsets of 0.071 m front and 0.074 rear
+            which, read as its own comment describes, put the CoG at about 0.41 m -- above
+            the axle line and well above the 0.25 to 0.30 m usually published for a car of
+            this era. Either the reading is wrong or AC measures it from somewhere else,
+            and a CoG that high changes load transfer enough to lift wheels, which is the
+            failure this model has already been bitten by twice. It stays at 0.28 until
+            someone can say which of the two it is.
+
+            The same caution applies to :attr:`inertia_yaw_kgm2`: AC's ``INERTIA=1.6,
+            0.82,4.66`` implies about 1470 kg m^2 if those are box dimensions, against the
+            750 used here, and the factor of two hangs entirely on whether they are full
+            or half dimensions.
         inertia_roll_kgm2: Moment of inertia about the car's long axis.
         inertia_pitch_kgm2: About the lateral axis.
         inertia_yaw_kgm2: About the vertical axis -- the one that governs how quickly the
@@ -278,8 +295,8 @@ class CarConfig:
 
     # --- Ferrari SF70H (2017). See SF70H_REFERENCE for sources. ---
     mass_kg: float = 728.0
-    wheelbase_m: float = 3.60
-    track_width_front_m: float = 1.60
+    wheelbase_m: float = 3.58
+    track_width_front_m: float = 1.66
     track_width_rear_m: float = 1.55
     chassis_length_m: float = 5.00
     chassis_width_m: float = 1.10
@@ -288,12 +305,12 @@ class CarConfig:
     wheel_width_front_m: float = 0.305
     wheel_width_rear_m: float = 0.405
     wheel_mass_kg: float = 13.0
-    front_weight_fraction: float = 0.455
+    front_weight_fraction: float = 0.4559
     centre_of_gravity_height_m: float = 0.28
     inertia_roll_kgm2: float = 112.0
     inertia_pitch_kgm2: float = 700.0
     inertia_yaw_kgm2: float = 750.0
-    max_steer_rad: float = 0.35
+    max_steer_rad: float = 0.3142
     steer_gain: float = 12000.0
     steer_damping_nms: float = 200.0
     suspension_stiffness_front_n_m: float = 100_000.0
