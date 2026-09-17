@@ -45,3 +45,8 @@ wandb_api_key
 
 # MuJoCo writes this wherever it is run from; it is a warning log, not source.
 MUJOCO_LOG.TXT
+
+# Assetto Corsa car data. Paid DLC, Kunos copyright: extract what you need locally,
+# never commit it. See RUNNING.md.
+ks_ferrari_sf70h/
+*.acd

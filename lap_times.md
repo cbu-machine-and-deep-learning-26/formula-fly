@@ -16,3 +16,4 @@ Times are `M:SS.mmm`. Rows may be deleted or reordered freely, but keep the tabl
 | Date | Time | Driver | Note |
 | --- | --- | --- | --- |
 | 2026-09-17 13:14:07 | 2:21.178 | gamepad (PS5 Controller) | new best |
+| 2026-09-17 13:41:44 | 2:16.673 | gamepad (PS5 Controller) | new best |
