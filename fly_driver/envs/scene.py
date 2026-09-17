@@ -30,7 +30,7 @@ import numpy as np
 
 from fly_driver.envs.centerline import Centerline
 
-__all__ = ["SceneConfig", "build_scene_xml"]
+__all__ = ["SceneConfig", "build_scene_xml", "scenery_xml"]
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,24 @@ class SceneConfig:
             centimetres, which is what a camera 1 m off the ground needs.
         zfar_extents: Far clipping plane, in extents. Must cover how far down the track the
             eye should see; too small and the horizon vanishes mid-straight.
+        scenery_spacing_m: Metres between trackside objects. ``0`` leaves the circuit bare.
+
+            Payton asked for these as "a secondary reference of how fast the car is
+            going", and that is exactly what they are: a flat green field gives a driver
+            almost nothing to judge speed against, and gives the fly's motion detectors
+            even less. Trees and buildings passing the cockpit produce real parallax --
+            near things sweep past quickly, far things barely move -- which is the signal
+            T4/T5 exist to read. Ground texture alone cannot do that, because it has no
+            depth.
+        scenery_margin_m: Clear ground between the kerb and the nearest object, so nothing
+            stands where a car running wide would be.
+        scenery_spread_m: How far past the margin objects may be scattered.
+        scenery_density: Chance of placing something at each spacing step, per side.
+        scenery_seed: Seed for the placement. Fixed by default, because an eval protocol
+            that silently rearranges the scenery between runs is not reproducible.
+        grid_offset_m: How far back from the start line the car is placed. Driving up to
+            the line means the first lap is timed from the moment it is crossed rather
+            than from a standing start at the line.
     """
 
     mesh_spacing_m: float = 10.0
@@ -103,6 +121,12 @@ class SceneConfig:
     model_extent_m: float = 10.0
     znear_extents: float = 0.005
     zfar_extents: float = 60.0
+    scenery_spacing_m: float = 55.0
+    scenery_margin_m: float = 9.0
+    scenery_spread_m: float = 26.0
+    scenery_density: float = 0.7
+    scenery_seed: int = 0
+    grid_offset_m: float = 150.0
 
     def __post_init__(self) -> None:
         if self.mesh_spacing_m <= 0:
@@ -121,6 +145,13 @@ class SceneConfig:
             raise ValueError(
                 f"friction_cone must be pyramidal or elliptic, got {self.friction_cone!r}"
             )
+        for name in ("scenery_spacing_m", "scenery_margin_m", "scenery_spread_m"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be non-negative, got {getattr(self, name)}")
+        if not 0.0 <= self.scenery_density <= 1.0:
+            raise ValueError(f"scenery_density must be in [0, 1], got {self.scenery_density}")
+        if self.grid_offset_m < 0:
+            raise ValueError(f"grid_offset_m must be non-negative, got {self.grid_offset_m}")
         if self.impratio < 1.0:
             raise ValueError(f"impratio must be at least 1, got {self.impratio}")
         if self.offscreen_width <= 0 or self.offscreen_height <= 0:
@@ -196,6 +227,166 @@ def _segment_normals(centerline: Centerline) -> np.ndarray:
         normals[i] = centerline.normal(i)
     normals[-1] = normals[0]
     return normals
+
+
+#: Trunk, foliage, walls, roofs and clothing. Plain rgba rather than materials so every
+#: object can vary a little without declaring a material per tree.
+_BARK = (0.32, 0.22, 0.14, 1.0)
+_LEAF = ((0.16, 0.38, 0.16), (0.20, 0.45, 0.18), (0.13, 0.32, 0.15), (0.24, 0.42, 0.20))
+_WALL = ((0.72, 0.70, 0.66), (0.62, 0.64, 0.68), (0.78, 0.74, 0.66), (0.55, 0.57, 0.60))
+_ROOF = ((0.35, 0.36, 0.40), (0.45, 0.28, 0.24), (0.30, 0.32, 0.34))
+_SHIRT = (
+    (0.85, 0.25, 0.25),
+    (0.20, 0.40, 0.80),
+    (0.90, 0.80, 0.25),
+    (0.25, 0.70, 0.45),
+    (0.85, 0.85, 0.85),
+    (0.60, 0.30, 0.70),
+)
+
+_SCENERY_GEOM = 'contype="0" conaffinity="0" group="1"'
+
+
+def _scenery_frame(
+    centerline: Centerline, arclength: float
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """Centre point, left normal, and the two half-widths at this point on the lap."""
+    point, yaw = centerline.pose_at(arclength)
+    index = int(np.searchsorted(centerline.arclength, arclength, side="right")) - 1
+    index = min(max(index, 0), len(centerline.half_width_left) - 1)
+    normal = np.array([-np.sin(yaw), np.cos(yaw)])
+    return (
+        np.asarray(point, dtype=float),
+        normal,
+        float(centerline.half_width_left[index]),
+        float(centerline.half_width_right[index]),
+    )
+
+
+def _tree_xml(name: str, x: float, y: float, rng: np.random.Generator) -> str:
+    height = float(rng.uniform(2.6, 5.4))
+    trunk = float(rng.uniform(0.16, 0.30))
+    crown = float(rng.uniform(1.2, 2.3))
+    leaf = _LEAF[int(rng.integers(len(_LEAF)))]
+    return (
+        f'\n    <geom name="{name}_trunk" type="cylinder" {_SCENERY_GEOM} '
+        f'pos="{x:.2f} {y:.2f} {height / 2:.2f}" size="{trunk:.2f} {height / 2:.2f}" '
+        f'rgba="{_BARK[0]} {_BARK[1]} {_BARK[2]} 1"/>'
+        f'\n    <geom name="{name}_crown" type="ellipsoid" {_SCENERY_GEOM} '
+        f'pos="{x:.2f} {y:.2f} {height + crown * 0.55:.2f}" '
+        f'size="{crown:.2f} {crown:.2f} {crown * 1.15:.2f}" '
+        f'rgba="{leaf[0]} {leaf[1]} {leaf[2]} 1"/>'
+    )
+
+
+def _building_xml(name: str, x: float, y: float, yaw: float, rng: np.random.Generator) -> str:
+    half_x = float(rng.uniform(3.0, 7.0))
+    half_y = float(rng.uniform(2.5, 5.0))
+    height = float(rng.uniform(3.0, 7.5))
+    wall = _WALL[int(rng.integers(len(_WALL)))]
+    roof = _ROOF[int(rng.integers(len(_ROOF)))]
+    return (
+        f'\n    <geom name="{name}_walls" type="box" {_SCENERY_GEOM} '
+        f'pos="{x:.2f} {y:.2f} {height / 2:.2f}" euler="0 0 {yaw:.4f}" '
+        f'size="{half_x:.2f} {half_y:.2f} {height / 2:.2f}" '
+        f'rgba="{wall[0]} {wall[1]} {wall[2]} 1"/>'
+        f'\n    <geom name="{name}_roof" type="box" {_SCENERY_GEOM} '
+        f'pos="{x:.2f} {y:.2f} {height + 0.18:.2f}" euler="0 0 {yaw:.4f}" '
+        f'size="{half_x * 1.06:.2f} {half_y * 1.06:.2f} 0.18" '
+        f'rgba="{roof[0]} {roof[1]} {roof[2]} 1"/>'
+    )
+
+
+def _crowd_xml(name: str, x: float, y: float, rng: np.random.Generator) -> str:
+    """A handful of people standing together. Small, but they read as human-sized, which
+    is what makes 300 km/h look like 300 km/h."""
+    parts = []
+    for person in range(int(rng.integers(4, 9))):
+        px = x + float(rng.uniform(-2.2, 2.2))
+        py = y + float(rng.uniform(-2.2, 2.2))
+        height = float(rng.uniform(1.55, 1.85))
+        shirt = _SHIRT[int(rng.integers(len(_SHIRT)))]
+        parts.append(
+            f'\n    <geom name="{name}_{person}" type="capsule" {_SCENERY_GEOM} '
+            f'fromto="{px:.2f} {py:.2f} 0.30 {px:.2f} {py:.2f} {height:.2f}" size="0.20" '
+            f'rgba="{shirt[0]} {shirt[1]} {shirt[2]} 1"/>'
+        )
+    return "".join(parts)
+
+
+def _push_clear(
+    centerline: Centerline,
+    spot: np.ndarray,
+    outward: np.ndarray,
+    margin: float,
+    attempts: int = 4,
+) -> np.ndarray | None:
+    """Move ``spot`` away from the track until it clears the edge by ``margin``.
+
+    Returns ``None`` if it still does not clear, so the caller can drop it.
+    """
+    for _ in range(attempts):
+        projection = centerline.project(float(spot[0]), float(spot[1]))
+        edge = (
+            projection.half_width_left if projection.lateral >= 0 else projection.half_width_right
+        )
+        shortfall = margin - (abs(projection.lateral) - edge)
+        if shortfall <= 0:
+            return spot
+        spot = spot + outward * (shortfall + 1.0)
+    projection = centerline.project(float(spot[0]), float(spot[1]))
+    edge = projection.half_width_left if projection.lateral >= 0 else projection.half_width_right
+    return spot if abs(projection.lateral) - edge >= margin else None
+
+
+def scenery_xml(centerline: Centerline, config: SceneConfig | None = None) -> str:
+    """Trees, buildings and small crowds scattered outside the track edges.
+
+    Visual only -- no contact class, so nothing here changes how the car drives, exactly
+    like the kerbs. Placement is seeded, so the same config always produces the same
+    circuit; an eval protocol that quietly rearranged the scenery between seeds would not
+    be reproducible, and AGENTS.md section 11 asks for that to be pinned rather than assumed.
+    """
+    config = config or SceneConfig()
+    if config.scenery_spacing_m <= 0 or config.scenery_density <= 0:
+        return ""
+
+    rng = np.random.default_rng(config.scenery_seed)
+    pieces = []
+    count = 0
+    steps = int(centerline.length // config.scenery_spacing_m)
+    for step in range(steps):
+        arclength = step * config.scenery_spacing_m
+        point, normal, half_left, half_right = _scenery_frame(centerline, arclength)
+        for side, sign, half in (("l", 1.0, half_left), ("r", -1.0, half_right)):
+            if rng.random() > config.scenery_density:
+                continue
+            offset = half + config.scenery_margin_m + rng.random() * config.scenery_spread_m
+            along = float(rng.uniform(-0.4, 0.4)) * config.scenery_spacing_m
+            tangent = np.array([normal[1], -normal[0]])
+            spot = point + normal * (sign * offset) + tangent * along
+
+            # The jitter above is measured from one point on the centerline, but on the
+            # inside of a corner sliding along the tangent moves *towards* the track, and
+            # the half-width where the object actually projects is not the half-width
+            # where it was placed. So check the real clearance and push it out; a spot
+            # that still will not clear is dropped, which naturally thins the scenery at
+            # hairpins where the runoff is widest anyway.
+            spot = _push_clear(centerline, spot, sign * normal, config.scenery_margin_m)
+            if spot is None:
+                continue
+            x, y = float(spot[0]), float(spot[1])
+            name = f"scenery_{count}_{side}"
+            count += 1
+            roll = rng.random()
+            if roll < 0.62:
+                pieces.append(_tree_xml(name, x, y, rng))
+            elif roll < 0.84:
+                yaw = float(np.arctan2(normal[1], normal[0]))
+                pieces.append(_building_xml(name, x, y, yaw, rng))
+            else:
+                pieces.append(_crowd_xml(name, x, y, rng))
+    return "".join(pieces)
 
 
 def build_scene_xml(
@@ -288,6 +479,7 @@ def build_scene_xml(
                 )
 
     start_position, start_yaw = centerline.pose_at(0.0)
+    scenery = scenery_xml(centerline, config)
     tendon_block = f"\n\n  <tendon>{extra_tendons}\n  </tendon>" if extra_tendons.strip() else ""
     # texuniform makes texrepeat world-scaled, so this is tiles per metre.
     grass_repeat = 1.0 / config.grass_texture_repeat_m
@@ -347,7 +539,7 @@ def build_scene_xml(
     <geom name="ground" type="plane" size="0 0 1" material="grass" friction="1.0 0.005 0.0001"
           contype="{config.world_contype}" conaffinity="{config.world_conaffinity}"/>
     <geom name="road_geom" type="mesh" mesh="road" material="asphalt"
-          contype="0" conaffinity="0" group="1"/>{kerb_geoms}{walls}
+          contype="0" conaffinity="0" group="1"/>{kerb_geoms}{walls}{scenery}
     <site name="start" pos="{start_position[0]:.3f} {start_position[1]:.3f} 0.05"
           euler="0 0 {start_yaw:.5f}" size="0.5 0.1 0.05" type="box" rgba="1 1 1 1"/>
 {extra_bodies}

@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.scene import SceneConfig, _ribbon_mesh, build_scene_xml
+from fly_driver.envs.scene import SceneConfig, _ribbon_mesh, build_scene_xml, scenery_xml
 
 
 @pytest.fixture(scope="module")
@@ -208,6 +208,10 @@ class TestSceneConfigValidation:
             {"znear_extents": 0.0},
             {"zfar_extents": 0.001},
             {"friction_cone": "conical"},
+            {"scenery_spacing_m": -1.0},
+            {"scenery_margin_m": -1.0},
+            {"scenery_density": 1.5},
+            {"grid_offset_m": -1.0},
             {"impratio": 0.5},
         ],
     )
@@ -230,3 +234,109 @@ class TestExtraHooks:
         model = mujoco.MjModel.from_xml_string(xml)
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "probe") != -1
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "push") != -1
+
+
+class TestScenery:
+    """Payton asked for trackside objects as "a secondary reference of how fast the car is
+    going". They also give the fly's motion detectors real parallax, which flat ground
+    texture cannot, so they are on by default.
+    """
+
+    @pytest.fixture(scope="class")
+    def scenery_model(self, track):
+        return mujoco.MjModel.from_xml_string(build_scene_xml(track, SceneConfig()))
+
+    def _scenery_geoms(self, model):
+        found = []
+        for i in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) or ""
+            if name.startswith("scenery_"):
+                found.append(i)
+        return found
+
+    def test_there_is_scenery(self, scenery_model):
+        assert len(self._scenery_geoms(scenery_model)) > 50
+
+    def test_none_of_it_can_be_hit(self, scenery_model):
+        """Visual only, like the kerbs. A tree that stopped the car dead would change
+        every lap time in the record book."""
+        for i in self._scenery_geoms(scenery_model):
+            assert scenery_model.geom_contype[i] == 0
+            assert scenery_model.geom_conaffinity[i] == 0
+
+    def test_it_adds_no_mass(self, track):
+        with_it = mujoco.MjModel.from_xml_string(build_scene_xml(track, SceneConfig()))
+        without = mujoco.MjModel.from_xml_string(
+            build_scene_xml(track, SceneConfig(scenery_spacing_m=0.0))
+        )
+        assert with_it.body_mass.sum() == pytest.approx(without.body_mass.sum())
+
+    def test_it_is_drawn_by_the_head_camera(self, scenery_model):
+        """Group 1, the same group as the road and kerbs. Hidden scenery would be a
+        speed reference the fly cannot see."""
+        for i in self._scenery_geoms(scenery_model):
+            assert scenery_model.geom_group[i] == 1
+
+    def test_nothing_stands_on_the_track(self, track, scenery_model):
+        """Every object must clear the kerb by the configured margin, or a car running
+        wide would drive through a building."""
+        config = SceneConfig()
+        for i in self._scenery_geoms(scenery_model):
+            x, y = scenery_model.geom_pos[i][:2]
+            projection = track.project(float(x), float(y))
+            edge = (
+                projection.half_width_left
+                if projection.lateral >= 0
+                else projection.half_width_right
+            )
+            clearance = abs(projection.lateral) - edge
+            # crowds scatter a couple of metres around their anchor point
+            assert clearance > config.scenery_margin_m - 3.0, (
+                f"scenery geom {i} is only {clearance:.1f} m past the edge"
+            )
+
+    def test_it_stays_within_the_configured_spread(self, track, scenery_model):
+        config = SceneConfig()
+        reach = config.scenery_margin_m + config.scenery_spread_m + 8.0
+        for i in self._scenery_geoms(scenery_model):
+            x, y = scenery_model.geom_pos[i][:2]
+            projection = track.project(float(x), float(y))
+            edge = (
+                projection.half_width_left
+                if projection.lateral >= 0
+                else projection.half_width_right
+            )
+            assert abs(projection.lateral) - edge < reach
+
+    def test_the_same_seed_gives_the_same_circuit(self, track):
+        """An eval protocol that rearranged the scenery between runs would not be
+        reproducible, which AGENTS.md section 11 asks to be pinned rather than assumed."""
+        first = scenery_xml(track, SceneConfig(scenery_seed=7))
+        second = scenery_xml(track, SceneConfig(scenery_seed=7))
+        assert first == second
+
+    def test_a_different_seed_gives_a_different_circuit(self, track):
+        assert scenery_xml(track, SceneConfig(scenery_seed=1)) != scenery_xml(
+            track, SceneConfig(scenery_seed=2)
+        )
+
+    def test_it_can_be_switched_off(self, track):
+        assert scenery_xml(track, SceneConfig(scenery_spacing_m=0.0)) == ""
+        assert scenery_xml(track, SceneConfig(scenery_density=0.0)) == ""
+
+    def test_density_controls_how_much_there_is(self, track):
+        sparse = scenery_xml(track, SceneConfig(scenery_density=0.2)).count("<geom")
+        dense = scenery_xml(track, SceneConfig(scenery_density=1.0)).count("<geom")
+        assert dense > sparse > 0
+
+    def test_all_three_kinds_appear(self, track):
+        """Trees, buildings and crowds. A crowd gives human scale, which is what makes
+        300 km/h read as 300 km/h."""
+        xml = scenery_xml(track, SceneConfig())
+        assert "_trunk" in xml and "_crown" in xml
+        assert "_walls" in xml and "_roof" in xml
+        assert 'type="capsule"' in xml
+
+    def test_everything_sits_on_or_above_the_ground(self, scenery_model):
+        for i in self._scenery_geoms(scenery_model):
+            assert scenery_model.geom_pos[i][2] >= 0.0
