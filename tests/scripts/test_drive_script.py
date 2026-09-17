@@ -24,7 +24,7 @@ import pytest
 from fly_driver.interface import ControlVector
 
 _SPEC = importlib.util.spec_from_file_location(
-    "drive_script", Path(__file__).resolve().parents[1] / "scripts" / "drive.py"
+    "drive_script", Path(__file__).resolve().parents[2] / "scripts" / "drive.py"
 )
 assert _SPEC and _SPEC.loader
 drive = importlib.util.module_from_spec(_SPEC)
