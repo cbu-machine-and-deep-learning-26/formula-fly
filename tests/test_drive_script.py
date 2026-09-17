@@ -72,20 +72,30 @@ class TestPedalAxis:
 
     def test_down_from_neutral_brakes(self, state):
         state.on_key(drive.KEY_DOWN)
-        assert state.brake == pytest.approx(drive.PEDAL_STEP)
+        assert state.brake == pytest.approx(drive.BRAKE_STEP)
         assert state.throttle == 0.0
 
-    def test_down_backs_off_throttle_before_braking(self, state):
-        """One axis: you have to come off the throttle before the brakes bite."""
+    def test_down_lifts_off_in_one_press_before_it_brakes(self, state):
+        """One axis, but a lift is one press, not a slow walk back down the throttle:
+        from any throttle the first DOWN is a full lift and the second is brake."""
         for _ in range(4):
             state.on_key(drive.KEY_UP)
         assert state.throttle > 0
-        for _ in range(4):
-            state.on_key(drive.KEY_DOWN)
-        assert state.throttle == pytest.approx(0.0)
-        assert state.brake == pytest.approx(0.0)
         state.on_key(drive.KEY_DOWN)
-        assert state.brake > 0
+        assert state.throttle == 0.0 and state.brake == 0.0
+        state.on_key(drive.KEY_DOWN)
+        assert state.brake == pytest.approx(drive.BRAKE_STEP)
+
+    def test_full_brake_is_two_presses_from_coasting(self, state):
+        """Seven presses at the throttle step was what "the brakes barely work" meant."""
+        state.on_key(drive.KEY_DOWN)
+        state.on_key(drive.KEY_DOWN)
+        assert state.brake == 1.0
+
+    def test_up_releases_the_brake_before_adding_throttle(self, state):
+        state.on_key(drive.KEY_DOWN)
+        state.on_key(drive.KEY_UP)
+        assert state.brake == 0.0 and state.throttle == 0.0
 
     def test_throttle_and_brake_are_never_both_applied(self, state):
         rng = random.Random(1)
@@ -154,6 +164,27 @@ class TestSteering:
     def test_unknown_keys_are_ignored(self, state):
         state.on_key(9999)
         assert state.steer == 0.0 and state.throttle == 0.0 and state.brake == 0.0
+
+
+class TestSpeedSensitiveSteering:
+    """Keyboard-only assist. The car itself has no such thing; see ``steering_gain``."""
+
+    def test_full_lock_at_rest(self):
+        assert drive.steering_gain(0.0) == 1.0
+
+    def test_falls_with_speed(self):
+        gains = [drive.steering_gain(v) for v in (0.0, 10.0, 20.0, 40.0, 80.0)]
+        assert all(later < earlier for earlier, later in zip(gains, gains[1:], strict=False))
+
+    def test_never_below_the_floor(self):
+        assert drive.steering_gain(1000.0) == drive.STEER_GAIN_FLOOR
+
+    def test_a_press_is_a_nudge_at_racing_speed(self):
+        """At 300 km/h a full press should be a small correction, not a lane change."""
+        assert drive.steering_gain(300.0 / 3.6) < 0.3
+
+    def test_reversing_counts_as_slow(self):
+        assert drive.steering_gain(-5.0) == 1.0
 
 
 class TestControlsStayInContractRange:

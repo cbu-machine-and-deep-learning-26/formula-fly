@@ -12,10 +12,12 @@ Run it::
 Controls -- **arrow keys only**, by design:
 
 ===========  ==================================================================
-  UP / DOWN  one longitudinal axis: up adds throttle, down backs it off and then
-             applies the brakes. It holds where you leave it, like cruise
-             control, because the viewer reports key presses and not key state.
-  LEFT/RIGHT steer. Recentres on its own when you stop pressing.
+  UP / DOWN  one longitudinal axis. UP adds throttle a step at a time. DOWN
+             lifts off completely in one press; a second press is half brake
+             and a third is full brake. It holds where you leave it, like
+             cruise control, because the viewer reports presses, not held keys.
+  LEFT/RIGHT steer. Recentres on its own when you stop pressing, and a press
+             means less lock the faster you go (see ``steering_gain``).
 ===========  ==================================================================
 
 Everything else is MuJoCo's own viewer binding, and those take precedence:
@@ -62,8 +64,13 @@ from fly_driver.interface import ControlVector
 # Only the arrows are used: every letter and digit is already a viewer render-flag toggle.
 KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN = 263, 262, 265, 264
 
-#: Step size of the longitudinal axis per key press.
+#: Throttle added per UP press.
 PEDAL_STEP = 0.15
+#: Brake added per DOWN press. Deliberately much coarser than the throttle: from coasting,
+#: two presses is full brake. At the throttle's step it took seven presses to get there,
+#: which is what "the brakes barely work" turned out to mean -- the car was fine, the
+#: pedal was slow.
+BRAKE_STEP = 0.5
 STEER_STEP = 0.35
 #: Fraction of steering kept per control step with no key pressed. At 50 Hz this sets a
 #: time constant, and it has been wrong in both directions. 0.90 decayed in 0.2 s, so a
@@ -72,6 +79,21 @@ STEER_STEP = 0.35
 #: half a second, which is roughly how fast a real wheel self-centres when released.
 STEER_RECENTRE = 0.96
 CONTROL_HZ = 50
+
+#: Speed-sensitive steering, for the keyboard and only the keyboard. A key press gives a
+#: fixed STEER_STEP of lock; at 300 km/h that is far more than any driver would apply and
+#: the car snaps sideways. The gain scales the *input* down with speed, so a press is a
+#: small correction at racing speed and a full turn-in at walking pace. It is not part of
+#: the car and is never applied to anyone else's ControlVector: a wheel, or the fly's
+#: wingbeat asymmetry (GH-21), are analog and can be gentle on their own.
+STEER_GAIN_REFERENCE_MPS = 40.0
+STEER_GAIN_FLOOR = 0.2
+
+
+def steering_gain(speed_mps: float) -> float:
+    """Multiplier on keyboard steering: 1 at rest, falling to a floor at speed."""
+    ratio = max(0.0, speed_mps) / STEER_GAIN_REFERENCE_MPS
+    return max(STEER_GAIN_FLOOR, 1.0 / (1.0 + ratio * ratio))
 
 
 class DriverState:
@@ -88,9 +110,11 @@ class DriverState:
 
     def on_key(self, keycode: int) -> None:
         if keycode == KEY_UP:
-            self.pedal = min(1.0, self.pedal + PEDAL_STEP)
+            # From the brakes, UP releases them; only then does it add throttle.
+            self.pedal = 0.0 if self.pedal < 0.0 else min(1.0, self.pedal + PEDAL_STEP)
         elif keycode == KEY_DOWN:
-            self.pedal = max(-1.0, self.pedal - PEDAL_STEP)
+            # From the throttle, DOWN is a full lift in one press; from coasting it brakes.
+            self.pedal = 0.0 if self.pedal > 0.0 else max(-1.0, self.pedal - BRAKE_STEP)
         elif keycode == KEY_LEFT:
             self.steer = max(-1.0, self.steer - STEER_STEP)
         elif keycode == KEY_RIGHT:
@@ -187,8 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         while viewer.is_running():
             step_start = time.perf_counter()
 
+            speed = dynamics.speed_mps(data)
             control = ControlVector.clipped(
-                steer=state.steer, throttle=state.throttle, brake=state.brake
+                steer=state.steer * steering_gain(speed),
+                throttle=state.throttle,
+                brake=state.brake,
             )
             dynamics.step(control, data, substeps)
             state.settle()
@@ -198,7 +225,6 @@ def main(argv: list[str] | None = None) -> int:
             if now - last_report > 0.5:
                 last_report = now
                 position = data.xpos[car_body]
-                speed = dynamics.speed_mps(data)
                 projection = centerline.project(float(position[0]), float(position[1]))
                 where = "on track" if projection.is_on_track else "OFF"
                 print(
