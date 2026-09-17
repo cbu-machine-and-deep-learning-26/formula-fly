@@ -154,10 +154,15 @@ SF70H_POWERTRAIN = PowertrainConfig(
     peak_torque_nm=700.0,
     max_engine_rads=15_000.0 * 2.0 * np.pi / 60.0,
     idle_engine_rads=4_000.0 * 2.0 * np.pi / 60.0,
-    # Sized so the tyres, not the discs, are the limit: 5.5 g on 728 kg needs ~39 kN,
-    # which at a 0.335 m radius is ~13 kNm. The headroom above that is what lets a driver
-    # lock a wheel, which is a real thing a policy can do wrong.
-    max_brake_torque_nm=16_000.0,
+    # Sized so the tyres, not the discs, are the limit everywhere on the speed range. At
+    # 300 km/h the rear axle carries ~13.2 kN (static load plus 55% of the downforce),
+    # which at mu 1.7 and a 0.335 m radius is ~3.8 kNm of grip per rear wheel. With 16 kNm
+    # total and a 57% front bias each rear disc could only deliver 3.4 kNm -- the rear
+    # brakes were torque-limited at speed and left grip on the table. 20 kNm puts every
+    # wheel past its grip at any speed, so braking force is set by the tyres alone. The
+    # headroom is also what lets a driver lock a wheel, which is a real thing a policy
+    # can do wrong.
+    max_brake_torque_nm=20_000.0,
 )
 
 
