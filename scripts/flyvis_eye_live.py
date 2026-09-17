@@ -1,36 +1,55 @@
 #!/usr/bin/env python3
 """Watch the frozen flyvis eye respond to a webcam (or a synthetic bar) live.
 
-One window shows, left to right, the pipeline the fly sees through: the 96x96
-frame the eye receives, the **retina** (the 721-column hex-resampled luminance
-that actually enters the network, from ``HexResampler``), and the T4/T5
-hexagonal maps updating through ``FlyvisEye.encode`` (streaming, state carried
-between frames), plus a direction meter with one bar per motion direction. Wave
-a hand across the camera and the bar for that direction jumps. ``--show
-R1,L1,Mi1,Tm3`` adds panels for any of the model's cell types: the eye keeps
-its T4/T5 readouts for the meter, and the extra panels are read from
-``FlyvisEye.state_activity`` (the full network state after each step, which
-also covers the 31 non-output types such as photoreceptors and lamina cells);
-``--hide-t5`` drops the T5 row; ``--no-retina`` hides the retina panel.
+One window shows the pipeline the simulated fly sees through, in order:
+
+**Camera-derived panels** (pixels, no neurons involved):
+
+- ``camera``: the 96x96 frame the eye receives.
+- ``retina`` (``--show-retina``, off by default): the 721-column hex-resampled
+  luminance that ``HexResampler`` feeds into the network.
+
+**Neural activity panels** (read from the network after every step):
+
+- ``photoreceptors R1-R6``: the first neural stage, mean R1-R6 activity per
+  column relative to rest. This is what the brain actually receives.
+- ``motion percept (T4/T5)``: the eight T4/T5 direction channels fused into one
+  picture: per column a motion vector (right − left, up − down) drawn as hue =
+  direction, brightness = strength (relative to a running peak). It is the
+  5,768 T4/T5 numbers the driving policy will get, as one image; still scenes
+  are dark.
+- ``T4a-d`` / ``T5a-d``: the individual motion-detector maps
+  (``FlyvisEye.encode`` readouts, streaming with state carried between frames).
+- ``--show R1,L1,Mi1,Tm3``: any other cell type, from
+  ``FlyvisEye.state_activity`` relative to rest.
+
+Plus a direction meter (left/right/up/down from T4/T5 a/b/c/d). Wave a hand
+across the camera and the bar for that direction jumps. ``--hide-t5`` drops the
+T5 row.
 
 **Display choice.** matplotlib with blitting, not pygame. matplotlib is already
 used by every other script in the repo, so the live demo adds only
 ``opencv-python``; the hexagonal map drawing is shared with
 ``scripts/flyvis_eye_demo.py`` through ``fly_driver.analysis.hex_plots``; and
 the same figure renders headlessly on the Agg backend for tests and PNG/GIF
-evidence. Blitting redraws only the frame image, the eight maps, the meter
-bars, and the overlay text. The maps are painted as small images
-(``HexRaster``, one lookup per pixel) instead of 8 x 721 scatter markers, which
-halves the draw cost; on a 4-core CPU VM the window runs at ~24 fps with the
-eye at ~9 ms per frame, close to a webcam's ~30 fps. pygame would be smoother
-for full-screen video, which this is not, and would need its own hex drawing.
+evidence. Blitting redraws only the images, the meter bars, and the overlay
+text; the maps are painted as small images (``HexRaster``) instead of 8 x 721
+scatter markers. On a 4-core CPU VM the window runs at ~24 fps with the eye at
+~9 ms per frame, close to a webcam's ~30 fps.
+
+**HiDPI-safe layout.** The figure uses a constrained-layout ``GridSpec`` (no
+hand-placed axes), the status overlay lives in the figure's own suptitle row,
+and every font size is a fraction of the figure width, recomputed when the
+window is resized, so a Retina Mac or a shrunk window cannot make titles collide.
+The default size fits a 1440x900 logical screen with the toolbar;
+``--figsize W,H`` and ``--scale`` override it.
 
 **Timing.** Every frame is one 20 ms Euler step of the optic lobe regardless of
 how fast frames arrive, so a ~30 fps webcam plays back through the eye at
 50 Hz, about 1.7x faster than real time. That is fine for a demo and is stated
 on screen; the synthetic source is paced to 50 Hz so it is real time.
 
-Headless check (no window, prints the direction meter):
+Headless check (no window, prints the direction meter and motion percept):
 
     python scripts/flyvis_eye_live.py --source synthetic --frames 200 --no-display
 
@@ -41,10 +60,11 @@ The script exits 0 with a ``SKIP`` message when flyvis, its checkpoint, or
 from __future__ import annotations
 
 import argparse
+import contextlib
 import statistics
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,9 +88,11 @@ from fly_driver.eyes.stimuli import (
 )
 
 Frame = npt.NDArray[np.uint8]
+FloatArray = npt.NDArray[np.floating[Any]]
 
 T4_READOUTS = ("T4a", "T4b", "T4c", "T4d")
 T5_READOUTS = ("T5a", "T5b", "T5c", "T5d")
+PHOTORECEPTOR_TYPES = ("R1", "R2", "R3", "R4", "R5", "R6")
 MAPS_PER_ROW = 4
 METER_DIRECTIONS = ("left", "right", "up", "down")
 # Image-coordinate preferred direction of each T4/T5 subtype, the mapping the
@@ -84,8 +106,38 @@ DEFAULT_FPS_CAP = FRAME_RATE_HZ
 # |activity| peaks near 2.3 a.u. for the synthetic bar; 1.5 keeps the maps readable.
 DEFAULT_COLOR_LIMIT = 1.5
 EMA_WEIGHT = 0.1
-METER_PEAK_DECAY = 0.995
-METER_PEAK_FLOOR = 0.05
+PEAK_DECAY = 0.995
+PEAK_FLOOR = 0.05
+# Layout: sizes are in inches at the reference width; fonts scale with width.
+REFERENCE_WIDTH_IN = 12.5
+DEFAULT_SCREEN_LOGICAL_PX = (1440, 900)
+WINDOW_CHROME_PX = (40, 150)
+LEFT_COLUMNS = 3
+BASE_FONT_PT = {"title": 9.0, "overlay": 9.0, "hint": 8.0, "meter": 8.0, "tick": 7.0}
+DEFAULT_FIGURE_DPI = 100.0
+# `import flyvis` restyles matplotlib for 300 dpi paper figures (figure.dpi,
+# savefig.*, 5 pt fonts, hidden spines). A 12 in figure at 300 dpi is wider than
+# any laptop screen, the window manager shrinks the axes and the point-sized
+# fonts do not follow, which is the overlap seen on macOS. Restore these keys.
+RC_KEYS_RESET_TO_DEFAULT = (
+    "figure.dpi",
+    "savefig.dpi",
+    "savefig.bbox",
+    "savefig.format",
+    "font.size",
+    "figure.titlesize",
+    "axes.titlesize",
+    "axes.labelsize",
+    "axes.linewidth",
+    "axes.spines.right",
+    "axes.spines.top",
+    "xtick.labelsize",
+    "ytick.labelsize",
+    "xtick.major.width",
+    "ytick.major.width",
+    "image.interpolation",
+    "image.resample",
+)
 
 
 # --------------------------------------------------------------------------
@@ -318,7 +370,7 @@ class UnknownCellTypesError(ValueError):
 
 
 def resolve_cell_type_indices(eye: Any, names: Sequence[str]) -> dict[str, np.ndarray]:
-    """Map extra cell types to their neuron indices in ``eye.state_activity``.
+    """Map cell types to their neuron indices in ``eye.state_activity``.
 
     Any of the model's cell types can be shown, not only the 34 output types
     the eye exposes as readouts, because the full network state is available
@@ -327,7 +379,7 @@ def resolve_cell_type_indices(eye: Any, names: Sequence[str]) -> dict[str, np.nd
 
     Args:
         eye: A constructed ``FlyvisEye``.
-        names: Cell types requested with ``--show``.
+        names: Cell types to resolve.
 
     Returns:
         ``{name: indices}`` with one index per hex column, in column order.
@@ -360,7 +412,7 @@ def resolve_cell_type_indices(eye: Any, names: Sequence[str]) -> dict[str, np.nd
 
 
 def compute_direction_meter(
-    features: npt.NDArray[np.floating[Any]],
+    features: FloatArray,
     readout_names: Sequence[str],
     *,
     statistic: str = "q95",
@@ -409,7 +461,7 @@ def compute_direction_meter(
 
 
 def find_winning_direction(
-    meter: dict[str, float], minimum: float = METER_PEAK_FLOOR
+    meter: dict[str, float], minimum: float = PEAK_FLOOR
 ) -> str | None:
     """Return the direction with the largest meter value; ``None`` if all are quiet."""
     direction = max(METER_DIRECTIONS, key=lambda name: meter.get(name, 0.0))
@@ -432,6 +484,208 @@ def format_meter(meter: dict[str, float], *, compact: bool = False) -> str:
         )
     values = " ".join(f"{name}={meter[name]:.3f}" for name in METER_DIRECTIONS)
     return f"{values} -> {find_winning_direction(meter) or 'none'}"
+
+
+# --------------------------------------------------------------------------
+# Neural view: photoreceptors and the fused motion percept
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class NeuralIndices:
+    """Neuron indices into ``FlyvisEye.state_activity`` for the neural panels."""
+
+    photoreceptors: list[np.ndarray]
+    motion_channels: dict[str, list[np.ndarray]]
+
+    @classmethod
+    def resolve(cls, eye: Any) -> NeuralIndices:
+        """Look up R1-R6 and every T4/T5 subtype in the eye's connectome."""
+        names = list(PHOTORECEPTOR_TYPES) + list(T4_READOUTS) + list(T5_READOUTS)
+        indices = resolve_cell_type_indices(eye, names)
+        channels: dict[str, list[np.ndarray]] = {
+            direction: [] for direction in METER_DIRECTIONS
+        }
+        for name in T4_READOUTS + T5_READOUTS:
+            channels[SUBTYPE_DIRECTIONS[name[2:]]].append(indices[name])
+        return cls([indices[name] for name in PHOTORECEPTOR_TYPES], channels)
+
+
+def photoreceptor_map(
+    state: FloatArray, resting_state: FloatArray, indices: Sequence[np.ndarray]
+) -> FloatArray:
+    """Return mean R1-R6 activity per column relative to rest, ``(721,)``."""
+    return np.mean([state[index] - resting_state[index] for index in indices], axis=0)
+
+
+def motion_channels(
+    state: FloatArray,
+    resting_state: FloatArray,
+    channels: Mapping[str, Sequence[np.ndarray]],
+) -> dict[str, FloatArray]:
+    """Return rectified T4+T5 activity above rest per direction, ``(721,)`` each."""
+    return {
+        direction: np.sum(
+            [np.maximum(state[index] - resting_state[index], 0.0) for index in indices],
+            axis=0,
+        )
+        for direction, indices in channels.items()
+    }
+
+
+def hsv_to_rgb(
+    hue: FloatArray, saturation: FloatArray, value: FloatArray
+) -> FloatArray:
+    """Convert HSV arrays in ``[0, 1]`` to an RGB array with a trailing axis of 3."""
+    hue6 = (np.asarray(hue) % 1.0) * 6.0
+    sector = np.floor(hue6).astype(int) % 6
+    fraction = hue6 - np.floor(hue6)
+    low = value * (1 - saturation)
+    falling = value * (1 - fraction * saturation)
+    rising = value * (1 - (1 - fraction) * saturation)
+    red = np.choose(sector, [value, falling, low, low, rising, value])
+    green = np.choose(sector, [rising, value, value, falling, low, low])
+    blue = np.choose(sector, [low, low, rising, value, value, falling])
+    return np.stack([red, green, blue], axis=-1).astype(np.float32)
+
+
+def compute_motion_percept(
+    channels: dict[str, FloatArray], peak: float
+) -> tuple[FloatArray, FloatArray]:
+    """Fuse four direction channels into per-column motion vectors and colours.
+
+    Per column ``x = right - left`` and ``y = up - down``; hue encodes the
+    vector angle (right = red, up = yellow-green, left = cyan, down = violet)
+    and brightness the magnitude relative to ``peak``, so still columns are
+    black.
+
+    Args:
+        channels: ``{"left" | "right" | "up" | "down": (721,) non-negative}``.
+        peak: Magnitude drawn at full brightness.
+
+    Returns:
+        ``(rgb, vectors)``: ``(721, 3)`` colours in ``[0, 1]`` and ``(721, 2)``
+        ``(x, y)`` motion vectors.
+    """
+    x = np.asarray(channels["right"]) - np.asarray(channels["left"])
+    y = np.asarray(channels["up"]) - np.asarray(channels["down"])
+    magnitude = np.hypot(x, y)
+    hue = (np.arctan2(y, x) / (2 * np.pi)) % 1.0
+    value = np.clip(magnitude / max(peak, 1e-6), 0.0, 1.0)
+    rgb = hsv_to_rgb(hue, np.ones_like(hue), value)
+    return rgb, np.stack([x, y], axis=-1)
+
+
+def summarise_motion(vectors: FloatArray) -> tuple[float, float]:
+    """Return the mean motion vector as ``(angle_degrees, magnitude)``.
+
+    Angles follow the hue wheel: 0 = right, 90 = up, 180 = left, 270 = down.
+    """
+    mean_x, mean_y = np.mean(vectors, axis=0)
+    angle = float(np.degrees(np.arctan2(mean_y, mean_x)) % 360.0)
+    return angle, float(np.hypot(mean_x, mean_y))
+
+
+def hue_wheel_image(size: int = 64) -> FloatArray:
+    """Return an ``(size, size, 4)`` RGBA hue wheel legend (transparent outside)."""
+    coordinates = (np.arange(size) + 0.5) / size * 2 - 1
+    x, y = np.meshgrid(coordinates, -coordinates)
+    radius = np.hypot(x, y)
+    hue = (np.arctan2(y, x) / (2 * np.pi)) % 1.0
+    saturation = np.clip(radius, 0.0, 1.0)
+    rgb = hsv_to_rgb(hue, saturation, np.ones_like(hue))
+    alpha = (radius <= 1.0).astype(np.float32)
+    return np.concatenate([rgb, alpha[..., None]], axis=-1)
+
+
+class RunningPeak:
+    """Slowly decaying maximum used to normalise panels to their recent range."""
+
+    def __init__(self, floor: float = PEAK_FLOOR, decay: float = PEAK_DECAY) -> None:
+        self.value = floor
+        self._floor = floor
+        self._decay = decay
+
+    def update(self, sample: float) -> float:
+        """Fold one sample in and return the current peak."""
+        self.value = max(self.value * self._decay, float(sample), self._floor)
+        return self.value
+
+
+# --------------------------------------------------------------------------
+# Layout helpers
+# --------------------------------------------------------------------------
+
+
+def parse_figsize(text: str | None) -> tuple[float, float] | None:
+    """Parse ``"W,H"`` or ``"WxH"`` inches into a tuple, or ``None`` if absent."""
+    if not text:
+        return None
+    parts = text.replace("x", ",").split(",")
+    if len(parts) != 2:
+        raise ValueError(f"--figsize must be W,H in inches, got {text!r}")
+    width, height = (float(part) for part in parts)
+    if width <= 0 or height <= 0:
+        raise ValueError("--figsize values must be positive")
+    return width, height
+
+
+def fit_figure_size(
+    row_count: int,
+    dpi: float,
+    screen_px: tuple[int, int] = DEFAULT_SCREEN_LOGICAL_PX,
+    requested: tuple[float, float] | None = None,
+) -> tuple[float, float]:
+    """Return a figure size in inches that fits the screen with window chrome.
+
+    The natural size is :data:`REFERENCE_WIDTH_IN` wide and grows with the
+    number of panel rows; it is shrunk uniformly until ``width * dpi`` and
+    ``height * dpi`` fit inside ``screen_px`` minus :data:`WINDOW_CHROME_PX`.
+
+    Args:
+        row_count: Panel grid rows (at least 2).
+        dpi: Figure dpi (logical pixels per inch).
+        screen_px: Logical screen size in pixels.
+        requested: Explicit ``(width, height)`` from ``--figsize``; returned as
+            given.
+
+    Returns:
+        ``(width_in, height_in)``.
+    """
+    if requested is not None:
+        return requested
+    width = REFERENCE_WIDTH_IN
+    height = min(8.5, 2.2 + 2.3 * max(row_count, 2))
+    max_width = (screen_px[0] - WINDOW_CHROME_PX[0]) / dpi
+    max_height = (screen_px[1] - WINDOW_CHROME_PX[1]) / dpi
+    shrink = min(1.0, max_width / width, max_height / height)
+    return round(width * shrink, 2), round(height * shrink, 2)
+
+
+def font_scale(width_in: float, user_scale: float = 1.0) -> float:
+    """Return the font multiplier for a figure ``width_in`` inches wide.
+
+    Fonts are a fixed fraction of the figure width, so they shrink with the
+    window instead of swallowing the panels.
+    """
+    return user_scale * width_in / REFERENCE_WIDTH_IN
+
+
+def _screen_logical_size(figure: Any) -> tuple[int, int]:
+    """Best-effort logical screen size from the window, capped at the default."""
+    width, height = DEFAULT_SCREEN_LOGICAL_PX
+    manager = getattr(figure.canvas, "manager", None)
+    window: Any = getattr(manager, "window", None)
+    # Any toolkit failure (no window yet, headless Qt) keeps the default.
+    with contextlib.suppress(Exception):
+        if hasattr(window, "screen"):  # Qt
+            geometry = window.screen().availableGeometry()
+            width, height = geometry.width(), geometry.height()
+        elif hasattr(window, "winfo_screenwidth"):  # Tk
+            width, height = window.winfo_screenwidth(), window.winfo_screenheight()
+    return min(width, DEFAULT_SCREEN_LOGICAL_PX[0]), min(
+        height, DEFAULT_SCREEN_LOGICAL_PX[1]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -472,23 +726,41 @@ def _ema(current: float, sample: float) -> float:
     )
 
 
-class LiveView:
-    """matplotlib figure with blitted camera frame, retina, hex maps, and meter.
+@dataclass
+class ViewFrame:
+    """Everything :meth:`LiveView.update` draws for one frame."""
 
-    Layout: the left block holds the camera frame, the retina next to it, and
-    the direction meter below; the right block holds the readout hex maps in
-    rows of :data:`MAPS_PER_ROW`, so the pipeline reads camera → retina → cell
-    types from left to right. With one readout row (``--hide-t5`` and nothing
-    shown) the maps span both rows.
+    frame: Frame
+    photoreceptors: FloatArray
+    motion_rgb: FloatArray
+    maps: dict[str, FloatArray]
+    meter: dict[str, float]
+    overlay_text: str
+    retina: FloatArray | None = None
+
+
+class LiveView:
+    """Blitted matplotlib figure: camera, neural panels, hex maps, meter, overlay.
+
+    The grid is a constrained-layout ``GridSpec``. Row 0 of the left block reads
+    camera → photoreceptors → motion percept; row 1 holds the optional retina
+    and the direction meter; the right block holds the hex maps in rows of
+    :data:`MAPS_PER_ROW` (a single row spans both grid rows). The overlay is
+    the figure suptitle and the key hint its supxlabel, so constrained layout
+    reserves room for them. Font sizes are a fraction of the figure width and
+    are recomputed on every resize.
 
     Args:
-        panel_names: Cell types to draw as hex maps (readouts first).
+        panel_names: Cell types to draw as hex maps on the right.
         color_limit: Symmetric colour limit for the maps in activity units.
         display: Open an interactive window. ``False`` uses the Agg backend and
             only supports :meth:`save`.
-        show_retina: Draw the hex-resampled luminance entering the network.
-        relative_panels: Panels whose values are deviations from rest; their
-            titles say so.
+        show_retina: Also draw the resampled luminance entering the network.
+        relative_panels: ``--show`` panels drawn relative to rest (noted once
+            in the hint line).
+        scale: Extra multiplier on every font size.
+        figsize: Explicit figure size in inches; otherwise fitted to the screen.
+        dpi: Figure dpi override (``None`` keeps matplotlib's default).
     """
 
     def __init__(
@@ -497,13 +769,19 @@ class LiveView:
         color_limit: float,
         display: bool,
         *,
-        show_retina: bool = True,
+        show_retina: bool = False,
         relative_panels: Sequence[str] = (),
+        scale: float = 1.0,
+        figsize: tuple[float, float] | None = None,
+        dpi: float | None = None,
     ) -> None:
         import matplotlib
 
         if not display:
             matplotlib.use("Agg")
+        defaults: Any = matplotlib.rcParamsDefault
+        rc_params: Any = matplotlib.rcParams
+        rc_params.update({key: defaults[key] for key in RC_KEYS_RESET_TO_DEFAULT})
         import matplotlib.pyplot as plt
 
         self.display = display
@@ -512,39 +790,42 @@ class LiveView:
         self.reset_requested = False
         self.is_open = True
         self._needs_background = True
-        self._meter_peak = METER_PEAK_FLOOR
+        self._user_scale = scale
+        self._meter_peak = RunningPeak()
         self._plt = plt
         self._raster = HexRaster()
+        self._scaled_texts: list[tuple[Any, float]] = []
+        self._tick_axes: list[Any] = []
 
         readout_rows = [
             list(panel_names[start : start + MAPS_PER_ROW])
             for start in range(0, len(panel_names), MAPS_PER_ROW)
         ]
         row_count = max(2, len(readout_rows))
-        left_columns = 2
+
         self.figure = plt.figure(
-            figsize=(12, min(8.0, 2.0 + 2.25 * row_count)), facecolor="white"
+            figsize=(8, 5), dpi=dpi or DEFAULT_FIGURE_DPI, layout="constrained"
         )
-        grid = self.figure.add_gridspec(
-            row_count,
-            left_columns + MAPS_PER_ROW,
-            left=0.03,
-            right=0.99,
-            top=0.85 if row_count == 2 else 0.9,
-            bottom=0.1 if row_count == 2 else 0.06,
-            wspace=0.15,
-            hspace=0.35,
+        layout_engine: Any = self.figure.get_layout_engine()
+        layout_engine.set(w_pad=0.04, h_pad=0.04, wspace=0.04, hspace=0.06)
+        width, height = fit_figure_size(
+            row_count, self.figure.dpi, _screen_logical_size(self.figure), figsize
         )
-        camera_axes = self.figure.add_subplot(
-            grid[0, 0] if show_retina else grid[0, :2]
+        self.figure.set_size_inches(width, height, forward=True)
+        grid = self.figure.add_gridspec(row_count, LEFT_COLUMNS + MAPS_PER_ROW)
+
+        camera_axes = self.figure.add_subplot(grid[0, 0])
+        photoreceptor_axes = self.figure.add_subplot(grid[0, 1])
+        motion_axes = self.figure.add_subplot(grid[0, 2])
+        retina_axes = self.figure.add_subplot(grid[1, 0]) if show_retina else None
+        meter_axes = self.figure.add_subplot(
+            grid[1, 1:LEFT_COLUMNS] if show_retina else grid[1, :LEFT_COLUMNS]
         )
-        retina_axes = self.figure.add_subplot(grid[0, 1]) if show_retina else None
-        meter_axes = self.figure.add_subplot(grid[1, :left_columns])
         map_axes = []
         map_names = []
         for row_index, names in enumerate(readout_rows):
             for column_index, name in enumerate(names):
-                column = left_columns + column_index
+                column = LEFT_COLUMNS + column_index
                 cell = (
                     grid[:, column]
                     if len(readout_rows) == 1
@@ -555,9 +836,34 @@ class LiveView:
 
         blank = np.full(DEFAULT_FRAME_SHAPE, GREY_LEVEL, dtype=np.uint8)
         self._image = camera_axes.imshow(blank, animated=display)
-        camera_axes.set_title("eye input (96x96)", fontsize=10)
         camera_axes.set_xticks([])
         camera_axes.set_yticks([])
+        self._title(camera_axes, "camera (96x96)")
+
+        grey_columns = np.zeros(HEX_COLUMN_COUNT, dtype=np.float32)
+        self._photoreceptors = self._raster.imshow(
+            photoreceptor_axes,
+            grey_columns,
+            cmap="gray",
+            vmin=-1.0,
+            vmax=1.0,
+            interpolation="nearest",
+        )
+        self._photoreceptors.set_animated(display)
+        self._title(photoreceptor_axes, "photoreceptors R1-R6")
+
+        self._motion = motion_axes.imshow(
+            self._raster.render_rgb(np.zeros((HEX_COLUMN_COUNT, 3), dtype=np.float32)),
+            interpolation="nearest",
+            animated=display,
+        )
+        motion_axes.set_facecolor("#808080")
+        motion_axes.set_xticks([])
+        motion_axes.set_yticks([])
+        self._title(motion_axes, "motion percept (T4/T5)")
+        wheel_axes = motion_axes.inset_axes((0.74, 0.0, 0.26, 0.26))
+        wheel_axes.imshow(hue_wheel_image(), interpolation="bilinear")
+        wheel_axes.set_axis_off()
 
         self._retina = None
         if retina_axes is not None:
@@ -570,7 +876,7 @@ class LiveView:
                 interpolation="nearest",
             )
             self._retina.set_animated(display)
-            retina_axes.set_title("retina (721 columns)", fontsize=10)
+            self._title(retina_axes, "retina (721 columns)")
 
         self._bars = meter_axes.bar(
             METER_DIRECTIONS, [0.0] * len(METER_DIRECTIONS), color="#4c72b0"
@@ -584,9 +890,11 @@ class LiveView:
             for family in ("T4", "T5")
             if any(name.startswith(family) for name in panel_names)
         )
-        meter_axes.set_title(
-            f"direction meter ({meter_families}, relative to peak)", fontsize=10
+        self._title(meter_axes, f"direction meter ({meter_families})")
+        self._scaled_texts.append(
+            (meter_axes.set_ylabel("relative to peak"), BASE_FONT_PT["tick"])
         )
+        self._tick_axes.append(meter_axes)
         self._meter_text = meter_axes.text(
             0.5,
             0.95,
@@ -594,43 +902,53 @@ class LiveView:
             transform=meter_axes.transAxes,
             ha="center",
             va="top",
-            fontsize=8,
             animated=display,
         )
+        self._scaled_texts.append((self._meter_text, BASE_FONT_PT["meter"]))
 
         self._maps = []
         for axes, name in zip(map_axes, map_names):
             image = self._raster.imshow(
                 axes,
-                np.zeros(HEX_COLUMN_COUNT, dtype=np.float32),
+                grey_columns,
                 cmap="coolwarm",
                 vmin=-color_limit,
                 vmax=color_limit,
                 interpolation="nearest",
             )
             image.set_animated(display)
-            title = f"{name} − rest" if name in relative_panels else name
-            axes.set_title(title, fontsize=10, fontweight="bold")
+            self._title(axes, name, bold=True)
             self._maps.append(image)
-        self.figure.colorbar(
-            self._maps[0], ax=map_axes, label="activity (a.u.)", shrink=0.6, pad=0.02
+        colorbar = self.figure.colorbar(
+            self._maps[0], ax=map_axes, shrink=0.7, pad=0.01, aspect=30
         )
-        self.panel_names = ["camera"] + (["retina"] if show_retina else []) + map_names
+        self._scaled_texts.append(
+            (colorbar.ax.set_ylabel("activity (a.u.)"), BASE_FONT_PT["tick"])
+        )
+        self._tick_axes.append(colorbar.ax)
 
-        self._overlay = self.figure.text(
-            0.03, 0.97, "", fontsize=10, family="monospace", va="top", animated=display
+        left_panels = ["camera"] + (["retina"] if show_retina else [])
+        left_panels += ["photoreceptors", "motion percept"]
+        self.panel_names = left_panels + map_names
+
+        self._overlay = self.figure.suptitle(
+            "display   0.0 fps | eye   0.0 ms | camera, eye stepped at 50 Hz",
+            family="monospace",
+            animated=display,
         )
-        self.figure.text(
-            0.99,
-            0.015,
-            "space pause/resume · r reset eye · q/Esc quit",
-            fontsize=9,
-            ha="right",
-            va="bottom",
-            color="#555555",
+        self._scaled_texts.append((self._overlay, BASE_FONT_PT["overlay"]))
+        hint = "space pause/resume · r reset eye · q/Esc quit"
+        if relative_panels:
+            hint = f"{', '.join(relative_panels)} shown relative to rest   |   {hint}"
+        self._scaled_texts.append(
+            (self.figure.supxlabel(hint, color="#555555"), BASE_FONT_PT["hint"])
         )
-        self._animated = [
+        self._apply_font_scale()
+
+        self._animated: list[Any] = [
             self._image,
+            self._photoreceptors,
+            self._motion,
             self._meter_text,
             self._overlay,
             *self._bars,
@@ -645,6 +963,28 @@ class LiveView:
             self.figure.canvas.mpl_connect("resize_event", self._on_resize)
             plt.show(block=False)
 
+    def _title(self, axes: Any, text: str, *, bold: bool = False) -> None:
+        title = axes.set_title(text, fontweight="bold" if bold else "normal")
+        self._scaled_texts.append((title, BASE_FONT_PT["title"]))
+
+    def _apply_font_scale(self) -> None:
+        scale = font_scale(self.figure.get_size_inches()[0], self._user_scale)
+        for text, base_points in self._scaled_texts:
+            text.set_fontsize(base_points * scale)
+        for axes in self._tick_axes:
+            axes.tick_params(labelsize=BASE_FONT_PT["tick"] * scale)
+
+    def describe_geometry(self) -> str:
+        """Return figure size, dpi, device pixel ratio, and font scale for logs."""
+        width, height = self.figure.get_size_inches()
+        dpi = self.figure.dpi
+        ratio = getattr(self.figure.canvas, "device_pixel_ratio", 1.0)
+        return (
+            f"figure {width:.2f}x{height:.2f} in at {dpi:.0f} dpi = "
+            f"{width * dpi:.0f}x{height * dpi:.0f} logical px; device pixel ratio "
+            f"{ratio}; font scale {font_scale(width, self._user_scale):.2f}"
+        )
+
     def _on_key(self, event: Any) -> None:
         if event.key == " ":
             self.paused = not self.paused
@@ -657,6 +997,7 @@ class LiveView:
         self.is_open = False
 
     def _on_resize(self, _event: Any) -> None:
+        self._apply_font_scale()
         self._needs_background = True
 
     def poll(self) -> None:
@@ -664,37 +1005,22 @@ class LiveView:
         if self.display:
             self.figure.canvas.flush_events()
 
-    def update(
-        self,
-        frame: Frame,
-        retina: npt.NDArray[np.floating[Any]] | None,
-        maps: dict[str, npt.NDArray[np.floating[Any]]],
-        meter: dict[str, float],
-        overlay_text: str,
-    ) -> None:
-        """Push new data into the artists and redraw only them.
-
-        Args:
-            frame: The 96x96x3 frame the eye received.
-            retina: ``(721,)`` resampled luminance in ``[0, 1]``, or ``None``.
-            maps: Readout maps in panel order (see ``split_readout_maps``).
-            meter: Direction meter values.
-            overlay_text: Status line for the top-left overlay.
-        """
-        self._image.set_data(frame)
-        if self._retina is not None and retina is not None:
-            self._retina.set_data(self._raster.render(retina))
-        for image, values in zip(self._maps, maps.values()):
+    def update(self, data: ViewFrame) -> None:
+        """Push new data into the artists and redraw only them."""
+        self._image.set_data(data.frame)
+        self._photoreceptors.set_data(self._raster.render(data.photoreceptors))
+        self._motion.set_data(self._raster.render_rgb(data.motion_rgb))
+        if self._retina is not None and data.retina is not None:
+            self._retina.set_data(self._raster.render(data.retina))
+        for image, values in zip(self._maps, data.maps.values()):
             image.set_data(self._raster.render(values))
-        self._meter_peak = max(
-            self._meter_peak * METER_PEAK_DECAY, max(meter.values()), METER_PEAK_FLOOR
-        )
-        winner = find_winning_direction(meter)
+        peak = self._meter_peak.update(max(data.meter.values()))
+        winner = find_winning_direction(data.meter)
         for bar, direction in zip(self._bars, METER_DIRECTIONS):
-            bar.set_height(meter[direction] / self._meter_peak)
+            bar.set_height(data.meter[direction] / peak)
             bar.set_color("#dd8452" if direction == winner else "#4c72b0")
-        self._meter_text.set_text(format_meter(meter, compact=True))
-        self._overlay.set_text(overlay_text)
+        self._meter_text.set_text(format_meter(data.meter, compact=True))
+        self._overlay.set_text(data.overlay_text)
         if self.display:
             self._blit()
 
@@ -716,7 +1042,7 @@ class LiveView:
         for artist in self._animated:
             artist.set_animated(False)
         try:
-            self.figure.savefig(path, dpi=100)
+            self.figure.savefig(path)
         finally:
             for artist in self._animated:
                 artist.set_animated(self.display)
@@ -764,15 +1090,27 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--show",
         default=None,
         metavar="TYPE[,TYPE...]",
-        help="Extra flyvis output cell types to draw, e.g. R1,L1,Mi1,Tm3.",
+        help="Extra cell types to draw as hex maps, e.g. R1,L1,Mi1,Tm3.",
     )
     parser.add_argument(
         "--hide-t5", action="store_true", help="Drop the T5a-d row (compact view)."
     )
     parser.add_argument(
-        "--no-retina",
+        "--show-retina",
         action="store_true",
-        help="Hide the retina panel (the 721-column luminance entering the eye).",
+        help="Also draw the resampled luminance entering the eye (camera-derived).",
+    )
+    parser.add_argument(
+        "--scale", type=float, default=1.0, help="Multiply every font size."
+    )
+    parser.add_argument(
+        "--figsize",
+        default=None,
+        metavar="W,H",
+        help="Figure size in inches (default: fitted to a 1440x900 logical screen).",
+    )
+    parser.add_argument(
+        "--dpi", type=float, default=None, help="Figure dpi (for HiDPI testing)."
     )
     parser.add_argument("--checkpoint", default=None, help="flyvis checkpoint.")
     return parser.parse_args(argv)
@@ -820,7 +1158,7 @@ def _measure_baseline(
 
     Returns:
         The resting direction meter (subtracted from live values) and the
-        resting activity of every neuron (subtracted from ``--show`` panels).
+        resting activity of every neuron (subtracted from the neural panels).
     """
     eye.reset()
     grey = grey_frames(1, frame_shape=eye.frame_shape)[0]
@@ -889,6 +1227,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "install it or run with --source synthetic."
         )
         return 0
+    try:
+        figsize = parse_figsize(args.figsize)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
     eye = _try_load_eye(args.checkpoint, build_readout_names(hide_t5=args.hide_t5))
     if eye is None:
         return 0
@@ -900,6 +1243,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except UnknownCellTypesError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
+    neural = NeuralIndices.resolve(eye)
     panel_names = build_panel_names(eye.readout_names, show_types)
     print(f"checkpoint: {eye.checkpoint_dir}; device: {eye.device}")
     print(f"readouts: {', '.join(eye.readout_names)}")
@@ -916,14 +1260,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             panel_names,
             args.color_limit,
             display=not args.no_display,
-            show_retina=not args.no_retina,
+            show_retina=args.show_retina,
             relative_panels=show_types,
+            scale=args.scale,
+            figsize=figsize,
+            dpi=args.dpi,
         )
         print(f"panels: {', '.join(view.panel_names)}")
+        print(view.describe_geometry())
     if args.save_dir is not None:
         args.save_dir.mkdir(parents=True, exist_ok=True)
 
     stats = LoopStats()
+    motion_peak = RunningPeak()
+    photoreceptor_peak = RunningPeak()
     agreement: dict[str, list[bool]] = {}
     frame_count = 0
     last_loop = time.perf_counter()
@@ -970,31 +1320,44 @@ def main(argv: Sequence[str] | None = None) -> int:
                     winner == source_frame.label
                 )
 
+            state = eye.state_activity
+            channels = motion_channels(state, resting_state, neural.motion_channels)
+            _, vectors = compute_motion_percept(channels, motion_peak.value)
+            motion_peak.update(float(np.quantile(np.hypot(*vectors.T), 0.99)))
+
             if view is not None:
-                # The retina is what the network integrates: the same resampler
-                # call encode() made, repeated here (~1.5 ms) purely for display.
-                retina = (
-                    eye.resampler.frame(source_frame.frame)[0, 0, 0].numpy()
-                    if view.show_retina
-                    else None
+                motion_rgb, _ = compute_motion_percept(channels, motion_peak.value)
+                photoreceptors = photoreceptor_map(
+                    state, resting_state, neural.photoreceptors
+                )
+                photoreceptor_peak.update(
+                    float(np.quantile(np.abs(photoreceptors), 0.99))
                 )
                 maps = split_readout_maps(features, eye.readout_names)
-                if extra_indices:
-                    state = eye.state_activity
-                    for name, indices in extra_indices.items():
-                        maps[name] = state[indices] - resting_state[indices]
+                for name, indices in extra_indices.items():
+                    maps[name] = state[indices] - resting_state[indices]
                 view.update(
-                    source_frame.frame,
-                    retina,
-                    {name: maps[name] for name in panel_names},
-                    meter,
-                    _format_overlay(
-                        stats,
-                        source,
-                        source_frame.label,
-                        view.display,
-                        eye.frame_rate_hz,
-                    ),
+                    ViewFrame(
+                        frame=source_frame.frame,
+                        photoreceptors=photoreceptors / photoreceptor_peak.value,
+                        motion_rgb=motion_rgb,
+                        maps={name: maps[name] for name in panel_names},
+                        meter=meter,
+                        overlay_text=_format_overlay(
+                            stats,
+                            source,
+                            source_frame.label,
+                            view.display,
+                            eye.frame_rate_hz,
+                        ),
+                        # The retina is the same resampler call encode() made,
+                        # repeated (~1.5 ms) purely for display.
+                        retina=(
+                            eye.resampler.frame(source_frame.frame)[0, 0, 0].numpy()
+                            if view.show_retina
+                            else None
+                        ),
+                    )
                 )
                 if args.save_dir is not None and frame_count % args.save_every == 0:
                     path = args.save_dir / f"flyvis_eye_live_{frame_count:05d}.png"
@@ -1006,10 +1369,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and frame_count % args.print_every == 0
             ):
                 label = f" stim={source_frame.label:<5}" if source_frame.label else ""
+                angle, magnitude = summarise_motion(vectors)
                 print(
                     f"frame {frame_count:05d}{label} "
                     f"eye {stats.eye_latencies_ms[-1]:5.2f} ms "
-                    f"meter {format_meter(meter)}"
+                    f"meter {format_meter(meter)} "
+                    f"motion {angle:5.1f} deg x{magnitude:.3f}"
                 )
 
             frame_count += 1

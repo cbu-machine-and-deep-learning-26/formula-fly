@@ -127,11 +127,41 @@ def test_headless_figure_has_retina_and_show_panels(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "readouts: T4a, T4b, T4c, T4d\n" in result.stdout
-    assert "panels: camera, retina, T4a, T4b, T4c, T4d, R1, Tm3\n" in result.stdout
+    assert (
+        "panels: camera, photoreceptors, motion percept, T4a, T4b, T4c, T4d, R1, Tm3\n"
+        in result.stdout
+    )
+    assert "figure 12.50x6.80 in at 100 dpi = 1250x680 logical px" in result.stdout
     assert sorted(path.name for path in tmp_path.glob("*.png")) == [
         "flyvis_eye_live_00000.png",
         "flyvis_eye_live_00002.png",
     ]
+
+
+def test_headless_retina_panel_and_hidpi_figure_fit(tmp_path: Path) -> None:
+    """--show-retina adds the camera-derived panel; --dpi 200 shrinks to the screen."""
+    _skip_without_pretrained_eye()
+
+    result = _run_headless(
+        "--frames",
+        "1",
+        "--print-every",
+        "1",
+        "--save-dir",
+        str(tmp_path),
+        "--show-retina",
+        "--dpi",
+        "200",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "panels: camera, retina, photoreceptors, motion percept, T4a, T4b, T4c, T4d, "
+        "T5a, T5b, T5c, T5d\n" in result.stdout
+    )
+    assert "in at 200 dpi = 1378x750 logical px" in result.stdout
+    assert "motion" in result.stdout and "deg" in result.stdout
+    assert (tmp_path / "flyvis_eye_live_00000.png").exists()
 
 
 def test_headless_rejects_unknown_show_types() -> None:
@@ -146,6 +176,83 @@ def test_headless_rejects_unknown_show_types() -> None:
     assert "choose from" in unknown.stderr
     assert partial.returncode == 2
     assert "721-column lattice" in partial.stderr
+
+
+def test_motion_percept_hue_follows_direction_and_still_is_dark() -> None:
+    """Right is red, up is yellow-green, left is cyan, down is violet; no motion is black."""
+    live = _load_live_module()
+    zeros = np.zeros(HEX_COLUMN_COUNT, dtype=np.float32)
+    ones = np.ones(HEX_COLUMN_COUNT, dtype=np.float32)
+    expected_rgb = {
+        "right": [1.0, 0.0, 0.0],
+        "up": [0.5, 1.0, 0.0],
+        "left": [0.0, 1.0, 1.0],
+        "down": [0.5, 0.0, 1.0],
+    }
+
+    for direction, rgb in expected_rgb.items():
+        channels = {name: zeros for name in live.METER_DIRECTIONS}
+        channels[direction] = ones
+        colors, vectors = live.compute_motion_percept(channels, peak=1.0)
+        assert colors.shape == (HEX_COLUMN_COUNT, 3)
+        assert np.allclose(colors[0], rgb, atol=1e-6), direction
+        angle, magnitude = live.summarise_motion(vectors)
+        assert magnitude == pytest.approx(1.0)
+        assert angle == pytest.approx(
+            {"right": 0, "up": 90, "left": 180, "down": 270}[direction]
+        )
+
+    still = {name: zeros for name in live.METER_DIRECTIONS}
+    colors, _ = live.compute_motion_percept(still, peak=1.0)
+    assert np.all(colors == 0.0)
+    half = {name: zeros for name in live.METER_DIRECTIONS}
+    half["right"] = ones * 0.5
+    colors, _ = live.compute_motion_percept(half, peak=1.0)
+    assert np.allclose(colors[0], [0.5, 0.0, 0.0])
+    wheel = live.hue_wheel_image(16)
+    assert wheel.shape == (16, 16, 4)
+    assert wheel[0, 0, 3] == 0.0 and wheel[8, 8, 3] == 1.0
+
+
+def test_running_peak_decays_toward_floor() -> None:
+    """The peak follows spikes immediately and relaxes slowly afterwards."""
+    live = _load_live_module()
+    peak = live.RunningPeak(floor=0.1, decay=0.5)
+
+    assert peak.update(2.0) == 2.0
+    assert peak.update(0.0) == 1.0
+    assert peak.update(0.0) == 0.5
+    assert peak.update(0.0) == 0.25
+    assert peak.update(0.0) == 0.125
+    assert peak.update(0.0) == 0.1
+
+
+def test_figure_fit_and_font_scale_follow_the_screen() -> None:
+    """The figure shrinks to the screen at high dpi and fonts shrink with it."""
+    live = _load_live_module()
+
+    assert live.fit_figure_size(2, 100.0) == (12.5, 6.8)
+    # Three rows want 8.5 in of height; the 900 px screen allows 7.5, so the
+    # whole figure shrinks uniformly.
+    assert live.fit_figure_size(3, 100.0) == (11.03, 7.5)
+    width, height = live.fit_figure_size(3, 200.0)
+    assert width * 200 <= 1400 and height * 200 <= 750
+    assert width / height == pytest.approx(12.5 / 8.5, rel=0.01)
+    assert live.fit_figure_size(2, 100.0, requested=(6.0, 4.0)) == (6.0, 4.0)
+    assert live.fit_figure_size(2, 100.0, screen_px=(1024, 640)) == (
+        pytest.approx(9.0, abs=0.02),
+        pytest.approx(4.9, abs=0.02),
+    )
+    assert live.font_scale(12.5) == pytest.approx(1.0)
+    assert live.font_scale(6.25) == pytest.approx(0.5)
+    assert live.font_scale(6.25, user_scale=2.0) == pytest.approx(1.0)
+    assert live.parse_figsize(None) is None
+    assert live.parse_figsize("10,5.5") == (10.0, 5.5)
+    assert live.parse_figsize("8x4") == (8.0, 4.0)
+    with pytest.raises(ValueError, match="W,H"):
+        live.parse_figsize("10")
+    with pytest.raises(ValueError, match="positive"):
+        live.parse_figsize("0,4")
 
 
 def test_show_types_are_parsed_and_ordered_after_readouts() -> None:

@@ -78,6 +78,22 @@ def test_hex_raster_renders_values_and_masks_background() -> None:
         raster.render(values[:-1])
 
 
+def test_hex_raster_renders_rgb_with_grey_background() -> None:
+    """Per-column colours land on their pixels; outside the lattice is grey."""
+    raster = HexRaster(resolution=64)
+    colors = np.zeros((HEX_COLUMN_COUNT, 3), dtype=np.float32)
+    colors[:, 0] = np.linspace(0, 1, HEX_COLUMN_COUNT)
+
+    image = raster.render_rgb(colors, background=0.25)
+
+    assert image.shape == (64, 64, 3)
+    inside = raster.index >= 0
+    assert np.array_equal(image[inside], colors[raster.index[inside]])
+    assert np.all(image[~inside] == 0.25)
+    with pytest.raises(ValueError, match="shape"):
+        raster.render_rgb(colors[:, :2])
+
+
 def test_hex_scatter_draws_columns_in_camera_orientation() -> None:
     """Column offsets go right and row offsets go down, one marker per column."""
     matplotlib = pytest.importorskip("matplotlib")

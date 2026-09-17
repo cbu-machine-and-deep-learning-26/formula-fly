@@ -140,6 +140,27 @@ class HexRaster:
             raise ValueError(f"values must have shape ({HEX_COLUMN_COUNT},)")
         return np.ma.MaskedArray(values[self._lookup], mask=~self.is_inside)
 
+    def render_rgb(
+        self,
+        colors: npt.NDArray[np.floating[Any]],
+        background: float = 0.5,
+    ) -> npt.NDArray[np.float32]:
+        """Return a ``(resolution, resolution, 3)`` RGB image of per-column colours.
+
+        Args:
+            colors: ``(721, 3)`` RGB values in ``[0, 1]`` in flyvis column order.
+            background: Grey level painted outside the lattice.
+
+        Returns:
+            A float32 RGB image ready for ``imshow``.
+        """
+        colors = np.asarray(colors, dtype=np.float32)
+        if colors.shape != (HEX_COLUMN_COUNT, 3):
+            raise ValueError(f"colors must have shape ({HEX_COLUMN_COUNT}, 3)")
+        image = colors[self._lookup]
+        image[~self.is_inside] = background
+        return image
+
     def imshow(
         self, axes: Any, values: npt.NDArray[np.floating[Any]], **kwargs: Any
     ) -> Any:
