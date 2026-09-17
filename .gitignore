@@ -42,3 +42,6 @@ wandb_api_key
 
 # Jupyter
 .ipynb_checkpoints/
+
+# MuJoCo writes this wherever it is run from; it is a warning log, not source.
+MUJOCO_LOG.TXT
