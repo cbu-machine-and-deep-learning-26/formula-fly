@@ -23,7 +23,7 @@ Eye (connectome visual system) → Brain (central complex / whole-brain model)
 
 One interface ties the stages together: a camera frame in, a control vector
 `(steer, throttle, brake)` out. Every stage can be swapped for a simpler stand-in
-(direct-drive skips the body; Gymnasium CarRacing stands in for Assetto Corsa).
+(direct-drive skips the body; the MuJoCo practice track stands in for Assetto Corsa).
 No track blocks another.
 
 ## Research question
@@ -33,8 +33,11 @@ fixed and train encoding, decoding, and optionally synapse strengths. The
 question is whether fly wiring is a useful prior for closed-loop control or
 only a constraint.
 
-Primary scientific benchmark: Gymnasium CarRacing (fast, free, parallelizable).
-Assetto Corsa is the demo and stretch goal.
+Primary scientific benchmark: a MuJoCo **practice track** built from Silverstone's
+centerline, with a first-person camera at the fly's head. The first-person view is
+the point — flyvis models motion vision, so the eye needs to see expansion when the
+car accelerates and rotational flow when it turns. Assetto Corsa is the demo and
+stretch goal, and shares the practice track's circuit geometry.
 
 ## Stack (public resources)
 
@@ -45,7 +48,9 @@ Assetto Corsa is the demo and stretch goal.
 | Whole brain | Shiu et al., Nature 2024 (LIF / FlyWire) |
 | Body | flybody (Vaxenburg et al., Nature 2025) |
 | Car (demo) | [AssettoCorsaGym](https://github.com/dasGringuen/assetto_corsa_gym) (Remonda et al., NeurIPS 2024) |
-| Car (science) | Gymnasium CarRacing |
+| Car (science) | MuJoCo practice track — our own, built from the Silverstone centerline |
+| Physics | [MuJoCo](https://github.com/google-deepmind/mujoco) (Google DeepMind, Apache 2.0) |
+| Track geometry | [TUMFTM racetrack-database](https://github.com/TUMFTM/racetrack-database) (LGPL-3.0) |
 | Learning | PyTorch, PPO |
 
 We use **FlyWire**, not MaleCNS: flyvis and the Shiu whole-brain model are built
@@ -54,4 +59,4 @@ on FlyWire.
 ## Develop
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for git-flow and branch names. Project
-context for agents lives in [CLAUDE.md](CLAUDE.md).
+context for agents lives in [AGENTS.md](AGENTS.md) (`CLAUDE.md` is a pointer to it).
