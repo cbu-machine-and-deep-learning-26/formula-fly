@@ -37,6 +37,11 @@ from typing import Any
 
 import numpy as np
 
+from fly_driver.body._flybody_common import (
+    FlybodyNotInstalledError,
+    _action_index_map,
+    _import_flybody,
+)
 from fly_driver.interface import ControlVector
 
 __all__ = ["FlybodyNotInstalledError", "FlybodyWingBody"]
@@ -56,30 +61,6 @@ DEFAULT_STEER_GAIN = 0.3
 _LEFT_WING_NAMES = ("wing_yaw_left", "wing_roll_left", "wing_pitch_left")
 _RIGHT_WING_NAMES = ("wing_yaw_right", "wing_roll_right", "wing_pitch_right")
 _USER_NAME = "user_0"
-
-
-class FlybodyNotInstalledError(ImportError):
-    """Raised when the optional flybody stack is needed but not importable."""
-
-
-def _import_flybody() -> Any:
-    try:
-        import flybody.fly_envs as fly_envs
-    except ImportError as error:
-        raise FlybodyNotInstalledError(
-            "FlybodyWingBody needs the optional flybody stack. Install it with "
-            "`python -m pip install "
-            '"flybody @ git+https://github.com/TuragaLab/flybody.git@'
-            'd015e9bfe441bd90ae431bac24c55cb74bdbce26"` '
-            "in its own virtualenv -- see docs/running-the-stacks.md."
-        ) from error
-    return fly_envs
-
-
-def _action_index_map(action_name: str) -> dict[str, int]:
-    """``{component name: index}`` from a dm_control action_spec's tab-joined name."""
-    names = action_name.split("\t")
-    return {name: index for index, name in enumerate(names)}
 
 
 class FlybodyWingBody:
