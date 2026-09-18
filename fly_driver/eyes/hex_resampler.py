@@ -57,8 +57,7 @@ def frame_to_gray(
         raise TypeError(f"frame must be a numpy array, got {type(frame).__name__}")
     if frame.dtype != np.uint8:
         raise TypeError(
-            f"frame must be uint8 in [0, 255], got {frame.dtype}. "
-            "No implicit cast is performed."
+            f"frame must be uint8 in [0, 255], got {frame.dtype}. No implicit cast is performed."
         )
     if frame.shape != expected_shape:
         raise ValueError(
@@ -133,9 +132,7 @@ class HexResampler:
         self.receptor_centers = hex_receptor_centers(extent, kernel_size)
         self.hexals = int(self.receptor_centers.shape[0])
         self.min_frame_size = (
-            self.receptor_centers.max(dim=0).values
-            - self.receptor_centers.min(dim=0).values
-            + 1
+            self.receptor_centers.max(dim=0).values - self.receptor_centers.min(dim=0).values + 1
         )
         padding = (kernel_size - 1) / 2
         self._padding = (
@@ -161,13 +158,10 @@ class HexResampler:
         """
         if not isinstance(gray_sequence, torch.Tensor):
             raise TypeError(
-                f"gray_sequence must be a torch tensor, got "
-                f"{type(gray_sequence).__name__}"
+                f"gray_sequence must be a torch tensor, got {type(gray_sequence).__name__}"
             )
         if gray_sequence.ndim != 4:
-            raise ValueError(
-                f"Expected (batch, time, H, W), got {tuple(gray_sequence.shape)}"
-            )
+            raise ValueError(f"Expected (batch, time, H, W), got {tuple(gray_sequence.shape)}")
         if gray_sequence.dtype != torch.float32:
             raise TypeError(f"gray_sequence must be float32, got {gray_sequence.dtype}")
 
@@ -201,10 +195,7 @@ class HexResampler:
         padded = F.pad(gray_sequence, self._padding)
         kernel = self._kernel.to(padded)
         filtered = torch.cat(
-            [
-                F.conv2d(sample.unsqueeze(1), kernel)
-                for sample in torch.unbind(padded, dim=0)
-            ],
+            [F.conv2d(sample.unsqueeze(1), kernel) for sample in torch.unbind(padded, dim=0)],
             dim=0,
         )
         filtered = filtered / self.kernel_size**2
@@ -216,7 +207,5 @@ class HexResampler:
 
     def frame(self, frame: Frame) -> torch.Tensor:
         """Convert one RGB camera frame to ``(1, 1, 1, hexals)``."""
-        gray = torch.from_numpy(
-            frame_to_gray(frame, expected_shape=self.expected_frame_shape)
-        )
+        gray = torch.from_numpy(frame_to_gray(frame, expected_shape=self.expected_frame_shape))
         return self(gray[None, None])

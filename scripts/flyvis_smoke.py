@@ -62,9 +62,7 @@ def _create_ramp_sequence(torch: Any) -> Any:
     return torch.stack(frames)[None, :, None, :]
 
 
-def _create_edge_frames(
-    horizontal_positions: Sequence[float], direction: str
-) -> list[list[float]]:
+def _create_edge_frames(horizontal_positions: Sequence[float], direction: str) -> list[list[float]]:
     if not horizontal_positions:
         raise ValueError("horizontal_positions must not be empty")
     if direction not in {"ltr", "rtl"}:
@@ -81,10 +79,7 @@ def _create_edge_frames(
         thresholds.reverse()
     is_bright = operator.le if direction == "ltr" else operator.ge
     sweep_frames = [
-        [
-            1.0 if is_bright(position, threshold) else 0.0
-            for position in horizontal_positions
-        ]
+        [1.0 if is_bright(position, threshold) else 0.0 for position in horizontal_positions]
         for threshold in thresholds
     ]
     return (
@@ -141,9 +136,7 @@ def _print_edge_metrics(responses: Any, direction: str) -> None:
             second_readout = f"{family}{second_subtype}"
             denominator = abs(means[first_readout]) + abs(means[second_readout])
             contrast = (
-                (means[first_readout] - means[second_readout]) / denominator
-                if denominator
-                else 0.0
+                (means[first_readout] - means[second_readout]) / denominator if denominator else 0.0
             )
             print(
                 f"edge {direction} contrast ({first_readout}-{second_readout})/"
@@ -195,9 +188,7 @@ def _save_plots(
             vmin=0,
             vmax=1,
         )
-    stimulus_label = (
-        f"{stimulus_name} {direction}" if stimulus_name == "edge" else stimulus_name
-    )
+    stimulus_label = f"{stimulus_name} {direction}" if stimulus_name == "edge" else stimulus_name
     input_figure.suptitle(f"{stimulus_label.capitalize()} input on flyvis retina")
     input_figure.colorbar(
         input_scalarmapper,
@@ -208,9 +199,7 @@ def _save_plots(
     input_figure.savefig(input_path, dpi=180)
     plt.close(input_figure)
 
-    motion_responses = torch.stack(
-        [responses[readout][0] for readout in MOTION_READOUTS]
-    )
+    motion_responses = torch.stack([responses[readout][0] for readout in MOTION_READOUTS])
     response_limit = float(motion_responses.abs().max())
     response_figure, response_axes = plt.subplots(
         len(MOTION_READOUTS),
@@ -246,9 +235,7 @@ def _save_plots(
                     transform=response_axes[row, column].transAxes,
                     va="center",
                 )
-    response_figure.suptitle(
-        f"T4/T5 responses to {stimulus_label} stimulus (shared scale)"
-    )
+    response_figure.suptitle(f"T4/T5 responses to {stimulus_label} stimulus (shared scale)")
     response_figure.colorbar(
         response_scalarmapper,
         ax=response_axes.ravel().tolist(),
@@ -320,10 +307,9 @@ def main() -> int:
     print(f"input shape: {tuple(sequence.shape)}")
     print(f"full response shape: {tuple(responses.activity.shape)}")
     print(
-        f"available output cell types ({len(available_readouts)}): "
-        f"{', '.join(available_readouts)}"
+        f"available output cell types ({len(available_readouts)}): {', '.join(available_readouts)}"
     )
-    for readout, response in zip(requested_readouts, selected_responses):
+    for readout, response in zip(requested_readouts, selected_responses, strict=True):
         print(f"{readout} shape: {tuple(response.shape)}")
     print(f"concatenated readout shape: {tuple(readout_vector.shape)}")
     if args.stimulus == "edge":

@@ -47,9 +47,7 @@ def test_existing_checkpoint_path_resolves_without_flyvis(tmp_path: Path) -> Non
         ({"readouts": ("T4a", "T4a")}, "repeat"),
     ],
 )
-def test_configuration_is_validated_before_loading(
-    kwargs: dict[str, object], match: str
-) -> None:
+def test_configuration_is_validated_before_loading(kwargs: dict[str, object], match: str) -> None:
     """Reject bad temporal and readout settings before touching flyvis."""
     with pytest.raises(ValueError, match=match):
         FlyvisEye(**kwargs)  # type: ignore[arg-type]
