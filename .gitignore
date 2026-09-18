@@ -17,6 +17,9 @@ htmlcov/
 .venv/
 venv/
 env/
+# The per-stack virtualenvs docs/running-the-stacks.md has you create outside the base
+# install: .venv-flyvis, .venv-flybody, .venv-brain, and whatever comes next.
+.venv-*/
 
 # Editors / OS
 .idea/
