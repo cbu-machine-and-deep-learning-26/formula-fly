@@ -1,0 +1,17 @@
+# Default evaluation protocol. Every key maps to fly_driver.training.EvalConfig.
+episodes: 3
+seed: 0
+max_steps: 1000
+frame_rate_hz: 50.0
+record_video: false
+video_episodes: 1
+video_backend: auto
+output_dir: null
+env_steps: 0
+perturbations:
+  - name: observation_noise
+    std: 0.1
+  - name: brightness
+    scale: 0.5
+  - name: action_delay
+    steps: 2
