@@ -16,8 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from fly_driver.analysis.hex_plots import hex_scatter, split_readout_maps
-from fly_driver.eyes.stimuli import (
+from fly_driver.analysis.hex_plots import hex_scatter, split_readout_maps  # noqa: E402
+from fly_driver.eyes.stimuli import (  # noqa: E402
     DIRECTIONS,
     drifting_grating_frames,
     moving_edge_frames,
@@ -91,9 +91,7 @@ def _plot_edge_response(
     maps = _readout_maps(eye, features)
     plot_frames = [
         PRESTIMULUS_FRAMES - 1,
-        *np.linspace(
-            PRESTIMULUS_FRAMES, PRESTIMULUS_FRAMES + SWEEP_FRAMES - 1, PLOT_COLUMNS - 2
-        )
+        *np.linspace(PRESTIMULUS_FRAMES, PRESTIMULUS_FRAMES + SWEEP_FRAMES - 1, PLOT_COLUMNS - 2)
         .round()
         .astype(int),
         len(frames) - 1,
@@ -109,9 +107,7 @@ def _plot_edge_response(
     )
     for column, frame_index in enumerate(plot_frames):
         axes[0, column].imshow(frames[frame_index])
-        axes[0, column].set_title(
-            f"{frame_index / eye.frame_rate_hz:.2f} s", fontsize=8
-        )
+        axes[0, column].set_title(f"{frame_index / eye.frame_rate_hz:.2f} s", fontsize=8)
         axes[0, column].set_xticks([])
         axes[0, column].set_yticks([])
         for row, name in enumerate(eye.readout_names, start=1):
@@ -126,16 +122,12 @@ def _plot_edge_response(
     for row, name in enumerate(eye.readout_names, start=1):
         axes[row, 0].set_ylabel(name, fontsize=8, fontweight="bold")
     figure.suptitle(f"FlyvisEye readouts for a bright edge moving {direction}")
-    figure.colorbar(
-        scatter, ax=axes.ravel().tolist(), label="activity (a.u.)", shrink=0.5
-    )
+    figure.colorbar(scatter, ax=axes.ravel().tolist(), label="activity (a.u.)", shrink=0.5)
     figure.savefig(path, dpi=110)
     plt.close(figure)
 
 
-def _plot_direction_preference(
-    eye: Any, amplitudes: dict[str, np.ndarray], path: Path
-) -> None:
+def _plot_direction_preference(eye: Any, amplitudes: dict[str, np.ndarray], path: Path) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -155,9 +147,7 @@ def _plot_direction_preference(
     axes.set_xticks(positions)
     axes.set_xticklabels(readouts)
     axes.set_ylabel("q95 activity during drift (a.u.)")
-    axes.set_title(
-        "Which direction each T4/T5 subtype prefers (FlyvisEye.encode_sequence)"
-    )
+    axes.set_title("Which direction each T4/T5 subtype prefers (FlyvisEye.encode_sequence)")
     axes.legend(fontsize=8, ncol=2)
     figure.savefig(path, dpi=110)
     plt.close(figure)
@@ -170,10 +160,7 @@ def _measure_direction_preference(eye: Any) -> dict[str, np.ndarray]:
         features = eye.encode_sequence(drifting_grating_frames(direction))
         maps = _readout_maps(eye, features)
         amplitudes[direction] = np.array(
-            [
-                np.quantile(maps[name][response_start:], 0.95)
-                for name in eye.readout_names
-            ]
+            [np.quantile(maps[name][response_start:], 0.95) for name in eye.readout_names]
         )
     return amplitudes
 
@@ -263,9 +250,7 @@ def main() -> int:
     )
     print(f"encode_sequence() throughput: {sequence_ms:.2f} ms/frame")
     print(f"reset() warm-up: {reset_ms:.0f} ms")
-    print(
-        f"frame budget at {eye.frame_rate_hz:.0f} Hz: {1000 / eye.frame_rate_hz:.0f} ms"
-    )
+    print(f"frame budget at {eye.frame_rate_hz:.0f} Hz: {1000 / eye.frame_rate_hz:.0f} ms")
     return 0
 
 

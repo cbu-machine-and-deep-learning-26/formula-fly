@@ -191,7 +191,7 @@ Applies to all Python in this repo, agent-written or human-written. Goal: any te
 - **Type checking:** [mypy](https://mypy-lang.org/) or Ruff's type-aware rules, run in CI.
 - All of the above configured in `pyproject.toml` so settings are versioned, not personal.
 
-**Line length:** 88 characters (Black's default). Don't fight the formatter with manual line breaks it will undo.
+**Line length:** 100 characters. Don't fight the formatter with manual line breaks it will undo.
 
 **Imports**, grouped and separated by a blank line, alphabetized within each group (Ruff/isort handles this automatically):
 ```python
