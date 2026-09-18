@@ -2,8 +2,7 @@
 
 import numpy as np
 import pytest
-
-torch = pytest.importorskip("torch")
+import torch
 
 from fly_driver.eyes.hex_resampler import (
     DEFAULT_FRAME_SHAPE,
@@ -64,15 +63,9 @@ def test_top_left_pattern_proves_orientation_and_chirality() -> None:
     lattice_radius = HEX_EXTENT * HEX_KERNEL_SIZE
     interior = (centers.abs() <= lattice_radius - HEX_KERNEL_SIZE).all(dim=1)
 
-    top_left = (
-        interior & (centers[:, 0] <= -safe_margin) & (centers[:, 1] <= -safe_margin)
-    )
-    top_right = (
-        interior & (centers[:, 0] <= -safe_margin) & (centers[:, 1] >= safe_margin)
-    )
-    bottom_left = (
-        interior & (centers[:, 0] >= safe_margin) & (centers[:, 1] <= -safe_margin)
-    )
+    top_left = interior & (centers[:, 0] <= -safe_margin) & (centers[:, 1] <= -safe_margin)
+    top_right = interior & (centers[:, 0] <= -safe_margin) & (centers[:, 1] >= safe_margin)
+    bottom_left = interior & (centers[:, 0] >= safe_margin) & (centers[:, 1] <= -safe_margin)
 
     assert output[top_left].min() > 0.99
     assert output[top_right].max() < 0.01
@@ -90,7 +83,7 @@ def test_contract_frame_produces_flyvis_input_shape() -> None:
 
     assert output.shape == (1, 1, 1, HEX_COLUMN_COUNT)
     assert torch.isfinite(output).all()
-    assert 0.0 <= output.min() and output.max() <= 1.0
+    assert output.min() >= 0.0 and output.max() <= 1.0
 
 
 @pytest.mark.parametrize(

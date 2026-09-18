@@ -51,9 +51,7 @@ def test_grating_has_grey_baseline_then_full_contrast_drift(direction: str) -> N
 @pytest.mark.parametrize("direction", DIRECTIONS)
 def test_moving_edge_sweeps_monotonically_and_holds(direction: str) -> None:
     """Grow the bright region in the requested direction, then hold it."""
-    frames = moving_edge_frames(
-        direction, prestimulus_frames=4, sweep_frames=20, hold_frames=3
-    )
+    frames = moving_edge_frames(direction, prestimulus_frames=4, sweep_frames=20, hold_frames=3)
 
     assert frames.shape == (27, *DEFAULT_FRAME_SHAPE)
     assert frames.dtype == np.uint8
