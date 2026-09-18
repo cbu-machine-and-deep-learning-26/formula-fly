@@ -26,7 +26,7 @@ So this is standard RL / gradient training applied to a network whose topology i
 Eye (connectome visual system) → Brain (central complex / whole-brain model) → Body (MuJoCo fly) → Car (sim racer)
 ```
 
-**Single interface, agreed by all tracks:** observation (a camera frame) in → control vector (steer, throttle, brake) out. Every stage must be replaceable by its simplest version (e.g., direct-drive skips the body; CarRacing substitutes for Assetto Corsa). No track blocks another.
+**Single interface, agreed by all tracks:** observation (a camera frame) in → control vector (steer, throttle, brake) out. Every stage must be replaceable by its simplest version (e.g., direct-drive skips the body; the MuJoCo practice track substitutes for Assetto Corsa). No track blocks another.
 
 Tracks: **E** (eye and brain), **B** (body and cockpit), **C** (car, training, infrastructure), **V** (validation and analysis). Current working focus for these sessions: **track E, plus the track-C baseline harness it needs.**
 
@@ -46,7 +46,9 @@ Tracks: **E** (eye and brain), **B** (body and cockpit), **C** (car, training, i
 | flyvis (Lappalainen et al., Nature 2024) | Connectome-constrained network of the optic lobe (~45k neurons, 64 cell types, 721 hexagonal columns). Trains only synapse strengths + time constants; validated against real neural recordings. github.com/TuragaLab/flyvis | The eye, pretrained checkpoints, and the RQ4 validation method |
 | Shiu et al. (Nature 2024) | Leaky integrate-and-fire simulation of the entire FlyWire brain (Brian2-based); predicts sensorimotor behavior from wiring alone | Base for the whole-brain driver and lesion study |
 | flybody (Vaxenburg et al., Nature 2025) | MuJoCo physics model of the fruit fly body with articulated wings/legs, plus pretrained locomotion controllers (Google DeepMind + Janelia) | The body. Reuse pretrained wing controllers; only learn low-dim modulation |
-| AssettoCorsaGym (Remonda et al., NeurIPS 2024) | Gym interface to Assetto Corsa: Formula car, laser-scanned tracks, RL baselines, 2.3M steps of human laps incl. a pro esports driver. github.com/dasGringuen/assetto_corsa_gym | The car, the track, the human comparison |
+| AssettoCorsaGym (Remonda et al., NeurIPS 2024) | Gym interface to Assetto Corsa: Formula car, laser-scanned tracks, RL baselines, 2.3M steps of human laps incl. a pro esports driver. github.com/dasGringuen/assetto_corsa_gym | The car, the track, the human comparison (demo) |
+| MuJoCo (Google DeepMind, Apache 2.0) | General-purpose rigid-body physics with offscreen camera rendering; prebuilt wheels for x86 and aarch64 | The practice-track simulator, and the same engine flybody runs in |
+| TUMFTM racetrack-database (LGPL-3.0) | Public centerlines + track widths for F1 circuits as CSV (`x_m, y_m, w_tr_right_m, w_tr_left_m`). github.com/TUMFTM/racetrack-database | Silverstone's centerline geometry for the practice track |
 
 **The gap we fill:** flyvis never closed a loop through behavior. Shiu et al. had no learning. flybody used a conventional visual encoder. AssettoCorsaGym used conventional agents. Nobody has connected them or tested fly wiring as a prior for closed-loop control.
 
@@ -59,7 +61,12 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
   1. Small CNN eye
   2. Random projection eye
   3. **Degree-matched shuffled connectome** — same neurons, same sparsity, same in/out degrees, scrambled connections. This is the critical control: it isolates the *pattern* of the wiring rather than mere sparsity. Do not skip it.
-- **Gymnasium CarRacing is the primary scientific result** (fast, parallelizable, free). Assetto Corsa is the demo and stretch goal.
+- **The MuJoCo practice track is the primary scientific result.** A simple car on a track surface built from Silverstone's centerline, with a first-person camera at the fly's head. Assetto Corsa is the demo and stretch goal. Chosen over Gymnasium CarRacing (which earlier drafts named) for four reasons, in order of weight:
+  1. **Egocentric optic flow.** flyvis models motion vision — T4/T5 are elementary motion detectors. CarRacing's camera is top-down, so there is no expansion when accelerating and no rotational flow when turning. Training a fly retina on a bird's-eye view makes RQ1, RQ3, and RQ4 hard to interpret and the hexagonal resampler geometrically meaningless.
+  2. **One physics world with the body.** flybody is MuJoCo. Legs-on-the-wheel (RQ5) is only reachable if the fly and the car share a simulator.
+  3. **Transfer to the demo.** Same Silverstone geometry, so the practice-track policy is a real initialisation for the Assetto Corsa behaviour-clone-then-fine-tune, and the lap-time comparison against the track record is coherent rather than apples-to-oranges.
+  4. **ARM.** MuJoCo ships clean aarch64 wheels for the Spark cluster; CarRacing needs Box2D, which is exactly the x86-only-wheel risk §7 warns about.
+  The cost is that we build and maintain it, and that one fixed circuit gives a weaker generalisation story than CarRacing's procedurally generated tracks. Both tools are free and open source; the difference is engineering effort, not licensing.
 - **Assetto Corsa training strategy:** behavior-clone from the 2.3M-step human dataset first, then RL fine-tune. Pure online RL is bounded by wall clock (AC runs real time only, no fast-forward). Note the AC benchmark baselines drive mostly from state features, not pixels; a hybrid observation (fly-eye output + limited telemetry) is an acceptable middle ground for the AC demo.
 - **Seeds:** minimum 3 per condition ({0, 1, 2}), deterministic eval protocol, record videos of eval episodes.
 - **Lesion sweep (RQ3)** is embarrassingly parallel → runs across the Spark cluster; aim to make it the most thorough result in the report (several hundred cell types × multiple eval episodes each).
@@ -69,7 +76,7 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 ## 7. Compute and infrastructure
 
 - **4× NVIDIA DGX Spark cluster.** Each: GB10 Grace Blackwell, 128 GB unified memory, **ARM (aarch64), DGX OS**. Use NVIDIA NGC PyTorch containers rather than raw pip — hitting an x86-only binary in week 5 is the failure mode; find out in week 1. Anything x86-only lives on the 4090 box instead. Role: the experiment matrix (eye type × brain condition × seeds in parallel), whole-brain training (unified memory matters here), lesion sweep.
-- **RTX 4090 Windows desktop.** Role: Assetto Corsa host (AC is Windows x86 only, runs real time). Also the fastest single-run trainer (memory bandwidth advantage over a Spark for small nets), and its GPU is mostly idle during AC's real-time rollouts, so co-schedule CarRacing training on it.
+- **RTX 4090 Windows desktop.** Role: Assetto Corsa host (AC is Windows x86 only, runs real time). Also the fastest single-run trainer (memory bandwidth advantage over a Spark for small nets), and its GPU is mostly idle during AC's real-time rollouts, so co-schedule practice-track training on it.
 - Machines communicate over the local network when the fly and the car are on different hosts.
 - AssettoCorsaGym setup gotchas (do in week 1, it is fiddly): requires **original Assetto Corsa (2014), NOT Assetto Corsa Competizione**; Windows + Visual Studio C++ build tools to compile the plugin; a Python 3.9 conda env with pinned versions; vJoy virtual controller; separately downloaded track occupancy grid files (HuggingFace `dasgringuen/assettoCorsaGym`). AC is already purchased.
 - Development style: multiple agents / Claude Code sessions in parallel. Agents own glue code (env wrappers, config sweeps, plotting, job queue). Numerics get hand-verified tests (see §11).
@@ -79,22 +86,25 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 | Week (start) | Milestone |
 |---|---|
 | 1 (Sep 21) | Every component runs independently; interface spec agreed; containerized stack runs on one Spark; AC + gym installed on 4090 box with a scripted lap |
-| 2 (Sep 28) | Three interchangeable eyes (flyvis, CNN, random projection); hex resampler verified (T4/T5 direction selectivity); random policy moves CarRacing car; eval harness (lap time, sample efficiency, robustness) |
-| 3 (Oct 5) | Connectome eye completes a CarRacing lap (frozen eye + trained policy); three-seed baselines running |
+| 2 (Sep 28) | Three interchangeable eyes (flyvis, CNN, random projection); hex resampler verified (T4/T5 direction selectivity); random policy moves the practice-track car; eval harness (lap time, sample efficiency, robustness) |
+| 3 (Oct 5) | Connectome eye completes a practice-track lap (frozen eye + trained policy); three-seed baselines running |
 | 4 (Oct 12) | **Midterm checkpoint due Oct 16.** Baseline comparison across eyes with learning curves + robustness. Floor = direct-drive comparison; fly-body lap is ceiling |
 | 5 (Oct 19) | Whole-brain model (central complex + descending neurons, Shiu base) trains; AC bridge live (fly cockpit controls the Formula car) |
-| 6 (Oct 26) | Full CarRacing comparison: all conditions × 3 seeds, incl. shuffled-connectome control; robustness eval |
+| 6 (Oct 26) | Full practice-track comparison: all conditions × 3 seeds, incl. shuffled-connectome control; robustness eval |
 | 7 (Nov 2) | Lesion map draft (cluster sweep); sim-to-biology validation results (RQ4) |
 | 8 (Nov 9) | Stretch: AC lap by the fly; human-lap comparison; multi-agent; legs-on-controls or documented fallback |
 | 9 (Nov 16) | Report through methods; record video |
 | 10 (Nov 23) | Full report draft. Dec 1–14: slides, practice, final report (due Dec 14) |
 
-## 9. Current status (as of Sep 15, 2026)
+## 9. Current status (as of Sep 17, 2026)
 
-- Proposal near-final (due Sep 18). No code exists yet.
+- Proposal near-final (due Sep 18).
+- Repo scaffolding, git-flow templates, and CI skeleton merged to `develop`. The issue backlog (#13–#34) covers all ten weeks.
+- **Landed on `develop`:** the hexagonal eye resampler (#13), the frozen flyvis eye as the default visual frontend (#14), and the standalone-stack documentation (#19, `docs/running-the-stacks.md`). The evaluation harness (#18) is in review.
+- **In progress:** the MuJoCo practice track (#16) — track, car, head camera, and the env the eye plugs into.
 - Assetto Corsa purchased.
-- Hardware confirmed: 4× DGX Spark cluster + 4090 Windows machine.
-- Immediate working focus: **eye + brain track (E)** and the minimal track-C harness it needs (CarRacing + PPO baseline + logging).
+- Hardware confirmed: 4× DGX Spark cluster + a Windows machine. **Note:** this file says RTX 4090 in §7, but the Windows box in use reports an RTX 4060 Ti 16 GB — confirm which is correct before sizing any run against it.
+- Immediate working focus: the practice-track env (#16), then the **eye + brain track (E)** on top of it.
 
 ## 10. Immediate next steps (first Claude Code sessions, in order)
 
@@ -104,15 +114,15 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 3. Config-driven experiments (YAML or Hydra): condition = {eye_type, brain, frozen/finetuned, seed}. Logging to CSV + optional W&B. Deterministic eval protocol + video recording utility.
 4. Containerfile based on NGC PyTorch (aarch64-compatible) that installs the full stack; verify it builds and runs on one Spark. Same environment must also run on the 4090 box (x86) — keep the image multi-arch or maintain two lockfiles.
 
-### Phase 1 — the eye
-5. Install flyvis, download pretrained checkpoint(s) (the task-optimized ensemble from Lappalainen et al.).
-6. Push a single static frame through the optic lobe model end to end. Confirm output shapes and which cell-type readouts we expose as features (start with T4/T5 and downstream motion outputs; make the readout set configurable).
-7. Build the **hexagonal resampler**: CarRacing frame (96×96 RGB) → grayscale/green channel → flyvis's 721-column hex lattice input format, with correct spatial layout and temporal handling (flyvis expects sequences; define frame-rate handling explicitly).
-8. **Verification test (required):** feed moving-edge / drifting-grating stimuli through the resampler + eye and confirm T4/T5 direction selectivity matches known preferred directions. This test gates everything downstream.
+### Phase 1 — the eye (steps 5–8 done, #13/#14/#19)
+5. ~~Install flyvis, download pretrained checkpoint(s) (the task-optimized ensemble from Lappalainen et al.).~~
+6. ~~Push a single static frame through the optic lobe model end to end. Confirm output shapes and which cell-type readouts we expose as features (start with T4/T5 and downstream motion outputs; make the readout set configurable).~~ `FlyvisEye` exposes all 34 output cell types; T4a–d and T5a–d are the default readout, 5,768 features.
+7. ~~Build the **hexagonal resampler**: practice-track camera frame (RGB; resolution and FOV are chosen in the resampler ticket and configured on the env, not fixed here) → grayscale/green channel → flyvis's 721-column hex lattice input format, with correct spatial layout and temporal handling (flyvis expects sequences; define frame-rate handling explicitly).~~ Settled at `FRAME_SHAPE = (96, 96, 3)` and `FRAME_RATE_HZ = 50.0` in `fly_driver/interface.py`; the env and the eye both read them from there.
+8. ~~**Verification test (required):** feed moving-edge / drifting-grating stimuli through the resampler + eye and confirm T4/T5 direction selectivity matches known preferred directions. This test gates everything downstream.~~ Passing, in `tests/eyes/`.
 9. Implement the three control eyes with matched output dimension: small CNN, fixed random projection, and the degree-matched shuffled-connectome variant of the flyvis network.
 
 ### Phase 2 — first learning
-10. PPO (CleanRL-style or SB3) on Gymnasium CarRacing with the frozen flyvis eye + small policy head. Get any completed lap. Then the same for all control eyes, 3 seeds each, on the Sparks.
+10. PPO (CleanRL-style or SB3) on the MuJoCo practice track with the frozen flyvis eye + small policy head. Get any completed lap. Then the same for all control eyes, 3 seeds each, on the Sparks.
 11. Produce the first results table + learning curves automatically from logs.
 
 ### Phase 3 — brain (after Phase 2 works)
@@ -132,7 +142,8 @@ These fail silently and look plausible when wrong. Write tests, don't eyeball:
 
 - flyvis/whole-brain too slow in the loop → already mitigated: frozen pretrained eye is the default; further fallback is a hand-built sparse layer from FlyWire T4/T5 + central-complex connectivity.
 - Fly body too hard to control → wings-only steering with direct throttle; direct-drive comparison stands as the primary result.
-- AC training doesn't converge → CarRacing is the primary result; AC footage with the best policy is the demo.
+- AC training doesn't converge → the MuJoCo practice track is the primary result; AC footage with the best policy is the demo.
+- Practice-track rendering too slow for the full experiment matrix → lower the camera resolution (the eye resamples to 721 hex columns anyway), render every *k*-th physics step, or batch parallel envs. Measure throughput before the training plumbing is built on top, not in week 6.
 - Legs-on-controls doesn't converge → tethered cockpit fallback.
 - ARM incompatibility on Sparks → that component moves to the 4090 box; discover via week-1 container milestone.
 

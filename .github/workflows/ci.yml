@@ -15,5 +15,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Workflow wired
-        run: echo "CI workflow is wired"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # pyproject.toml is the dependency manifest GH-18's CI wanted and could not find.
+      # The dev extra is numpy, mujoco, pytest, ruff and pynput -- deliberately no torch:
+      # flyvis needs Python <3.13 and platform-specific CUDA wheels and installs into its
+      # own virtualenv from requirements-flyvis.txt (docs/running-the-stacks.md).
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Format
+        run: ruff format --check .
+      # tests/conftest.py collects the eye tests only when torch is importable, so this
+      # needs no --ignore and stops hiding them from the machines that can run them.
+      - name: Test
+        run: pytest -q -m "not render"
+      # Software OpenGL, so the camera the whole ticket is about is actually exercised
+      # here rather than skipped. Without it every `render` test -- including "a random
+      # policy can step the env", which is GH-16's acceptance criterion -- skips silently
+      # on a runner with no display, and CI would be green without ever rendering a frame.
+      - name: Install software OpenGL
+        run: sudo apt-get update && sudo apt-get install -y libosmesa6 libgl1
+      - name: Test (rendering, software GL)
+        env:
+          MUJOCO_GL: osmesa
+          PYOPENGL_PLATFORM: osmesa
+        run: pytest -q -m render
