@@ -1,0 +1,61 @@
+# Default training condition: frozen pretrained flyvis eye, direct readout, practice track.
+# Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
+#
+# One file is one condition. Copy it and change `name`, `eye`, or `brain` for another; the
+# seeds stay. `scripts/train.py --seed 0` narrows a run to one seed for a cluster job.
+name: flyvis_frozen
+output_dir: runs
+seeds: [0, 1, 2]
+total_env_steps: 1000000
+device: auto
+
+eye:
+  type: flyvis          # flyvis | pixels (GH-15 adds the CNN, random-projection and shuffled controls)
+  frozen: true          # false fine-tunes the eye with the policy; needs a feed-forward eye
+  params: {}            # e.g. readouts: [T4a, T4b, T4c, T4d, T5a, T5b, T5c, T5d], checkpoint: flow/0000/000
+
+brain: none             # none = the policy reads the eye directly (GH-23 adds the whole-brain model)
+
+policy:
+  hidden_sizes: [64, 64]
+  activation: tanh
+  normalize_features: true
+  init_log_std: 0.0
+
+env:
+  type: practice_track  # practice_track | dummy
+  max_steps: 15000      # 5 minutes of simulated time at 50 Hz: room for a slow, clean lap
+  params:
+    racing_line: true   # the painted line is in shot; set false for the RQ1 comparisons
+    track_limit: 0.15
+
+ppo:
+  rollout_steps: 2048
+  minibatches: 32
+  epochs: 10
+  learning_rate: 3.0e-4
+  anneal_learning_rate: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  clip_value_loss: true
+  entropy_coef: 0.0
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  normalize_advantages: true
+  target_kl: null
+
+eval:
+  every_updates: 10     # deterministic evaluation every N updates; 0 disables it
+  episodes: 1
+  max_steps: null       # null = the env's own cap
+  record_video: false
+
+logging:
+  wandb:
+    enabled: false      # CSV is always written; this only adds a W&B mirror
+    project: formula-fly
+    entity: null
+    mode: online
+    tags: []
+  checkpoint_every_updates: 0   # 0 = only policy_final.pt

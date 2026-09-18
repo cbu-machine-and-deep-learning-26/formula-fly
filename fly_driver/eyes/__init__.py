@@ -13,6 +13,7 @@ from fly_driver.eyes.hex_resampler import (
     hex_coordinates,
     hex_receptor_centers,
 )
+from fly_driver.eyes.pixel_eye import PixelEye
 
 __all__ = [
     "DEFAULT_MOTION_READOUTS",
@@ -20,6 +21,7 @@ __all__ = [
     "FlyvisEye",
     "FlyvisNotInstalledError",
     "HexResampler",
+    "PixelEye",
     "frame_to_gray",
     "hex_coordinates",
     "hex_receptor_centers",
