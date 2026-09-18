@@ -16,10 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from fly_driver.eyes.hex_resampler import (
-    HEX_COLUMN_COUNT,
-    hex_receptor_centers,
-)
+from fly_driver.analysis.hex_plots import hex_scatter, split_readout_maps
 from fly_driver.eyes.stimuli import (
     DIRECTIONS,
     drifting_grating_frames,
@@ -80,23 +77,7 @@ def _time_reset(eye: Any) -> float:
 
 def _readout_maps(eye: Any, features: np.ndarray) -> dict[str, np.ndarray]:
     """Split ``(time, feature_dim)`` features into per-readout ``(time, 721)`` maps."""
-    return {
-        name: features[:, index * HEX_COLUMN_COUNT : (index + 1) * HEX_COLUMN_COUNT]
-        for index, name in enumerate(eye.readout_names)
-    }
-
-
-def _hex_scatter(axes: Any, values: np.ndarray, **kwargs: Any) -> Any:
-    """Draw one 721-column map in camera orientation (row down, column right)."""
-    centers = hex_receptor_centers().numpy()
-    axes.set_facecolor("#808080")
-    scatter = axes.scatter(
-        centers[:, 1], -centers[:, 0], c=values, s=9, marker="h", linewidths=0, **kwargs
-    )
-    axes.set_aspect("equal")
-    axes.set_xticks([])
-    axes.set_yticks([])
-    return scatter
+    return split_readout_maps(features, eye.readout_names)
 
 
 def _plot_edge_response(
@@ -134,7 +115,7 @@ def _plot_edge_response(
         axes[0, column].set_xticks([])
         axes[0, column].set_yticks([])
         for row, name in enumerate(eye.readout_names, start=1):
-            scatter = _hex_scatter(
+            scatter = hex_scatter(
                 axes[row, column],
                 maps[name][frame_index],
                 cmap="coolwarm",

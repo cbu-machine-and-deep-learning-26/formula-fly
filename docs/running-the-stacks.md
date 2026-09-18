@@ -114,6 +114,63 @@ settling, T4/T5 direction selectivity through the eye, and 10 s of noise
 staying finite and below 20 a.u. The synthetic gratings and moving edges live
 in `fly_driver.eyes.stimuli`.
 
+### Live demo (webcam → eye)
+
+`scripts/flyvis_eye_live.py` is a viewer, not a training component. Its panels
+split into two kinds. **Camera-derived** (pixels, no neurons): `camera`, the
+96 × 96 frame the eye receives, and optionally `retina` (`--show-retina`), the
+721-column hex-resampled luminance `HexResampler` feeds the network.
+**Neural activity** (read from the network after every step, relative to the
+resting state measured at reset): `photoreceptors R1-R6`, the first neural
+stage and what the brain actually receives; `motion percept (T4/T5)`, the
+eight T4/T5 direction channels fused into one hex image where hue is the
+direction of the per-column motion vector (right red, up yellow-green, left
+cyan, down violet; a hue wheel sits in the corner) and brightness its strength,
+so a still scene is dark; the individual `T4a-d`/`T5a-d` maps from
+`FlyvisEye.encode`; and any `--show R1,L1,Mi1,Tm3` cell type (all but
+`Lawf1`/`Lawf2`). A direction meter (left/right/up/down from the T4/T5 a/b/c/d
+subtypes) sits under the neural panels. Wave a hand across the camera and the
+bar for that direction jumps. The overlay shows display fps, per-frame eye
+latency, and the camera rate next to "eye stepped at 50 Hz" because every
+frame, however fast it arrives, is one 20 ms step of the optic lobe.
+`--hide-t5` drops the T5 row.
+
+The layout is HiDPI-safe: a constrained-layout grid, fonts that scale with the
+figure width (recomputed on resize), and a figure fitted to a 1440 × 900
+logical screen. `import flyvis` restyles matplotlib for 300 dpi paper figures;
+the script resets those keys, which is what made fonts swallow the panels on a
+Retina Mac. `--figsize W,H`, `--scale`, and `--dpi` override the defaults.
+
+```bash
+# in the flyvis venv (Python 3.10-3.12, the project floor); uv is fastest, pip works too
+uv pip install -r requirements-flyvis.txt     # adds opencv-python for the camera
+export FLYVIS_ROOT_DIR="$HOME/.cache/flyvis"  # where `flyvis download-pretrained` put results/
+python scripts/flyvis_eye_live.py             # webcam 0; falls back to --source synthetic
+python scripts/flyvis_eye_live.py --source synthetic   # bright bar sweeping l/r/u/d, 2 s each
+```
+
+Keys: space pauses/resumes, `r` resets the eye state (1 s grey warm-up),
+`q`/Esc quits. Options: `--camera-index`, `--fps-cap` (default 50),
+`--show TYPE[,TYPE...]`, `--hide-t5`, `--show-retina`, `--figsize W,H`,
+`--scale`, `--dpi`, `--meter-statistic q95|mean`, `--color-limit`,
+`--save-dir DIR --save-every N` for PNG snapshots. macOS: grant camera permission to the terminal app you run
+it from (System Settings → Privacy & Security → Camera); the first run prompts.
+Windows and Linux work the same way through OpenCV.
+
+Headless check, also what `tests/scripts/test_flyvis_eye_live.py` runs:
+
+```bash
+python scripts/flyvis_eye_live.py --source synthetic --frames 200 --no-display
+```
+
+It prints the meter and the mean motion-percept vector (angle as on the hue
+wheel, 0° right / 90° up) every 10 frames, the mean display fps, eye latency
+(median/p95/max against the 20 ms budget), and how often the winning meter
+direction agreed with the bar's direction. The script exits `0` with `SKIP:`
+when flyvis, the checkpoint, or (for the webcam) OpenCV is missing, so base CI
+does not need any of them. The hex map drawing is shared with
+`scripts/flyvis_eye_demo.py` via `fly_driver.analysis.hex_plots`.
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64

@@ -19,6 +19,11 @@ import importlib.util
 
 #: Paths relative to this directory, skipped only when torch is missing. Empty otherwise, so
 #: nothing is hidden on a machine that can actually run them.
-_NEEDS_TORCH = ["eyes/*", "scripts/test_flyvis_eye_demo.py"]
+_NEEDS_TORCH = [
+    "eyes/*",
+    "analysis/*",
+    "scripts/test_flyvis_eye_demo.py",
+    "scripts/test_flyvis_eye_live.py",
+]
 
 collect_ignore_glob: list[str] = [] if importlib.util.find_spec("torch") else _NEEDS_TORCH
