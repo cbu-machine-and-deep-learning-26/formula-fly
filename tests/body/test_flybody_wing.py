@@ -24,7 +24,7 @@ from fly_driver.body.flybody_wing import (
     FlybodyWingBody,
     _action_index_map,
 )
-from fly_driver.interface import ControlVector
+from fly_driver.interface import FRAME_RATE_HZ, ControlVector
 
 
 class _FakeActionSpec:
@@ -59,11 +59,24 @@ class _FakeFlyEnv:
         _USER_NAME,
     )
 
-    def __init__(self, gyro_yaw: float = 0.0, forward_speed: float = 0.0) -> None:
+    def __init__(
+        self,
+        gyro_yaw: float | list[float] = 0.0,
+        forward_speed: float = 0.0,
+        control_timestep: float = 1.0 / FRAME_RATE_HZ,
+    ) -> None:
         self.last_action: np.ndarray | None = None
         self.reset_count = 0
+        self.step_count = 0
+        # A single float repeats every call, so most tests don't have to care that
+        # actuate() now takes multiple substeps per frame; a list is consumed one value
+        # per call, for the tests that specifically check the substeps get averaged.
         self._gyro_yaw = gyro_yaw
         self._forward_speed = forward_speed
+        self._control_timestep = control_timestep
+
+    def control_timestep(self) -> float:
+        return self._control_timestep
 
     def action_spec(self) -> _FakeActionSpec:
         return _FakeActionSpec(self._ACTION_NAMES)
@@ -74,9 +87,14 @@ class _FakeFlyEnv:
 
     def step(self, action: np.ndarray) -> _FakeTimeStep:
         self.last_action = np.asarray(action, dtype=np.float64).copy()
+        if isinstance(self._gyro_yaw, list):
+            yaw = self._gyro_yaw[min(self.step_count, len(self._gyro_yaw) - 1)]
+        else:
+            yaw = self._gyro_yaw
+        self.step_count += 1
         return _FakeTimeStep(
             {
-                "walker/gyro": np.array([0.0, 0.0, self._gyro_yaw]),
+                "walker/gyro": np.array([0.0, 0.0, yaw]),
                 "walker/velocimeter": np.array([self._forward_speed, 0.0, 0.0]),
             }
         )
@@ -173,7 +191,7 @@ class TestActuateReadout:
 
     def test_readout_reflects_gyro_and_velocimeter(self) -> None:
         env = _FakeFlyEnv(gyro_yaw=0.42, forward_speed=0.6)
-        body = FlybodyWingBody(env=env)
+        body = FlybodyWingBody(max_yaw_rate=1.0, env=env)
         body.reset()
 
         realised = body.actuate(ControlVector.neutral())
@@ -182,6 +200,15 @@ class TestActuateReadout:
         assert realised.steer == pytest.approx(0.42)
         assert realised.throttle == pytest.approx(0.6)
         assert realised.brake == 0.0
+
+    def test_max_yaw_rate_scales_the_averaged_reading(self) -> None:
+        env = _FakeFlyEnv(gyro_yaw=3.0)
+        body = FlybodyWingBody(max_yaw_rate=6.0, env=env)
+        body.reset()
+
+        realised = body.actuate(ControlVector.neutral())
+
+        assert realised.steer == pytest.approx(0.5)
 
     def test_forward_speed_beyond_control_range_is_clipped_not_raised(self) -> None:
         """`ControlVector.throttle` is `[0, 1]`; the readout must clip, not raise."""
@@ -206,12 +233,37 @@ class TestActuateReadout:
     def test_yaw_rate_beyond_control_range_is_clipped_not_raised(self) -> None:
         """`ControlVector` rejects out-of-range values; the readout must clip, not raise."""
         env = _FakeFlyEnv(gyro_yaw=50.0, forward_speed=0.0)
-        body = FlybodyWingBody(env=env)
+        body = FlybodyWingBody(max_yaw_rate=1.0, env=env)
         body.reset()
 
         realised = body.actuate(ControlVector.neutral())
 
         assert realised.steer == 1.0
+
+
+class TestFrameAveraging:
+    """One `actuate()` call is a whole frame, not one flybody `env.step()`."""
+
+    def test_actuate_calls_step_once_per_substep(self) -> None:
+        env = _FakeFlyEnv(gyro_yaw=0.0, control_timestep=1.0 / FRAME_RATE_HZ / 4)
+        body = FlybodyWingBody(env=env)
+        body.reset()  # one reset() step, counted separately below
+
+        body.actuate(ControlVector.neutral())
+
+        assert env.step_count == 1 + 4  # the reset's own step, then 4 substeps
+
+    def test_readout_is_the_mean_over_the_frame_not_the_last_substep(self) -> None:
+        # Index 0 is consumed by reset()'s own step; the 4 substeps then see 0, 2, 4, 6.
+        env = _FakeFlyEnv(
+            gyro_yaw=[0.0, 0.0, 2.0, 4.0, 6.0], control_timestep=1.0 / FRAME_RATE_HZ / 4
+        )
+        body = FlybodyWingBody(max_yaw_rate=1.0, env=env)
+        body.reset()
+
+        realised = body.actuate(ControlVector.neutral())
+
+        assert realised.steer == pytest.approx(1.0)  # mean(0,2,4,6) = 3, clipped to 1.0
 
 
 def test_real_flybody_action_spec_has_the_names_this_module_assumes() -> None:

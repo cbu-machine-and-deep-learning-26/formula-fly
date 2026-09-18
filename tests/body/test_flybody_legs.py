@@ -16,7 +16,7 @@ from fly_driver.body.flybody_legs import (
     _TRIPOD_B,
     TrackballLegBody,
 )
-from fly_driver.interface import ControlVector
+from fly_driver.interface import FRAME_RATE_HZ, ControlVector
 
 
 class _FakeActionSpec:
@@ -35,9 +35,24 @@ class _FakeBallEnv:
 
     _ACTION_NAMES = (*_TRIPOD_A, *_TRIPOD_B, *_FEMUR_A, *_FEMUR_B)
 
-    def __init__(self, ball_qvel: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> None:
+    def __init__(
+        self,
+        ball_qvel: tuple[float, float, float] | list[tuple[float, float, float]] = (
+            0.0,
+            0.0,
+            0.0,
+        ),
+        control_timestep: float = 1.0 / FRAME_RATE_HZ,
+    ) -> None:
         self.last_action: np.ndarray | None = None
-        self._ball_qvel = np.array(ball_qvel)
+        self.step_count = 0
+        # A single vector repeats every call; a list is consumed one entry per call, for
+        # the test that specifically checks the substeps get averaged.
+        self._ball_qvel = ball_qvel
+        self._control_timestep = control_timestep
+
+    def control_timestep(self) -> float:
+        return self._control_timestep
 
     def action_spec(self) -> _FakeActionSpec:
         return _FakeActionSpec(self._ACTION_NAMES)
@@ -47,7 +62,12 @@ class _FakeBallEnv:
 
     def step(self, action: np.ndarray) -> _FakeTimeStep:
         self.last_action = np.asarray(action, dtype=np.float64).copy()
-        return _FakeTimeStep({"walker/ball_qvel": self._ball_qvel})
+        if isinstance(self._ball_qvel, list):
+            qvel = self._ball_qvel[min(self.step_count, len(self._ball_qvel) - 1)]
+        else:
+            qvel = self._ball_qvel
+        self.step_count += 1
+        return _FakeTimeStep({"walker/ball_qvel": np.array(qvel)})
 
 
 def test_package_exports_trackball_leg_body() -> None:
@@ -169,6 +189,32 @@ class TestActuateReadout:
         realised = body.actuate(ControlVector(steer=0.0, throttle=0.0, brake=1.0))
 
         assert realised.brake == 0.0
+
+
+class TestFrameAveraging:
+    """One `actuate()` call is a whole frame, not one flybody `env.step()`."""
+
+    def test_actuate_calls_step_once_per_substep(self) -> None:
+        env = _FakeBallEnv(control_timestep=1.0 / FRAME_RATE_HZ / 4)
+        body = TrackballLegBody(env=env)
+        body.reset()  # one reset() step, counted separately below
+
+        body.actuate(ControlVector(steer=0.0, throttle=1.0, brake=0.0))
+
+        assert env.step_count == 1 + 4  # the reset's own step, then 4 substeps
+
+    def test_readout_is_the_mean_over_the_frame_not_the_last_substep(self) -> None:
+        # Index 0 is consumed by reset()'s own step; the 4 substeps then see these.
+        env = _FakeBallEnv(
+            ball_qvel=[(0, 0, 0), (2, 0, 0), (4, 0, 0), (6, 0, 0), (8, 0, 0)],
+            control_timestep=1.0 / FRAME_RATE_HZ / 4,
+        )
+        body = TrackballLegBody(max_ball_speed=1.0, env=env)
+        body.reset()
+
+        realised = body.actuate(ControlVector(steer=0.0, throttle=1.0, brake=0.0))
+
+        assert realised.throttle == pytest.approx(1.0)  # mean(2,4,6,8) = 5, clipped to 1.0
 
 
 def test_real_flybody_ball_env_has_the_names_this_module_assumes() -> None:

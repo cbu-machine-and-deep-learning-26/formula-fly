@@ -26,8 +26,12 @@ from typing import Any
 
 import numpy as np
 
-from fly_driver.body._flybody_common import _action_index_map, _import_flybody
-from fly_driver.interface import ControlVector
+from fly_driver.body._flybody_common import (
+    _action_index_map,
+    _import_flybody,
+    _substeps_per_frame,
+)
+from fly_driver.interface import FRAME_RATE_HZ, ControlVector
 
 __all__ = ["TrackballLegBody"]
 
@@ -41,11 +45,18 @@ DEFAULT_GAIT_FREQ_HZ = 6.0
 #: coxa-dominant, femur-assisting role coxa/femur play in fore-aft stepping.
 DEFAULT_GAIT_GAIN = 0.6
 
-#: Ball rotation, rad/s, read back as `ControlVector.throttle` == 1.0. A calibration
-#: constant, not a measured one -- there is no real trackball to compare against yet, so
-#: this is picked to be the right order of magnitude for the gait above and documented
-#: as a first cut, the same honesty AGENTS.md already asks of the wing pattern default.
-DEFAULT_MAX_BALL_SPEED = 3.0
+#: Ball rotation, rad/s, read back as `ControlVector.throttle` == 1.0. Measured, not
+#: guessed: 80 frame-averaged readings (properly frame-timed, see
+#: `_substeps_per_frame`) under sustained full throttle gave mean 0.38 rad/s, std 0.20,
+#: max 0.68 -- the gait's own sinusoidal swing means ball speed oscillates over the
+#: stride rather than holding constant, which an insect's real walking speed also does.
+#: 0.65 sits near the observed peak, so the gait's strongest pushes approach but do not
+#: constantly pin the readout at 1.0, and the troughs read as a real, informative low
+#: value instead of noise. Unlike the wing body's yaw rate, this one really is just a
+#: scale to calibrate -- `walk_on_ball` fuses its walker's thorax to the world (a real
+#: tether), so the underlying signal itself is stable; see `flybody_wing.py`'s module
+#: docstring for the contrast.
+DEFAULT_MAX_BALL_SPEED = 0.65
 
 _TRIPOD_A = ("coxa_T1_left", "coxa_T2_right", "coxa_T3_left")
 _TRIPOD_B = ("coxa_T1_right", "coxa_T2_left", "coxa_T3_right")
@@ -78,15 +89,18 @@ class TrackballLegBody:
         gait_freq_hz: float = DEFAULT_GAIT_FREQ_HZ,
         gait_gain: float = DEFAULT_GAIT_GAIN,
         max_ball_speed: float = DEFAULT_MAX_BALL_SPEED,
+        frame_rate_hz: float = FRAME_RATE_HZ,
         env: Any | None = None,
     ) -> None:
         self.gait_freq_hz = float(gait_freq_hz)
         self.gait_gain = float(gait_gain)
         self.max_ball_speed = float(max_ball_speed)
+        self.frame_rate_hz = float(frame_rate_hz)
         self._env = env
         self._action_index: dict[str, int] | None = None
         self._neutral_action: np.ndarray | None = None
         self._phase = 0.0
+        self._substeps: int | None = None
 
     def _ensure_env(self) -> Any:
         if self._env is None:
@@ -99,6 +113,7 @@ class TrackballLegBody:
             spec = env.action_spec()
             self._action_index = _action_index_map(spec.name)
             self._neutral_action = np.zeros(spec.shape, dtype=np.float64)
+            self._substeps = _substeps_per_frame(env, self.frame_rate_hz)
         return self._action_index
 
     def reset(self) -> None:
@@ -123,10 +138,11 @@ class TrackballLegBody:
         env = self._ensure_env()
         index = self._ensure_indices(env)
         assert self._neutral_action is not None  # narrows for type checkers
+        assert self._substeps is not None
 
         drive = float(np.clip(intent.throttle - intent.brake, -1.0, 1.0))
         swing = self.gait_gain * drive * np.sin(2 * np.pi * self._phase)
-        self._phase += self.gait_freq_hz * abs(drive) / 50.0  # advances at 50 Hz control
+        self._phase += self.gait_freq_hz * abs(drive) / self.frame_rate_hz
 
         action = self._neutral_action.copy()
         for name in _TRIPOD_A:
@@ -138,9 +154,15 @@ class TrackballLegBody:
         for name in _FEMUR_B:
             action[index[name]] = -0.5 * swing
 
-        time_step = env.step(action)
-        ball_qvel = np.asarray(time_step.observation["walker/ball_qvel"]).reshape(-1)
-        ball_speed = float(np.linalg.norm(ball_qvel))
+        # Same reasoning as FlybodyWingBody.actuate: hold this gait posture for a whole
+        # frame's worth of flybody's own (much finer) control steps rather than one, and
+        # average the ball's measured velocity over that window -- see
+        # _substeps_per_frame's docstring.
+        ball_qvel_sum = np.zeros(3, dtype=np.float64)
+        for _ in range(self._substeps):
+            observation = env.step(action).observation
+            ball_qvel_sum += np.asarray(observation["walker/ball_qvel"]).reshape(-1)
+        ball_speed = float(np.linalg.norm(ball_qvel_sum / self._substeps))
 
         return ControlVector.clipped(
             steer=intent.steer,

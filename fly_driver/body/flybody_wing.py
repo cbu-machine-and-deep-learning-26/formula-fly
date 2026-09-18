@@ -21,12 +21,21 @@ already are. So:
 
 This module never trains the pattern generator itself (flybody's, frozen, reused
 verbatim). What it adds is the small mapping AGENTS.md asks for: ``ControlVector`` in,
-asymmetric wing bias and a beat-frequency scalar out.
+asymmetric wing bias and a beat-frequency scalar out. Throttle here means wingbeat
+frequency; the trackball throttle #21 also names is a separate task, in
+:mod:`fly_driver.body.flybody_legs` -- :class:`~fly_driver.body.CombinedBody` composes
+both into the one body the ticket asks for.
 
-**Not yet covered:** throttle here means faster wingbeat, not the trackball ``walk_on_ball``
-task #21 also names -- that is a separate flybody task (legs, not wings) and needs its own
-integration; ``brake`` always reads back ``0.0`` until it exists. Flagging rather than
-guessing at a leg-based number that has not been measured.
+**Known limitation, found rather than assumed: the steer readout is noisy at the source,
+not just under-sampled.** ``vision_guided_flight`` is genuinely free-flying -- checked
+against ``walk_on_ball.py``, which explicitly removes its walker's freejoint to fuse the
+thorax to the world (a real tether); nothing here does the equivalent. A constant
+one-sided wing bias does not produce a clean, sustained turn on a free body, it tumbles.
+Averaging the gyro over a whole frame (see ``DEFAULT_MAX_YAW_RATE``'s own comment for the
+measured numbers) helps the *timestep* be right but cannot make an unstable body's own
+signal stable. The real fix is a proper tethered-flight model (a weld constraint, the way
+``walk_on_ball`` already does it for legs) -- out of this ticket's scope, worth its own
+issue. ``brake`` always reads back ``0.0``; not modelled at all yet.
 
 flybody is imported lazily, so ``import fly_driver.body`` works without it.
 """
@@ -41,8 +50,9 @@ from fly_driver.body._flybody_common import (
     FlybodyNotInstalledError,
     _action_index_map,
     _import_flybody,
+    _substeps_per_frame,
 )
-from fly_driver.interface import ControlVector
+from fly_driver.interface import FRAME_RATE_HZ, ControlVector
 
 __all__ = ["FlybodyNotInstalledError", "FlybodyWingBody"]
 
@@ -52,6 +62,26 @@ __all__ = ["FlybodyNotInstalledError", "FlybodyWingBody"]
 #: ("an approximation ... not a substitute for a realistic base wing pattern") apply here
 #: too. Tune once the body can be watched, not eyeballed from source alone.
 DEFAULT_STEER_GAIN = 0.3
+
+#: Averaged yaw rate, rad/s, that reads back as `ControlVector.steer` == 1.0.
+#:
+#: **This does not make the signal clean, and should not be read as if it does.**
+#: Measured over 150 frame-averages (15,000 flybody substeps) under sustained
+#: full-lock steer: mean -7.1 rad/s, std 88.7, median |value| 62, p90 |value| 139 --
+#: i.e. close to zero-mean with huge spread, not a stable turning rate that got noisy.
+#: `vision_guided_flight` is genuinely free-flying (`disable_legs=True` by default, no
+#: freejoint removed, unlike `walk_on_ball` -- checked in flybody's own task source), so
+#: a constant one-sided wing bias does not produce a clean turn, it tumbles. Frame
+#: averaging (`_substeps_per_frame`) fixes the *timestep* being wrong (was 1/100th of a
+#: frame) but cannot fix an unstable body producing an unstable signal. A runtime
+#: "tether" (resetting the root freejoint's qpos/qvel every substep) was tried and made
+#: it worse -- abrupt resets are large discontinuities, not free -- and is not shipped.
+#: 139 (~p90) is picked so most frames read a real, non-saturated magnitude and only the
+#: genuine outliers pin at +/-1, rather than a smaller constant that would pin almost
+#: every frame regardless of this problem. The actual fix is a proper tethered-flight
+#: model (a weld constraint at the MJCF level, the way `walk_on_ball.py` fuses its
+#: walker's thorax to the world) -- out of this ticket's scope; worth its own issue.
+DEFAULT_MAX_YAW_RATE = 139.0
 
 #: Names of the six wing-joint action components, split by side, in the order flybody's
 #: `WingBeatPatternGenerator` duplicates its base pattern -- yaw, roll, pitch -- for two
@@ -84,11 +114,20 @@ class FlybodyWingBody:
             importable.
     """
 
-    def __init__(self, steer_gain: float = DEFAULT_STEER_GAIN, env: Any | None = None) -> None:
+    def __init__(
+        self,
+        steer_gain: float = DEFAULT_STEER_GAIN,
+        max_yaw_rate: float = DEFAULT_MAX_YAW_RATE,
+        frame_rate_hz: float = FRAME_RATE_HZ,
+        env: Any | None = None,
+    ) -> None:
         self.steer_gain = float(steer_gain)
+        self.max_yaw_rate = float(max_yaw_rate)
+        self.frame_rate_hz = float(frame_rate_hz)
         self._env = env
         self._action_index: dict[str, int] | None = None
         self._neutral_action: np.ndarray | None = None
+        self._substeps: int | None = None
 
     def _ensure_env(self) -> Any:
         if self._env is None:
@@ -101,6 +140,7 @@ class FlybodyWingBody:
             spec = env.action_spec()
             self._action_index = _action_index_map(spec.name)
             self._neutral_action = np.zeros(spec.shape, dtype=np.float64)
+            self._substeps = _substeps_per_frame(env, self.frame_rate_hz)
         return self._action_index
 
     def reset(self) -> None:
@@ -123,6 +163,7 @@ class FlybodyWingBody:
         env = self._ensure_env()
         index = self._ensure_indices(env)
         assert self._neutral_action is not None  # narrows for type checkers
+        assert self._substeps is not None
 
         action = self._neutral_action.copy()
         for name in _LEFT_WING_NAMES:
@@ -131,14 +172,25 @@ class FlybodyWingBody:
             action[index[name]] = -self.steer_gain * intent.steer
         action[index[_USER_NAME]] = np.clip(intent.throttle - intent.brake, -1.0, 1.0)
 
-        time_step = env.step(action)
-        observation = time_step.observation
+        # Hold this action for a whole frame's worth of flybody's own (much finer)
+        # control steps, the same way CarDynamics.step holds one ControlVector across
+        # its physics substeps -- see _substeps_per_frame's docstring for why one
+        # env.step() is not one frame. Average the sensors over the window: at 218 Hz
+        # the wingbeat itself dominates a single sample (measured: raw gyro-z swings
+        # +/-50-120 rad/s within one beat), so one instantaneous reading is mostly beat
+        # phase, not net turning rate.
+        yaw_rates = np.empty(self._substeps, dtype=np.float64)
+        forward_speeds = np.empty(self._substeps, dtype=np.float64)
+        for step in range(self._substeps):
+            observation = env.step(action).observation
+            yaw_rates[step] = np.asarray(observation["walker/gyro"]).reshape(-1)[2]
+            forward_speeds[step] = np.asarray(observation["walker/velocimeter"]).reshape(-1)[0]
 
-        yaw_rate = float(np.asarray(observation["walker/gyro"]).reshape(-1)[2])
-        forward_speed = float(np.asarray(observation["walker/velocimeter"]).reshape(-1)[0])
+        steer = float(yaw_rates.mean()) / self.max_yaw_rate if self.max_yaw_rate else 0.0
+        forward_speed = float(forward_speeds.mean())
 
         return ControlVector.clipped(
-            steer=yaw_rate,
+            steer=steer,
             throttle=max(forward_speed, 0.0),
             brake=0.0,
         )

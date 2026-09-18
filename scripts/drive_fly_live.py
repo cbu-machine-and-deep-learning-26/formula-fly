@@ -18,6 +18,17 @@ does not bypass the body, it goes through it.
 ESC/SPACE/BACKSPACE/[/] are the viewer's own bindings, same as `scripts/drive.py`.
 Close the window or Ctrl-C to stop.
 
+**No longer real time, and that is the correct trade, not a regression.** The body used
+to call flybody's ``env.step()`` once per frame; that was 1/100th of a frame's worth of
+simulated time (see ``_substeps_per_frame``'s docstring), fast but simulating a different,
+wrong-speed fly. Fixed, it costs what a fly actually costs: ~1.8 s of wall clock per
+20 ms frame on this machine, ~90x too slow for 50 Hz. The car will visibly crawl relative
+to the fly body process, which is exactly the same category of problem the brain track
+(#23) already found and measured for its own reasons -- correctness and a real-time
+budget are different constraints, and nothing here has been sped up to hide the gap.
+Watch `scripts/drive_fly.py`'s recorded video for something that plays back at a normal
+pace; use this script to watch the live hand-off actually happen, slowly.
+
 **Two processes, live instead of record-then-replay.** `scripts/drive_fly.py`'s docstring
 has the full story: flybody's dm_control physics and the car's raw `mujoco.viewer`
 corrupt each other's frames when both are alive in one process. There, the fix was
