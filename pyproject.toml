@@ -50,21 +50,8 @@ markers = [
 ]
 
 [tool.ruff]
-# AGENTS.md 14.2 says 88 and this says 100, and that disagreement is real: every module
-# that arrived from develop is 88-clean, and this branch's are not. Settling it means
-# rewrapping several thousand lines of prose that the formatter will not touch (it rewraps
-# code, never comments or docstrings), which is its own change and not this feature's. The
-# paths below therefore keep the settings they were written under until the team picks one
-# value -- see the linked issue. Nothing here rewrites a module this branch does not own.
 line-length = 100
 target-version = "py310"
-extend-exclude = [
-    "fly_driver/eyes",
-    "tests/eyes",
-    "scripts/flyvis_eye_demo.py",
-    "scripts/flyvis_smoke.py",
-    "scripts/hex_resampler_plot.py",
-]
 
 [tool.ruff.format]
 # ruff 0.16 formats Python code blocks inside Markdown; older ruff does not. Leaving it on
