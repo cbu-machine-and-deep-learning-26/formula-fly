@@ -37,7 +37,11 @@ Eye (connectome visual system) → Brain (central complex / whole-brain model)
 One interface ties the stages together: a camera frame in, a control vector
 `(steer, throttle, brake)` out. Every stage can be swapped for a simpler stand-in
 (direct-drive skips the body; the MuJoCo practice track stands in for Assetto Corsa).
-No track blocks another.
+No track blocks another. The contract is code, not prose:
+[`fly_driver/interface.py`](fly_driver/interface.py) holds the types, ranges and the
+`Eye` / `Policy` / `Body` / `Driver` protocols, and
+[`fly_driver/drivers.py`](fly_driver/drivers.py) composes them into `DirectDriveAgent`
+(no body) and `EmbodiedDriveAgent` (the fly in the loop).
 
 ## Research question
 

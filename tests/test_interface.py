@@ -12,7 +12,13 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from fly_driver.interface import CONTROL_DTYPE, ControlVector, validate_frame
+from fly_driver.interface import (
+    CONTROL_DTYPE,
+    FEATURE_DTYPE,
+    ControlVector,
+    validate_features,
+    validate_frame,
+)
 
 
 class TestControlVectorRanges:
@@ -95,6 +101,38 @@ class TestControlVectorArrays:
         np.testing.assert_allclose(ControlVector.neutral().to_array(), [0.0, 0.0, 0.0])
 
 
+class TestControlVectorFromAny:
+    """What an env or a driver accepts at its seam (GH-20)."""
+
+    def test_returns_the_typed_thing_itself(self):
+        control = ControlVector.neutral()
+        assert ControlVector.from_any(control) is control
+
+    @pytest.mark.parametrize(
+        "action",
+        [np.array([0.1, 0.2, 0.3], dtype=np.float32), [0.1, 0.2, 0.3], (0.1, 0.2, 0.3)],
+    )
+    def test_accepts_array_likes(self, action):
+        restored = ControlVector.from_any(action)
+        np.testing.assert_allclose(restored.to_array(), [0.1, 0.2, 0.3], rtol=1e-6)
+
+    def test_accepts_anything_with_to_array(self):
+        class Wrapped:
+            def to_array(self):
+                return np.array([0.5, 0.0, 1.0])
+
+        assert ControlVector.from_any(Wrapped()) == ControlVector(
+            steer=0.5, throttle=0.0, brake=1.0
+        )
+
+    def test_the_range_check_is_the_constructors(self):
+        with pytest.raises(ValueError, match="clipped"):
+            ControlVector.from_any([2.0, 0.0, 0.0])
+        assert ControlVector.from_any([2.0, 0.0, 0.0], clip=True).steer == 1.0
+        with pytest.raises(ValueError, match="3 components"):
+            ControlVector.from_any(np.zeros(4))
+
+
 class TestValidateFrame:
     def test_accepts_and_returns_the_same_object(self):
         frame = np.zeros((64, 64, 3), dtype=np.uint8)
@@ -116,3 +154,29 @@ class TestValidateFrame:
     def test_rejects_non_array(self):
         with pytest.raises(TypeError, match="numpy array"):
             validate_frame([[0, 0, 0]], (64, 64, 3))
+
+
+class TestValidateFeatures:
+    """The eye → policy seam, held to the same rule as the frame (GH-20)."""
+
+    def test_accepts_and_returns_the_same_object(self):
+        features = np.zeros(8, dtype=FEATURE_DTYPE)
+        assert validate_features(features, 8) is features
+
+    def test_rejects_wrong_length_without_reshaping(self):
+        with pytest.raises(ValueError, match="No implicit reshape"):
+            validate_features(np.zeros(7, dtype=FEATURE_DTYPE), 8)
+        with pytest.raises(ValueError, match="No implicit reshape"):
+            validate_features(np.zeros((2, 4), dtype=FEATURE_DTYPE), 8)
+
+    def test_rejects_float64_without_casting(self):
+        with pytest.raises(TypeError, match="No implicit cast"):
+            validate_features(np.zeros(8, dtype=np.float64), 8)
+
+    def test_rejects_non_finite(self):
+        with pytest.raises(ValueError, match="finite"):
+            validate_features(np.full(8, np.nan, dtype=FEATURE_DTYPE), 8)
+
+    def test_rejects_non_array(self):
+        with pytest.raises(TypeError, match="numpy array"):
+            validate_features([0.0] * 8, 8)
