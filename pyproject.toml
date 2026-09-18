@@ -23,8 +23,15 @@ dependencies = [
 [project.optional-dependencies]
 # pynput is only for scripts/drive.py: the MuJoCo viewer reports key presses but not
 # releases, and held-key driving needs both edges. GLFW (a mujoco dependency) covers
-# gamepads on its own.
-dev = ["pytest>=8.0", "ruff>=0.6", "pynput>=1.7"]
+# gamepads on its own. pyyaml and imageio are for the GH-18 eval harness (YAML configs
+# and optional video writers).
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pynput>=1.7",
+    "pyyaml>=6.0",
+    "imageio>=2.34",
+]
 
 # There is deliberately no `flyvis` extra here, and torch does not belong in this file.
 # The optic lobe installs into its own virtualenv from `requirements-flyvis.txt` --
