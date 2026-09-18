@@ -15,6 +15,9 @@ build/
 htmlcov/
 .tox/
 .venv/
+# Any sibling environment too: the optional stacks each get their own (.venv-flyvis,
+# .venv-brain, .venv-flybody) and they are routinely created inside the repo.
+.venv-*/
 venv/
 env/
 

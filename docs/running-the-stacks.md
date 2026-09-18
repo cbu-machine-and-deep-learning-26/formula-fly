@@ -212,56 +212,76 @@ floor — Brian2 can only go faster than this.
 
 One environment step is 20 ms of simulated time at 50 Hz. The eye takes 7.9 ms of
 that and the practice track 2.2 ms, leaving the brain about **10 ms of wall clock to
-simulate 20 ms of biology**. Measured on the Windows box (Python 3.11, brian2 2.9.0,
-numpy target, CPU torch, 1% of neurons driven at 150 Hz, `dt = 0.5 ms`):
+simulate 20 ms of biology**.
 
-| neurons | synapses | Brian2 | PyTorch (CPU) |
-|---|---|---|---|
-| 3,000 | 7,944 | 12.9 ms | 9.9 ms |
-| 5,000 | 19,544 | 14.1 ms | 19.3 ms |
-| 10,000 | 86,842 | 15.5 ms | 66.6 ms |
-| 127,400 (whole brain) | 14,687,178 | 101.5 ms | 10,768 ms |
+**Measure it the way the loop will drive it.** A brain between an eye and a policy
+cannot be handed a second of biology and left alone: it advances one frame, hands its
+activity over, and is advanced again. So there are two different numbers, and mixing
+them up is the easiest mistake here:
 
-Firing rates stayed between 1.0 and 4.9 Hz per neuron throughout, and the two
-backends agreed on them to within a few percent, so nothing above is fast because it
-stopped spiking.
+| neurons | Brian2 batched | Brian2 **stepped** | PyTorch batched | PyTorch **stepped** |
+|---|---|---|---|---|
+| 1,000 | 3.9 ms | 35.9 ms | 4.6 ms | **5.5 ms** |
+| 3,000 | 4.9 ms | 54.5 ms | 11.2 ms | **12.2 ms** |
+| 5,000 | 5.8 ms | 56.2 ms | 21.7 ms | 22.6 ms |
+| 10,000 | 7.8 ms | 58.6 ms | 76.3 ms | 77.7 ms |
+| 127,400 (whole brain) | 101.5 ms | — | 10,768 ms | — |
 
-Two things decide the backend, and neither is the headline number:
+*Stepped* is `measure_in_loop()`; *batched* is `shiu.measure()` / `torch_lif.measure()`,
+which ask for 100 ms in one call and divide. Windows box, Python 3.11, brian2 2.9.0,
+numpy target, CPU torch, 1% of neurons driven at 150 Hz, `dt = 0.5 ms`. Firing rates
+stayed between 1.0 and 4.9 Hz per neuron and the two backends agreed on them, so
+nothing above is fast because it stopped spiking.
 
-**Brian2's cost tracks activity; the PyTorch version's tracks size.** At 10,000
-neurons and `dt = 0.5 ms`, driving 0%, 1% and 10% of the network costs Brian2 17.1,
-23.7 and 27.1 ms — and PyTorch 75.7, 74.4 and 78.0 ms, flat. Brian2 propagates from
-the neurons that actually spiked; the PyTorch implementation multiplies the whole
-sparse weight matrix every step whether anything fired or not. A fly brain fires at a
-few Hz, so roughly one neuron in a thousand spikes per step, and event-driven
-propagation does about a thousand times less work. That gap widens with every neuron
-added, which is why PyTorch wins at 3,000 and loses by 100× at 127,400.
+Three things fall out, and none of them is the headline number:
 
-**`dt` is a bigger lever than either backend.** The work is proportional to steps per
-frame, so `dt = 0.1 ms` means 200 integration steps for every 20 ms of biology and
-`dt = 0.5 ms` means 40. On the whole brain that is 257.3 ms against 101.5 ms. It is
-not free: the synaptic delay is 1.8 ms and the refractory period 2.2 ms, so a coarse
-`dt` quantises both. Measured firing rates hold across `0.1–0.5 ms` and start to drift
-upward by `1.0 ms` (+24% on the whole brain), so **0.5 ms is the floor** and 1.0 ms is
-not defensible.
+**Brian2 charges a fixed 33-52 ms per `run()` call, independent of network size.** It
+re-prepares the network every call. Batched over 1,000 ms that is invisible; stepped
+20 ms at a time it is the entire cost. At 3,000 neurons: 4.5 ms per frame batched,
+54.7 ms stepped. PyTorch charges nothing per call, because a step is tensor
+operations and there is nothing to prepare.
+
+**The two backends have opposite scaling.** Brian2 propagates from the neurons that
+actually spiked, so its cost tracks *activity*: driving 0%, 1% and 10% of a
+10,000-neuron network costs 17.1, 23.7 and 27.1 ms. The PyTorch version multiplies the
+whole sparse weight matrix every step whether anything fired or not, so its cost tracks
+*size* and is flat against activity: 75.7, 74.4, 78.0 ms. A fly fires at a few Hz, so
+about one neuron in a thousand spikes per step — which is why Brian2 wins by 100x on
+the whole brain and loses by 10x on a small one driven frame by frame.
+
+**`dt` is a bigger lever than either backend**, since work is proportional to steps per
+frame: 0.1 ms is 200 steps per frame, 0.5 ms is 40. On the whole brain that is 257.3 ms
+against 101.5 ms. It is not free — the synaptic delay is 1.8 ms and the refractory
+period 2.2 ms — so measured rates hold from 0.1 to 0.5 ms and drift upward by 1.0 ms
+(+24% on the whole brain). **0.5 ms is the floor**, and 1.0 ms is not defensible.
 
 ### The decision
 
-**Brian2, on a central-complex-scale subnetwork, at `dt = 0.5 ms`.** The whole brain
-stays offline — 101.5 ms per frame is 10× over budget before a compiler is involved,
-and it is the wrong shape for the loop regardless. The lesion sweep (#30) runs the
-whole brain offline, where 10× real time is irrelevant.
+**PyTorch in the loop. Brian2 offline. The in-loop network capped at roughly
+1,000-2,000 neurons at `dt = 0.5 ms`.**
 
-The PyTorch implementation stays in the tree as the measurement that produced this,
-and as the fallback if the in-loop subnetwork ever has to grow past what Brian2's
-Python overhead allows. It is not the in-loop backend.
+Nothing fits the 10 ms budget on Brian2 when stepped, at any size, because the
+per-call setup dominates. PyTorch fits at 1,000 neurons (5.5 ms) and is close at 3,000
+(12.2 ms) — so the central complex is reachable and the descending neurons with it,
+but not with room to spare on this uncompiled box.
 
-Two honest limits on that comparison. The PyTorch version is dense-in-time by
-construction; an event-driven one would close the gap at scale, but it would be
-reimplementing Brian2's scheduler to catch up with Brian2. And it was measured on CPU
-only — a GPU sparse product would help the whole-brain case and would not help the
-central-complex case, where 40 kernel launches per frame dominate, so it does not
-change the decision.
+Brian2 stays the backend for everything that is not in the loop: the lesion sweep
+(#30), the parameter searches, anything that can be handed a second of biology at a
+time. It is 3.9-7.8 ms per frame batched across the same sizes and it is the published
+model, so offline results stay directly comparable with the paper.
+
+Three honest limits:
+
+- Every Brian2 figure is on the **uncompiled numpy target**, because this box has no
+  C++ compiler. The compiled target would speed up the per-step work — but the thing
+  that disqualifies Brian2 in the loop is per-*call* setup, not per-step work, so it
+  probably does not move the decision. **Untested, and it is the one thing that could.**
+  The Linux CI runner has a compiler and could settle it for free.
+- The PyTorch version is dense-in-time by construction. An event-driven one would
+  scale like Brian2 and win everywhere — but it would be reimplementing Brian2's
+  scheduler to catch up with Brian2, and that is a real project, not a spike.
+- CPU only. A GPU sparse product would help the large batched case and not the small
+  in-loop one, where per-step kernel launches dominate.
 
 ### Cell types are a separate download
 

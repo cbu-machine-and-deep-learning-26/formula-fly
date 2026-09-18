@@ -21,7 +21,11 @@ import importlib.util
 #: nothing is hidden on a machine that can actually run them.
 _NEEDS_TORCH = [
     "eyes/*",
-    "analysis/*",
+    # Named rather than the whole analysis package: hex_plots draws the eye's hex
+    # lattice and imports the resampler, but brain_plots next door is matplotlib and
+    # numpy only. Skipping the directory hid it on every machine without torch,
+    # including CI, which is the failure this file exists to prevent.
+    "analysis/test_hex_plots.py",
     "scripts/test_flyvis_eye_demo.py",
     "scripts/test_flyvis_eye_live.py",
 ]
