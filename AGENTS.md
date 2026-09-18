@@ -110,7 +110,7 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 
 ### Phase 0 — repo scaffold (first session)
 1. Create repo structure: `fly_driver/` package with `eyes/`, `brains/`, `policies/`, `envs/`, `training/`, `analysis/`, `configs/`, `tests/`.
-2. Write the interface as typed code: `Eye.encode(frame) -> features`, `Policy.act(features) -> ControlVector(steer, throttle, brake)`, plus a `DirectDriveAgent` that composes them. Smoke tests for shapes/dtypes/ranges.
+2. ~~Write the interface as typed code: `Eye.encode(frame) -> features`, `Policy.act(features) -> ControlVector(steer, throttle, brake)`, plus a `DirectDriveAgent` that composes them. Smoke tests for shapes/dtypes/ranges.~~ Done (#16 types, #20 stages): `fly_driver/interface.py` holds `ControlVector`, `validate_frame`, `validate_features` and the `Eye`/`Policy`/`Body`/`Driver` protocols; `fly_driver/drivers.py` holds `DirectDriveAgent` and `EmbodiedDriveAgent` (the fly body slots into the latter).
 3. Config-driven experiments (YAML or Hydra): condition = {eye_type, brain, frozen/finetuned, seed}. Logging to CSV + optional W&B. Deterministic eval protocol + video recording utility.
 4. Containerfile based on NGC PyTorch (aarch64-compatible) that installs the full stack; verify it builds and runs on one Spark. Same environment must also run on the 4090 box (x86) — keep the image multi-arch or maintain two lockfiles.
 
