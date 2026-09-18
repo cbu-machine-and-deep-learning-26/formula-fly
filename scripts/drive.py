@@ -10,9 +10,15 @@ Run it::
     ./.venv/Scripts/python.exe scripts/drive.py
     ./.venv/Scripts/python.exe scripts/drive.py --input keyboard
     ./.venv/Scripts/python.exe scripts/drive.py --raw-steer
+    mjpython scripts/drive.py --agent          # macOS; else python scripts/drive.py --agent
 
 The first uses a gamepad if one is plugged in and the keyboard otherwise. ``--raw-steer``
 gives the keyboard literal full lock at any speed -- what the fly gets for ``steer=1``.
+``--agent`` is the other seat: ``FlyvisEye`` + ``DirectDriveAgent`` + a straight constant
+policy (throttle 0.4 by default). It is the same MuJoCo GLFW window as keyboard driving
+(``launch_passive``), not Gymnasium ``render_mode="human"``. flyvis is imported only on
+that path, so the default ``.venv`` / CI stay flyvis-free. On macOS the viewer still needs
+``mjpython``; DualSense/gamepad is not used.
 
 The car always receives a :class:`~fly_driver.interface.ControlVector`, and that vector is
 **analog** -- steer in [-1, 1], throttle and brake in [0, 1]. Whoever drives decides how
@@ -88,12 +94,13 @@ from typing import Protocol
 import mujoco
 import numpy as np
 
+from fly_driver.drivers import DirectDriveAgent
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline, off_track_fraction
 from fly_driver.envs.lap import DEFAULT_LAP_LOG_PATH, LapLog, LapTimer, format_lap_time
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD
-from fly_driver.interface import ControlVector
+from fly_driver.interface import FRAME_RATE_HZ, FRAME_SHAPE, ControlVector
 
 CONTROL_HZ = 50
 
@@ -225,6 +232,37 @@ def gamepad_axes_to_control(
     return ControlVector.clipped(steer=steer, throttle=throttle, brake=brake)
 
 
+class ConstantPolicy:
+    """A :class:`~fly_driver.interface.Policy` that ignores features and holds one control.
+
+    The first thing worth watching: ``FlyvisEye`` still encodes every fly-head frame, so the
+    optic lobe is in the loop, but the car just goes straight. Steering from T4/T5 is a
+    later policy, not this one.
+    """
+
+    def __init__(
+        self,
+        feature_dim: int,
+        *,
+        steer: float = 0.0,
+        throttle: float = 0.4,
+        brake: float = 0.0,
+    ) -> None:
+        if int(feature_dim) < 1:
+            raise ValueError(f"feature_dim must be positive, got {feature_dim}")
+        self.feature_dim = int(feature_dim)
+        self.control = ControlVector(steer=steer, throttle=throttle, brake=brake)
+
+    def reset(self, seed: int | None = None) -> None:
+        """Nothing to reset; the control does not change."""
+        del seed
+
+    def act(self, features: object) -> ControlVector:
+        """Return the held control; the eye's features are unused."""
+        del features
+        return self.control
+
+
 class GamepadInput:
     """An analog controller through GLFW's gamepad API, which the viewer already ships.
 
@@ -291,7 +329,8 @@ def reset_to_start(model: mujoco.MjModel, data: mujoco.MjData) -> None:
     mujoco.mj_forward(model, data)
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for the driving tool."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", type=Path, help="write the MJCF here instead of driving")
     parser.add_argument("--fovy", type=float, default=None, help="camera vertical FOV, degrees")
@@ -305,6 +344,20 @@ def main(argv: list[str] | None = None) -> int:
         "--raw-steer",
         action="store_true",
         help="keyboard: literal full lock at any speed, as the fly would get for steer=1",
+    )
+    parser.add_argument(
+        "--agent",
+        action="store_true",
+        help=(
+            "watch FlyvisEye + DirectDriveAgent with a straight constant policy; "
+            "imports flyvis only on this path"
+        ),
+    )
+    parser.add_argument(
+        "--throttle",
+        type=float,
+        default=0.4,
+        help="constant-policy throttle when using --agent (default 0.4)",
     )
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
     parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
@@ -327,16 +380,220 @@ def main(argv: list[str] | None = None) -> int:
         "--no-lap-log", action="store_true", help="time laps but do not write them down"
     )
     args = parser.parse_args(argv)
+    if not 0.0 <= args.throttle <= 1.0:
+        parser.error("--throttle must be in [0, 1]")
+    if args.agent:
+        if args.input != "auto":
+            parser.error("--agent cannot be combined with --input (the agent drives)")
+        if args.raw_steer:
+            parser.error("--raw-steer is keyboard-only; --agent does not use the keyboard")
+    return args
 
+
+def load_direct_drive_agent(
+    *,
+    throttle: float,
+    frame_shape: tuple[int, int, int],
+    frame_rate_hz: float,
+) -> DirectDriveAgent:
+    """Build FlyvisEye + DirectDriveAgent + ConstantPolicy.
+
+    FlyvisEye (and therefore torch / flyvis) is imported here, not at module import, so
+    ``python scripts/drive.py`` in the default venv stays flyvis-free.
+    """
+    try:
+        from fly_driver.eyes.flyvis_eye import FlyvisEye, FlyvisNotInstalledError
+    except ImportError as exc:
+        raise SystemExit(
+            "--agent needs torch in this environment (FlyvisEye imports it). "
+            "Activate .venv-flyvis, install -r requirements-flyvis.txt and "
+            "`python -m pip install -e .`, then rerun. On macOS use mjpython."
+        ) from exc
+
+    print("loading FlyvisEye (checkpoint flow/0000/000)...", flush=True)
+    try:
+        eye = FlyvisEye(frame_shape=frame_shape, frame_rate_hz=frame_rate_hz)
+    except FlyvisNotInstalledError as exc:
+        raise SystemExit(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"{exc}\nSet FLYVIS_ROOT_DIR and run `flyvis download-pretrained`."
+        ) from exc
+
+    policy = ConstantPolicy(eye.feature_dim, throttle=throttle)
+    return DirectDriveAgent(eye, policy)
+
+
+def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> int:
+    """GLFW viewer on PracticeTrack, driven by FlyvisEye + DirectDriveAgent.
+
+    The window is ``mujoco.viewer.launch_passive`` -- the same path as keyboard driving --
+    looking at the env's live ``model`` / ``data``. There is no Gymnasium
+    ``render_mode="human"``. On macOS this must run under ``mjpython``.
+    """
+    from fly_driver.envs.practice_track import PracticeTrack
+
+    try:
+        import mujoco.viewer
+    except ImportError:  # pragma: no cover - depends on the local install
+        print("mujoco.viewer is unavailable; this needs a desktop with OpenGL.", file=sys.stderr)
+        return 1
+
+    env = PracticeTrack(
+        car=car,
+        scene=scene,
+        track_limit=args.track_limit,
+        frame_shape=FRAME_SHAPE,
+        frame_rate_hz=FRAME_RATE_HZ,
+        max_steps=None,
+    )
+    agent = load_direct_drive_agent(
+        throttle=args.throttle,
+        frame_shape=env.frame_shape,
+        frame_rate_hz=env.frame_rate_hz,
+    )
+    driver_name = "direct-drive"
+    lap_log = None if args.no_lap_log else LapLog(args.lap_log)
+    excursions = 0
+    car_body = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, "car")
+
+    print(__doc__)
+    print(
+        f"agent: FlyvisEye + DirectDriveAgent + straight throttle {args.throttle:.2f} "
+        "(features ignored by this policy)"
+    )
+    print(
+        "car starts ~150 m behind the start line; the lap clock stays 0.0 / OUT until "
+        "it crosses. Press ] for the fly_head camera. Close the window to quit.\n"
+    )
+    print(f"lap length {env.centerline.length:.0f} m\n")
+
+    frame, _info = env.reset(seed=0)
+    agent.reset()
+
+    try:
+        with mujoco.viewer.launch_passive(
+            env.model, env.data, show_left_ui=False, show_right_ui=False
+        ) as viewer:
+            hud = None
+            if not args.no_hud:
+                limiter_rpm = env.dynamics.powertrain.max_engine_rads * 60.0 / (2.0 * np.pi)
+                map_x0, map_y0, map_x1, map_y1 = MAP_RECT
+                hud = ViewerHUD(
+                    viewer,
+                    limiter_rpm=limiter_rpm,
+                    shift_rpm=limiter_rpm * env.dynamics.powertrain.shift_up_fraction,
+                    track=TrackMap(
+                        env.centerline.points,
+                        width=map_x1 - map_x0,
+                        height=map_y1 - map_y0,
+                    ),
+                )
+            last_report = 0.0
+            while viewer.is_running():
+                step_start = time.perf_counter()
+                control = agent.act(frame)
+                frame, _reward, terminated, truncated, info = env.step(control)
+
+                if terminated or truncated:
+                    excursions += 1
+                    print()
+                    if info.get("diverged"):
+                        print(
+                            f"diverged -- back to the grid (excursion {excursions})",
+                            flush=True,
+                        )
+                    else:
+                        beyond = float(info.get("off_track_fraction", 0.0))
+                        print(
+                            f"off track: {beyond * 100:.0f}% of the car past the kerb "
+                            f"-- back to the grid (excursion {excursions})",
+                            flush=True,
+                        )
+                    frame, info = env.reset()
+                    agent.reset()
+                    viewer.sync()
+                    continue
+
+                if info["lap_complete"] and info["lap_time"] is not None:
+                    completed = float(info["lap_time"])
+                    note = ""
+                    if lap_log is not None and lap_log.record(completed, driver=driver_name):
+                        note = "  NEW BEST"
+                    print()
+                    print(
+                        f"lap {env.lap_timer.completed}: {format_lap_time(completed)}{note}",
+                        flush=True,
+                    )
+
+                speed = float(info["speed_mps"])
+                position = env.data.xpos[car_body]
+                if hud is not None:
+                    travel = env.dynamics.suspension_travel(env.data)
+                    hud.update(
+                        Telemetry(
+                            speed_mps=speed,
+                            gear=env.dynamics.gear + 1,
+                            rpm=env.dynamics.engine_rpm(env.data),
+                            throttle=control.throttle,
+                            brake=control.brake,
+                            steer=control.steer,
+                            suspension=tuple(
+                                travel[side] / car.suspension_travel_m
+                                for side in ("fl", "fr", "rl", "rr")
+                            ),
+                            position=(float(position[0]), float(position[1])),
+                            lap_current=env.lap_timer.current_lap_time(float(env.data.time)),
+                            lap_last=env.lap_timer.last_lap,
+                            lap_best=None if lap_log is None else lap_log.best(),
+                            lap_count=env.lap_timer.completed,
+                            on_out_lap=not env.lap_timer.timing,
+                        )
+                    )
+
+                viewer.sync()
+
+                now = time.perf_counter()
+                if now - last_report > 0.5:
+                    last_report = now
+                    where = "on track" if info["on_track"] else "OFF"
+                    print(
+                        f"\r{speed * MPS_TO_MPH:6.1f} mph | "
+                        f"lap {float(info['lap_fraction']) * 100:5.1f}% | "
+                        f"{float(info['lateral_m']):+6.2f} m {where:>8} | "
+                        f"gear {info['gear']} | "
+                        f"thr {control.throttle:4.2f} brk {control.brake:4.2f} "
+                        f"steer {control.steer:+5.2f}",
+                        end="",
+                        flush=True,
+                    )
+
+                remaining = env.dt - (time.perf_counter() - step_start)
+                if remaining > 0:
+                    time.sleep(remaining)
+    finally:
+        env.close()
+
+    print()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     car = CarConfig(camera_fovy_deg=args.fovy) if args.fovy else CarConfig()
     scene = SceneConfig(include_walls=args.walls)
-    centerline, model = build(car, scene)
 
     if args.export:
+        centerline, _model = build(car, scene)
         args.export.write_text(assemble_model_xml(centerline, scene, car), encoding="utf-8")
         print(f"wrote {args.export}")
         print(f"open it with:  python -m mujoco.viewer --mjcf={args.export}")
         return 0
+
+    if args.agent:
+        return run_agent(args, car, scene)
+
+    centerline, model = build(car, scene)
 
     try:
         import mujoco.viewer
