@@ -1,3 +1,7 @@
 # Optional optic-lobe stack. The base project and CI do not install this file.
 # Requires Python >=3.9,<3.13.
 flyvis==1.2.0
+# Webcam capture for scripts/flyvis_eye_live.py only. Nothing in fly_driver
+# imports OpenCV; the live demo skips or falls back to --source synthetic
+# without it.
+opencv-python
