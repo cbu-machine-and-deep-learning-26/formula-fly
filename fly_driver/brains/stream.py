@@ -131,6 +131,13 @@ class SpikeStream:
             return f"torch:{self._model.device.type}"
         return "brian2"
 
+    def reset(self) -> None:
+        """Rebuild the network and start again from rest."""
+        self.sim_time_ms = 0.0
+        self.frames = 0
+        self._cursor = 0
+        self._build()
+
     def warm_up(self) -> None:
         """Run the configured warm-up without timing it.
 

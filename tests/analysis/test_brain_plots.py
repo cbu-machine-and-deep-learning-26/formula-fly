@@ -1,9 +1,14 @@
 """Brain viewer panels (GH-23).
 
-The panels are drawing code, so what is worth testing is that they survive the states a
-live viewer actually hits -- no data yet, a silent network, a single frame -- rather
-than what they look like. A viewer that raises on the first empty frame is a viewer
-nobody sees.
+These are drawing code, so what matters is not what they look like. It is that they
+survive the states a live viewer actually hits -- no data yet, a silent network, a
+single frame -- and that repeating an update does not accumulate anything.
+
+That last one is not hypothetical. The first version of this module was a draw function
+per panel that cleared its axes and replotted, and one of them called ``twinx()`` on
+every redraw. matplotlib keeps everything ever added to a figure, so the figure grew a
+new axes thirty times a second and the viewer locked up the machine within seconds of
+opening. The tests in :class:`TestNothingAccumulates` exist for that.
 """
 
 from __future__ import annotations
@@ -17,13 +22,13 @@ matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from fly_driver.analysis import brain_plots  # noqa: E402
+from fly_driver.analysis.brain_plots import BACKEND_COLOURS, BrainPanels  # noqa: E402
 
 
 @pytest.fixture
-def axes():
-    figure, axes = plt.subplots()
-    yield axes
+def panels():
+    figure = plt.figure(figsize=(12, 6), layout="constrained")
+    yield BrainPanels(figure, num_neurons=500, budget_ms=9.9, window_ms=500.0)
     plt.close(figure)
 
 
@@ -39,78 +44,107 @@ def _result(backend: str, neurons: int, wall_ms: float, dt_ms: float = 0.5):
     )
 
 
+def _live(panels, *, times=(), neurons=(), rates=(), costs=(), now=20.0):
+    panels.update_live(
+        spike_times_ms=np.asarray(times, dtype=float),
+        spike_neurons=np.asarray(neurons, dtype=np.int64),
+        rate_times_ms=[float(i) * 20.0 for i in range(len(rates))],
+        rates_hz=list(rates),
+        wall_ms=list(costs),
+        now_ms=now,
+    )
+
+
 class TestEmptyStates:
-    """Everything is empty on the first frame, and the sweep panels stay empty for
-    several seconds after that."""
+    """Everything is empty on the first frame, and the measured panels stay empty
+    until someone presses a key."""
 
-    def test_the_raster_survives_having_no_spikes_yet(self, axes):
-        brain_plots.draw_raster(axes, [], [], num_neurons=100, window_ms=600, now_ms=0)
+    def test_the_first_frame_draws_nothing_and_does_not_raise(self, panels):
+        _live(panels, now=0.0)
 
-    def test_the_raster_survives_a_silent_network(self, axes):
-        empty = [np.empty(0, dtype=np.int64)]
-        brain_plots.draw_raster(
-            axes, empty, [np.empty(0)], num_neurons=100, window_ms=600, now_ms=20
+    def test_a_silent_network_is_fine(self, panels):
+        _live(panels, rates=[0.0], costs=[4.2])
+
+    def test_the_measured_panels_say_how_to_fill_them(self, panels):
+        hints = [text.get_text() for text in panels.backend_axes.texts]
+        hints += [text.get_text() for text in panels.timestep_axes.texts]
+        assert any("press m" in hint for hint in hints)
+
+
+class TestNothingAccumulates:
+    """The freeze this module was rewritten to prevent."""
+
+    def test_the_figure_never_grows_another_axes(self, panels):
+        """``twinx()`` inside a redraw is what killed the first version: one new axes
+        per frame, thirty times a second, all of them still being rendered."""
+        before = len(panels.figure.axes)
+        for tick in range(50):
+            _live(panels, rates=[1.0], costs=[5.0], now=20.0 * tick)
+            panels.update_sweep([_result("torch:cpu", 1_000, 5.5)], [_result("brian2", 500, 30.0)])
+        assert len(panels.figure.axes) == before
+
+    def test_repeating_an_update_never_adds_another_line(self, panels):
+        counts = []
+        for _ in range(20):
+            _live(panels, times=[1.0, 2.0], neurons=[1, 2], rates=[1.0], costs=[5.0])
+            panels.update_sweep([_result("brian2", 1_000, 35.9)], [])
+            counts.append(sum(len(axes.lines) for axes in panels.figure.axes))
+        assert len(set(counts[1:])) == 1, f"line count kept changing: {counts}"
+
+    def test_a_busy_network_is_subsampled_rather_than_all_drawn(self, panels):
+        """A second of a busy brain is far more spikes than a screen has pixels, and
+        drawing them all is the difference between a viewer and a freeze."""
+        from fly_driver.analysis.brain_plots import MAX_RASTER_POINTS
+
+        many = MAX_RASTER_POINTS * 3
+        _live(
+            panels,
+            times=np.linspace(0, 500, many),
+            neurons=np.arange(many) % 500,
+            now=500.0,
         )
-
-    def test_the_rate_trace_survives_no_history(self, axes):
-        brain_plots.draw_rate(axes, [], [], window_ms=600, now_ms=0)
-
-    def test_the_budget_gauge_survives_no_measurements(self, axes):
-        brain_plots.draw_budget(axes, [], budget_ms=9.9)
-
-    def test_the_sweep_panels_say_they_are_measuring(self, axes):
-        brain_plots.draw_backend_comparison(axes, [], budget_ms=9.9)
-        assert any("measuring" in text.get_text() for text in axes.texts)
-
-    def test_the_timestep_panel_says_it_is_measuring(self, axes):
-        brain_plots.draw_dt_sweep(axes, [])
-        assert any("measuring" in text.get_text() for text in axes.texts)
+        drawn = len(panels.raster_axes.lines[0].get_xdata())
+        assert drawn <= MAX_RASTER_POINTS
 
 
 class TestWithData:
-    def test_the_raster_drops_spikes_older_than_the_window(self, axes):
-        """Without this the raster keeps every spike of the session and the viewer
-        slows to a stop after a minute."""
-        old = np.array([1, 2, 3])
-        recent = np.array([4, 5])
-        brain_plots.draw_raster(
-            axes,
-            [old, recent],
-            [np.full(3, 10.0), np.full(2, 900.0)],
-            num_neurons=10,
-            window_ms=600,
-            now_ms=920,
+    def test_the_gauge_shows_the_latest_cost_and_goes_red_over_budget(self, panels):
+        _live(panels, rates=[1.0], costs=[5.0, 6.0, 12.3])
+        assert any("12.3" in text.get_text() for text in panels.budget_axes.texts)
+        over = panels._budget.get_color()
+        _live(panels, rates=[1.0], costs=[5.0, 6.0, 4.1])
+        assert panels._budget.get_color() != over, "the gauge never goes back to green"
+
+    def test_both_backends_get_their_own_line(self, panels):
+        panels.update_sweep(
+            [
+                _result("brian2", 1_000, 35.9),
+                _result("brian2", 3_000, 54.5),
+                _result("torch:cpu", 1_000, 5.5),
+                _result("torch:cpu", 3_000, 12.2),
+            ],
+            [],
         )
-        drawn = np.concatenate([line.get_ydata() for line in axes.lines])
-        assert set(drawn) == {4, 5}
-
-    def test_the_budget_gauge_shows_the_latest_cost(self, axes):
-        brain_plots.draw_budget(axes, [5.0, 6.0, 12.3], budget_ms=9.9)
-        assert any("12.3" in text.get_text() for text in axes.texts)
-
-    def test_both_backends_get_their_own_line(self, axes):
-        results = [
-            _result("brian2", 1_000, 35.9),
-            _result("brian2", 3_000, 54.5),
-            _result("torch:cpu", 1_000, 5.5),
-            _result("torch:cpu", 3_000, 12.2),
-        ]
-        brain_plots.draw_backend_comparison(axes, results, budget_ms=9.9)
-        labels = {line.get_label() for line in axes.lines}
+        labels = {line.get_label() for line in panels.backend_axes.lines}
         assert {"brian2", "torch:cpu"} <= labels
 
     def test_a_backend_keeps_one_colour_across_panels(self):
-        """The viewer has five panels and no room for five legends."""
-        assert brain_plots.BACKEND_COLOURS["brian2"] != brain_plots.BACKEND_COLOURS["torch"]
+        """Five panels, and no room for five legends."""
+        assert BACKEND_COLOURS["brian2"] != BACKEND_COLOURS["torch"]
 
-    def test_the_timestep_panel_plots_cost_and_rate_together(self, axes):
-        """Speed bought and accuracy spent belong on the same panel, or the timestep
-        looks free."""
-        results = [_result("brian2", 3_000, 54.5, dt_ms=dt) for dt in (0.1, 0.5, 1.0)]
-        brain_plots.draw_dt_sweep(axes, results)
-        assert len(axes.lines) == 1
-        assert len(axes.figure.axes) == 2, "the rate axis is missing"
+    def test_the_timestep_panel_plots_cost_and_rate_together(self, panels):
+        """Speed bought and accuracy spent belong on one panel, or the timestep looks
+        free."""
+        panels.update_sweep([], [_result("brian2", 3_000, 54.5, dt_ms=dt) for dt in (0.1, 0.5)])
+        assert len(panels._timestep_cost.get_xdata()) == 2
+        assert len(panels._timestep_rate.get_xdata()) == 2
 
-    def test_the_rate_trace_shows_the_current_value(self, axes):
-        brain_plots.draw_rate(axes, [0.0, 20.0], [1.0, 2.5], window_ms=600, now_ms=20)
-        assert any("2.50" in text.get_text() for text in axes.texts)
+    def test_the_rate_trace_shows_the_current_value(self, panels):
+        _live(panels, rates=[1.0, 2.5])
+        assert any("2.50" in text.get_text() for text in panels.rate_axes.texts)
+
+    def test_the_raster_window_follows_the_clock(self, panels):
+        _live(panels, times=[1400.0], neurons=[3], now=1500.0)
+        left, right = panels.raster_axes.get_xlim()
+        assert left == pytest.approx(1000.0)
+        assert right == pytest.approx(1500.0)

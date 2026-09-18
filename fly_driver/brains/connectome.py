@@ -113,6 +113,28 @@ class Subnetwork:
         """How many synapses are in this subnetwork."""
         return int(len(self.pre))
 
+    def head(self, num_neurons: int) -> Subnetwork:
+        """The first ``num_neurons`` of this network, and the synapses between them.
+
+        In memory: :func:`load_subnetwork` re-reads an 86 MB parquet every call, which
+        is fine once at startup and ruinous inside a viewer's redraw.
+
+        Raises:
+            ValueError: If ``num_neurons`` is not positive.
+        """
+        if num_neurons < 1:
+            raise ValueError(f"num_neurons must be positive, got {num_neurons}")
+        if num_neurons >= self.num_neurons:
+            return self
+        keep = (self.pre < num_neurons) & (self.post < num_neurons)
+        return Subnetwork(
+            root_ids=self.root_ids[:num_neurons],
+            pre=self.pre[keep],
+            post=self.post[keep],
+            weight=self.weight[keep],
+            release=self.release,
+        )
+
     def __repr__(self) -> str:
         return (
             f"Subnetwork(release={self.release!r}, "
