@@ -398,7 +398,7 @@ class PracticeTrack:
         if self._done or self._frame is None:
             raise RuntimeError("call reset() before step(); the episode has ended")
 
-        control = _as_control(action)
+        control = ControlVector.from_any(action)
         self._dynamics.step(control, self._data, self._substeps)
         self._steps += 1
         truncated = self._max_steps is not None and self._steps >= self._max_steps
@@ -542,17 +542,3 @@ class PracticeTrack:
             "on_out_lap": not self._lap.timing,
             "diverged": diverged,
         }
-
-
-def _as_control(action: object) -> ControlVector:
-    """Accept what the harness sends, what a policy returns, or the typed thing itself.
-
-    The evaluation harness converts every agent's output to a ``(3,)`` float32 array before
-    it reaches an env, so refusing arrays here would make this env unevaluatable. Validation
-    is :class:`~fly_driver.interface.ControlVector`'s own, which rejects the wrong shape,
-    non-finite values and out-of-range components without clipping any of them.
-    """
-    if isinstance(action, ControlVector):
-        return action
-    raw = action.to_array() if hasattr(action, "to_array") else action
-    return ControlVector.from_array(raw)
