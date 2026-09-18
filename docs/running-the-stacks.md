@@ -306,10 +306,93 @@ Two consequences worth being clear about:
 - **A faster card will not fix this.** Kernel launch latency is driver- and CPU-side, not
   silicon, so a 4090 has the same floor. It will win bigger above the crossover, where the
   sparse product actually dominates, and it will not move the small-network case.
-- **The two things that would fix it** are CUDA graphs — capturing a frame's ~400 launches
+- **The two things that would fix it** are CUDA graphs — capturing a frame's ~1,200 launches
   into one replay — and Linux, whose launch latency is several times lower than Windows's
-  WDDM path. Neither has been tried. If the lab's 4090s run Linux, that alone is worth
-  re-measuring for.
+  WDDM path. Graphs are measured below and are worth 10x; Linux is untried. If the lab's
+  4090s run Linux, that alone is worth re-measuring for.
+
+### CUDA graphs would remove the idle, and by how much is measured
+
+Not implemented, and deliberately so — see *when to build it* below. But the hard parts
+were tried on the 4060 Ti so that nobody has to rediscover them, and the result is large
+enough to change the decision the day it matters.
+
+A graph records one frame's kernel sequence once and replays it as a **single** submission,
+so the ~1,200 launches per frame collapse to one and the launch latency disappears. What is
+left is the ~43 µs of real work per step.
+
+```python
+model = TorchLIF(subnetwork, device="cuda")
+model.run(20.0)                     # warm up first; capture must not be the first run
+torch.cuda.synchronize()
+
+graph = torch.cuda.CUDAGraph()
+graph.register_generator_state(model.generator)   # see the trap below -- not optional
+with torch.cuda.graph(graph):
+    for _ in range(40):             # one 20 ms frame at dt = 0.5 ms
+        model.step()
+
+graph.replay()                      # each replay is one frame
+```
+
+Measured on the 4060 Ti, Poisson drive on, `dt = 0.5 ms`:
+
+| neurons | eager | graphed | speedup |
+|---|---|---|---|
+| 3,000 | 15.0 ms | **1.49 ms** | 10.1x |
+| 10,000 | 12.3 ms | **1.37 ms** | 8.9x |
+| 20,000 | 12.5 ms | **1.96 ms** | 6.4x |
+| 50,000 | 11.2 ms | **5.58 ms** | 2.0x |
+| 100,000 | 21.5 ms | 17.9 ms | 1.2x |
+
+The speedup *shrinking* with size is the point: by 50,000 neurons the card is finally
+compute-bound, which is what "the overhead is gone" looks like. The in-loop cap would move
+from ~10,000 neurons on the CPU to ~50,000, and a central complex plus descending neurons
+(~4,300) would cost about 1.5 ms of the 9.9 ms budget instead of about 7 ms.
+
+#### The trap, which fails silently
+
+A graph replays a **fixed** sequence of kernels. The obvious failure is that it also replays
+the same random numbers, so the Poisson drive freezes and the brain receives identical input
+every frame forever — at 10x the speed, with plausible firing rates, and nothing else to
+show for it.
+
+`graph.register_generator_state(model.generator)` is what prevents that: it tells the graph
+to advance the generator's offset across replays. Without it the capture does not even
+succeed (`Attempt to increase offset for a CUDA generator not in capture mode`), which is
+lucky — but if you reach for the *default* generator to get around that error, it captures
+happily and freezes the noise.
+
+Verified rather than assumed, at 3,000 neurons:
+
+- spikes per replayed frame vary: 63, 57, 62, 57, 59, 71, 60, 54
+- the same seed reproduces that sequence exactly across separate runs
+- a different seed produces a different one
+
+Reproducibility surviving matters: `AGENTS.md` §11 asks for seed determinism in the eval
+protocol, so this does not cost determinism to buy speed.
+
+#### When to build it
+
+Any one of these turns it from an optimisation into work worth doing:
+
+- **The brain goes into the training loop** (#23 proper, which #17 unblocks). Training is
+  not real-time-bound, so 3.8x more steps per hour is the difference between an overnight
+  experiment matrix and a weekend one.
+- **The in-loop network grows past ~10,000 neurons.** Then the CPU stops fitting and graphs
+  are a requirement rather than a speedup.
+- **The Assetto Corsa bridge** (#24), which is hard real-time with no slack.
+
+Until one of those, the CPU fits a 2,000–4,000-neuron circuit at ~5–7 ms of a 9.9 ms budget,
+the eye's 7.9 ms is the larger cost in the loop anyway, and CUDA graphs are complexity —
+static shapes, a capture path, generator state — bought against a bottleneck that is not yet
+the bottleneck.
+
+What building it would involve: a capture path on :class:`TorchLIF` behind a flag, the
+generator registration above, and a test that graphed and eager produce identical spikes for
+the same seed. That last one is the important one, and it does not exist yet — everything
+above shows the graphed path is *fast*, *varying* and *reproducible*, not that it computes
+the same thing as the eager path.
 
 ### The decision
 
@@ -395,6 +478,10 @@ and was not tested for this ticket.
 
 ## Known failures and sharp edges
 
+- A CUDA graph replays a fixed kernel sequence, so it will happily replay the same random
+  numbers too — freezing the Poisson drive while firing rates still look plausible. Register
+  the generator with the graph; do not work around the capture error by switching to the
+  default generator.
 - CUDA is **slower than the CPU** for anything under ~20,000 neurons here, and it is not
   the card's fault: at 0.375 ms per step it is pure kernel-launch latency. Do not read a
   GPU row as "the GPU is bad at this" without checking the per-step figure first.
