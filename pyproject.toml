@@ -24,7 +24,14 @@ dependencies = [
 # pynput is only for scripts/drive.py: the MuJoCo viewer reports key presses but not
 # releases, and held-key driving needs both edges. GLFW (a mujoco dependency) covers
 # gamepads on its own.
-dev = ["pytest>=8.0", "ruff>=0.6", "pynput>=1.7"]
+dev = ["pytest>=8.0", "ruff>=0.6", "pynput>=1.7", "fly-driver[brains]"]
+
+# Reading the FlyWire connectome (GH-23). pandas and pyarrow are pure wheels on every
+# platform we target, aarch64 included, so unlike brian2 and torch they can be a
+# declared extra rather than a separate virtualenv. The simulators themselves stay out:
+# see `docs/running-the-stacks.md`. The connectome data is a 370 MB download and is not
+# a dependency of anything -- point FLY_CONNECTOME_DIR at it.
+brains = ["pandas>=2.0", "pyarrow>=14"]
 
 # There is deliberately no `flyvis` extra here, and torch does not belong in this file.
 # The optic lobe installs into its own virtualenv from `requirements-flyvis.txt` --
