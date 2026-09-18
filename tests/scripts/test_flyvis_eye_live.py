@@ -198,9 +198,7 @@ def test_motion_percept_hue_follows_direction_and_still_is_dark() -> None:
         assert np.allclose(colors[0], rgb, atol=1e-6), direction
         angle, magnitude = live.summarise_motion(vectors)
         assert magnitude == pytest.approx(1.0)
-        assert angle == pytest.approx(
-            {"right": 0, "up": 90, "left": 180, "down": 270}[direction]
-        )
+        assert angle == pytest.approx({"right": 0, "up": 90, "left": 180, "down": 270}[direction])
 
     still = {name: zeros for name in live.METER_DIRECTIONS}
     colors, _ = live.compute_motion_percept(still, peak=1.0)
@@ -276,9 +274,7 @@ def test_direction_meter_maps_subtypes_to_directions() -> None:
     expected = {"T4a": "left", "T5b": "right", "T4c": "up", "T5d": "down"}
 
     for readout, direction in expected.items():
-        meter = live.compute_direction_meter(
-            _features_with_active_readout(readout, 2.0), READOUTS
-        )
+        meter = live.compute_direction_meter(_features_with_active_readout(readout, 2.0), READOUTS)
         assert set(meter) == set(live.METER_DIRECTIONS)
         # Pooling one active readout with its silent sibling halves the mean but
         # leaves the 95th percentile on the active half.
@@ -362,9 +358,7 @@ def test_synthetic_bar_cycle_visits_all_directions() -> None:
     assert [labels.count(name) for name in live.METER_DIRECTIONS] == [90] * 4
     assert set(np.unique(frames)) == {GREY_LEVEL, 255}
     right_frames = [index for index, label in enumerate(labels) if label == "right"]
-    bar_columns = [
-        np.flatnonzero(frames[index, 48, :, 0] == 255).mean() for index in right_frames
-    ]
+    bar_columns = [np.flatnonzero(frames[index, 48, :, 0] == 255).mean() for index in right_frames]
     assert bar_columns == sorted(bar_columns)
     assert bar_columns[0] < 10 and bar_columns[-1] > 85
 

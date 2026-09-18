@@ -74,13 +74,19 @@ import numpy.typing as npt
 import torch
 from torch.nn import functional as F
 
+# The flyvis virtualenv installs requirements-flyvis.txt, not the fly_driver
+# package (docs/running-the-stacks.md), so like the other flyvis scripts this one
+# puts the repo root on sys.path before importing it.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from fly_driver.analysis.hex_plots import HexRaster, split_readout_maps
-from fly_driver.eyes.hex_resampler import DEFAULT_FRAME_SHAPE, HEX_COLUMN_COUNT
-from fly_driver.eyes.stimuli import (
+from fly_driver.analysis.hex_plots import HexRaster, split_readout_maps  # noqa: E402
+from fly_driver.eyes.hex_resampler import (  # noqa: E402
+    DEFAULT_FRAME_SHAPE,
+    HEX_COLUMN_COUNT,
+)
+from fly_driver.eyes.stimuli import (  # noqa: E402
     FRAME_RATE_HZ,
     GREY_LEVEL,
     grey_frames,
@@ -186,9 +192,7 @@ def center_crop_resize(
         return cropped
     tensor = torch.from_numpy(cropped).permute(2, 0, 1)[None].float()
     resized = F.interpolate(tensor, size=(target_height, target_width), mode="area")
-    return (
-        resized.round().clamp(0, 255).to(torch.uint8)[0].permute(1, 2, 0).numpy().copy()
-    )
+    return resized.round().clamp(0, 255).to(torch.uint8)[0].permute(1, 2, 0).numpy().copy()
 
 
 def synthetic_bar_cycle(
@@ -294,9 +298,7 @@ class WebcamSource:
         self.capture.release()
 
 
-def open_source(
-    source: str, camera_index: int, frame_shape: tuple[int, int, int]
-) -> Any:
+def open_source(source: str, camera_index: int, frame_shape: tuple[int, int, int]) -> Any:
     """Open the requested frame source, falling back to synthetic without a camera."""
     if source == "webcam":
         webcam = WebcamSource(camera_index, frame_shape)
@@ -304,8 +306,7 @@ def open_source(
             return webcam
         webcam.close()
         print(
-            f"NOTICE: no camera opened at index {camera_index}; "
-            "falling back to the synthetic bar."
+            f"NOTICE: no camera opened at index {camera_index}; falling back to the synthetic bar."
         )
     return SyntheticBarSource(frame_shape)
 
@@ -346,9 +347,7 @@ def build_readout_names(*, hide_t5: bool = False) -> tuple[str, ...]:
     return T4_READOUTS + (() if hide_t5 else T5_READOUTS)
 
 
-def build_panel_names(
-    readout_names: Sequence[str], show: Sequence[str] = ()
-) -> list[str]:
+def build_panel_names(readout_names: Sequence[str], show: Sequence[str] = ()) -> list[str]:
     """Return the hex panels to draw: the readouts, then ``--show`` extras.
 
     Extras that repeat a readout are dropped so every cell type has one panel.
@@ -395,9 +394,7 @@ def resolve_cell_type_indices(eye: Any, names: Sequence[str]) -> dict[str, np.nd
             f"--show: unknown cell types {unknown}; choose from {', '.join(available)}"
         )
     indices = {name: np.asarray(nodes.layer_index[name][:]) for name in names}
-    partial = [
-        name for name, index in indices.items() if len(index) != HEX_COLUMN_COUNT
-    ]
+    partial = [name for name, index in indices.items() if len(index) != HEX_COLUMN_COUNT]
     if partial:
         raise UnknownCellTypesError(
             f"--show: {partial} do not cover the {HEX_COLUMN_COUNT}-column lattice "
@@ -435,34 +432,27 @@ def compute_direction_meter(
         ``{direction: value}`` for every direction in :data:`METER_DIRECTIONS`.
     """
     if statistic not in METER_STATISTICS:
-        raise ValueError(
-            f"statistic must be one of {METER_STATISTICS}, got {statistic!r}"
-        )
+        raise ValueError(f"statistic must be one of {METER_STATISTICS}, got {statistic!r}")
     maps = split_readout_maps(np.asarray(features, dtype=np.float32), readout_names)
     meter: dict[str, float] = {}
     for direction in METER_DIRECTIONS:
         pooled = [
             maps[name]
             for name in readout_names
-            if name[:2] in ("T4", "T5")
-            and SUBTYPE_DIRECTIONS.get(name[2:]) == direction
+            if name[:2] in ("T4", "T5") and SUBTYPE_DIRECTIONS.get(name[2:]) == direction
         ]
         if not pooled:
             meter[direction] = 0.0
             continue
         values = np.concatenate(pooled)
-        summary = float(
-            np.quantile(values, 0.95) if statistic == "q95" else values.mean()
-        )
+        summary = float(np.quantile(values, 0.95) if statistic == "q95" else values.mean())
         if baseline is not None:
             summary -= baseline.get(direction, 0.0)
         meter[direction] = max(summary, 0.0)
     return meter
 
 
-def find_winning_direction(
-    meter: dict[str, float], minimum: float = PEAK_FLOOR
-) -> str | None:
+def find_winning_direction(meter: dict[str, float], minimum: float = PEAK_FLOOR) -> str | None:
     """Return the direction with the largest meter value; ``None`` if all are quiet."""
     direction = max(METER_DIRECTIONS, key=lambda name: meter.get(name, 0.0))
     return direction if meter.get(direction, 0.0) > minimum else None
@@ -479,9 +469,7 @@ def format_meter(meter: dict[str, float], *, compact: bool = False) -> str:
         The formatted line.
     """
     if compact:
-        return "  ".join(
-            f"{name[0].upper()} {meter[name]:.2f}" for name in METER_DIRECTIONS
-        )
+        return "  ".join(f"{name[0].upper()} {meter[name]:.2f}" for name in METER_DIRECTIONS)
     values = " ".join(f"{name}={meter[name]:.3f}" for name in METER_DIRECTIONS)
     return f"{values} -> {find_winning_direction(meter) or 'none'}"
 
@@ -503,9 +491,7 @@ class NeuralIndices:
         """Look up R1-R6 and every T4/T5 subtype in the eye's connectome."""
         names = list(PHOTORECEPTOR_TYPES) + list(T4_READOUTS) + list(T5_READOUTS)
         indices = resolve_cell_type_indices(eye, names)
-        channels: dict[str, list[np.ndarray]] = {
-            direction: [] for direction in METER_DIRECTIONS
-        }
+        channels: dict[str, list[np.ndarray]] = {direction: [] for direction in METER_DIRECTIONS}
         for name in T4_READOUTS + T5_READOUTS:
             channels[SUBTYPE_DIRECTIONS[name[2:]]].append(indices[name])
         return cls([indices[name] for name in PHOTORECEPTOR_TYPES], channels)
@@ -533,9 +519,7 @@ def motion_channels(
     }
 
 
-def hsv_to_rgb(
-    hue: FloatArray, saturation: FloatArray, value: FloatArray
-) -> FloatArray:
+def hsv_to_rgb(hue: FloatArray, saturation: FloatArray, value: FloatArray) -> FloatArray:
     """Convert HSV arrays in ``[0, 1]`` to an RGB array with a trailing axis of 3."""
     hue6 = (np.asarray(hue) % 1.0) * 6.0
     sector = np.floor(hue6).astype(int) % 6
@@ -683,9 +667,7 @@ def _screen_logical_size(figure: Any) -> tuple[int, int]:
             width, height = geometry.width(), geometry.height()
         elif hasattr(window, "winfo_screenwidth"):  # Tk
             width, height = window.winfo_screenwidth(), window.winfo_screenheight()
-    return min(width, DEFAULT_SCREEN_LOGICAL_PX[0]), min(
-        height, DEFAULT_SCREEN_LOGICAL_PX[1]
-    )
+    return min(width, DEFAULT_SCREEN_LOGICAL_PX[0]), min(height, DEFAULT_SCREEN_LOGICAL_PX[1])
 
 
 # --------------------------------------------------------------------------
@@ -721,9 +703,7 @@ class LoopStats:
 
 
 def _ema(current: float, sample: float) -> float:
-    return (
-        sample if current == 0.0 else (1 - EMA_WEIGHT) * current + EMA_WEIGHT * sample
-    )
+    return sample if current == 0.0 else (1 - EMA_WEIGHT) * current + EMA_WEIGHT * sample
 
 
 @dataclass
@@ -826,11 +806,7 @@ class LiveView:
         for row_index, names in enumerate(readout_rows):
             for column_index, name in enumerate(names):
                 column = LEFT_COLUMNS + column_index
-                cell = (
-                    grid[:, column]
-                    if len(readout_rows) == 1
-                    else grid[row_index, column]
-                )
+                cell = grid[:, column] if len(readout_rows) == 1 else grid[row_index, column]
                 map_axes.append(self.figure.add_subplot(cell))
                 map_names.append(name)
 
@@ -891,9 +867,7 @@ class LiveView:
             if any(name.startswith(family) for name in panel_names)
         )
         self._title(meter_axes, f"direction meter ({meter_families})")
-        self._scaled_texts.append(
-            (meter_axes.set_ylabel("relative to peak"), BASE_FONT_PT["tick"])
-        )
+        self._scaled_texts.append((meter_axes.set_ylabel("relative to peak"), BASE_FONT_PT["tick"]))
         self._tick_axes.append(meter_axes)
         self._meter_text = meter_axes.text(
             0.5,
@@ -907,7 +881,7 @@ class LiveView:
         self._scaled_texts.append((self._meter_text, BASE_FONT_PT["meter"]))
 
         self._maps = []
-        for axes, name in zip(map_axes, map_names):
+        for axes, name in zip(map_axes, map_names, strict=True):
             image = self._raster.imshow(
                 axes,
                 grey_columns,
@@ -919,12 +893,8 @@ class LiveView:
             image.set_animated(display)
             self._title(axes, name, bold=True)
             self._maps.append(image)
-        colorbar = self.figure.colorbar(
-            self._maps[0], ax=map_axes, shrink=0.7, pad=0.01, aspect=30
-        )
-        self._scaled_texts.append(
-            (colorbar.ax.set_ylabel("activity (a.u.)"), BASE_FONT_PT["tick"])
-        )
+        colorbar = self.figure.colorbar(self._maps[0], ax=map_axes, shrink=0.7, pad=0.01, aspect=30)
+        self._scaled_texts.append((colorbar.ax.set_ylabel("activity (a.u.)"), BASE_FONT_PT["tick"]))
         self._tick_axes.append(colorbar.ax)
 
         left_panels = ["camera"] + (["retina"] if show_retina else [])
@@ -1012,11 +982,11 @@ class LiveView:
         self._motion.set_data(self._raster.render_rgb(data.motion_rgb))
         if self._retina is not None and data.retina is not None:
             self._retina.set_data(self._raster.render(data.retina))
-        for image, values in zip(self._maps, data.maps.values()):
+        for image, values in zip(self._maps, data.maps.values(), strict=True):
             image.set_data(self._raster.render(values))
         peak = self._meter_peak.update(max(data.meter.values()))
         winner = find_winning_direction(data.meter)
-        for bar, direction in zip(self._bars, METER_DIRECTIONS):
+        for bar, direction in zip(self._bars, METER_DIRECTIONS, strict=True):
             bar.set_height(data.meter[direction] / peak)
             bar.set_color("#dd8452" if direction == winner else "#4c72b0")
         self._meter_text.set_text(format_meter(data.meter, compact=True))
@@ -1080,9 +1050,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=10,
         help="Print the meter every N frames when --no-display is set (0 = never).",
     )
-    parser.add_argument(
-        "--save-dir", type=Path, default=None, help="Save PNG snapshots here."
-    )
+    parser.add_argument("--save-dir", type=Path, default=None, help="Save PNG snapshots here.")
     parser.add_argument("--save-every", type=int, default=50, help="Snapshot period.")
     parser.add_argument("--meter-statistic", choices=METER_STATISTICS, default="q95")
     parser.add_argument("--color-limit", type=float, default=DEFAULT_COLOR_LIMIT)
@@ -1092,26 +1060,20 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="TYPE[,TYPE...]",
         help="Extra cell types to draw as hex maps, e.g. R1,L1,Mi1,Tm3.",
     )
-    parser.add_argument(
-        "--hide-t5", action="store_true", help="Drop the T5a-d row (compact view)."
-    )
+    parser.add_argument("--hide-t5", action="store_true", help="Drop the T5a-d row (compact view).")
     parser.add_argument(
         "--show-retina",
         action="store_true",
         help="Also draw the resampled luminance entering the eye (camera-derived).",
     )
-    parser.add_argument(
-        "--scale", type=float, default=1.0, help="Multiply every font size."
-    )
+    parser.add_argument("--scale", type=float, default=1.0, help="Multiply every font size.")
     parser.add_argument(
         "--figsize",
         default=None,
         metavar="W,H",
         help="Figure size in inches (default: fitted to a 1440x900 logical screen).",
     )
-    parser.add_argument(
-        "--dpi", type=float, default=None, help="Figure dpi (for HiDPI testing)."
-    )
+    parser.add_argument("--dpi", type=float, default=None, help="Figure dpi (for HiDPI testing).")
     parser.add_argument("--checkpoint", default=None, help="flyvis checkpoint.")
     return parser.parse_args(argv)
 
@@ -1151,9 +1113,7 @@ def _has_opencv() -> bool:
     return True
 
 
-def _measure_baseline(
-    eye: Any, statistic: str
-) -> tuple[dict[str, float], npt.NDArray[np.float32]]:
+def _measure_baseline(eye: Any, statistic: str) -> tuple[dict[str, float], npt.NDArray[np.float32]]:
     """Reset the eye and read the resting meter and network state from grey.
 
     Returns:
@@ -1193,15 +1153,10 @@ def _format_overlay(
     return overlay
 
 
-def _summarise(
-    stats: LoopStats, agreement: dict[str, list[bool]], rate_label: str
-) -> None:
+def _summarise(stats: LoopStats, agreement: dict[str, list[bool]], rate_label: str) -> None:
     if stats.loop_periods_s:
         mean_fps = 1.0 / statistics.fmean(stats.loop_periods_s)
-        print(
-            f"{rate_label}: {mean_fps:.1f} fps mean over "
-            f"{len(stats.loop_periods_s)} frames"
-        )
+        print(f"{rate_label}: {mean_fps:.1f} fps mean over {len(stats.loop_periods_s)} frames")
     if stats.eye_latencies_ms:
         latencies = stats.eye_latencies_ms
         print(
@@ -1235,9 +1190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     eye = _try_load_eye(args.checkpoint, build_readout_names(hide_t5=args.hide_t5))
     if eye is None:
         return 0
-    show_types = [
-        name for name in parse_show_types(args.show) if name not in eye.readout_names
-    ]
+    show_types = [name for name in parse_show_types(args.show) if name not in eye.readout_names]
     try:
         extra_indices = resolve_cell_type_indices(eye, show_types)
     except UnknownCellTypesError as error:
@@ -1280,15 +1233,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     last_read: float | None = None
     minimum_period = 1.0 / args.fps_cap if args.fps_cap > 0 else 0.0
     try:
-        while (view is None or view.is_open) and (
-            args.frames <= 0 or frame_count < args.frames
-        ):
+        while (view is None or view.is_open) and (args.frames <= 0 or frame_count < args.frames):
             if view is not None:
                 view.poll()
                 if view.reset_requested:
-                    baseline, resting_state = _measure_baseline(
-                        eye, args.meter_statistic
-                    )
+                    baseline, resting_state = _measure_baseline(eye, args.meter_statistic)
                     view.reset_requested = False
                     print("eye state reset")
                 if view.paused:
@@ -1316,9 +1265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             winner = find_winning_direction(meter)
             if source_frame.label in METER_DIRECTIONS:
-                agreement.setdefault(source_frame.label, []).append(
-                    winner == source_frame.label
-                )
+                agreement.setdefault(source_frame.label, []).append(winner == source_frame.label)
 
             state = eye.state_activity
             channels = motion_channels(state, resting_state, neural.motion_channels)
@@ -1327,12 +1274,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             if view is not None:
                 motion_rgb, _ = compute_motion_percept(channels, motion_peak.value)
-                photoreceptors = photoreceptor_map(
-                    state, resting_state, neural.photoreceptors
-                )
-                photoreceptor_peak.update(
-                    float(np.quantile(np.abs(photoreceptors), 0.99))
-                )
+                photoreceptors = photoreceptor_map(state, resting_state, neural.photoreceptors)
+                photoreceptor_peak.update(float(np.quantile(np.abs(photoreceptors), 0.99)))
                 maps = split_readout_maps(features, eye.readout_names)
                 for name, indices in extra_indices.items():
                     maps[name] = state[indices] - resting_state[indices]
@@ -1363,11 +1306,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     path = args.save_dir / f"flyvis_eye_live_{frame_count:05d}.png"
                     view.save(path)
                     print(f"saved {path}")
-            if (
-                args.no_display
-                and args.print_every > 0
-                and frame_count % args.print_every == 0
-            ):
+            if args.no_display and args.print_every > 0 and frame_count % args.print_every == 0:
                 label = f" stim={source_frame.label:<5}" if source_frame.label else ""
                 angle, magnitude = summarise_motion(vectors)
                 print(

@@ -142,7 +142,7 @@ the script resets those keys, which is what made fonts swallow the panels on a
 Retina Mac. `--figsize W,H`, `--scale`, and `--dpi` override the defaults.
 
 ```bash
-# in the flyvis venv (Python 3.9-3.12); uv is fastest, pip works too
+# in the flyvis venv (Python 3.10-3.12, the project floor); uv is fastest, pip works too
 uv pip install -r requirements-flyvis.txt     # adds opencv-python for the camera
 export FLYVIS_ROOT_DIR="$HOME/.cache/flyvis"  # where `flyvis download-pretrained` put results/
 python scripts/flyvis_eye_live.py             # webcam 0; falls back to --source synthetic

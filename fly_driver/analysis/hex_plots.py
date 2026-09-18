@@ -161,9 +161,7 @@ class HexRaster:
         image[~self.is_inside] = background
         return image
 
-    def imshow(
-        self, axes: Any, values: npt.NDArray[np.floating[Any]], **kwargs: Any
-    ) -> Any:
+    def imshow(self, axes: Any, values: npt.NDArray[np.floating[Any]], **kwargs: Any) -> Any:
         """Draw one map on ``axes``; update it later with ``image.set_data``.
 
         Args:
