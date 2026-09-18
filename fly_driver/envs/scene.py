@@ -93,7 +93,10 @@ class SceneConfig:
             640x480 and ``mujoco.Renderer`` **raises** if asked for anything larger, so the
             ceiling has to be declared in the model rather than discovered later. Whatever
             camera resolution GH-13 settles on must fit inside this; the env raises early
-            if it does not.
+            if it does not. :class:`~fly_driver.envs.practice_track.PracticeTrack` then
+            shrinks the *compiled* model's FBO to the actual camera: ``MjrContext``
+            allocates this buffer, not the Renderer viewport, so leaving 1280² standing
+            is a 1280² raster every tick for a 96×96 eye.
         model_extent_m: Overrides MuJoCo's inferred model extent. This is not cosmetic:
             ``znear`` and ``zfar`` are expressed in *extents*, and MuJoCo infers extent
             from the scene bounding box. A 1.7 km circuit therefore puts the near clipping

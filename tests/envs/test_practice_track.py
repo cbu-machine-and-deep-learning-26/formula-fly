@@ -347,6 +347,24 @@ class TestTheFrameIsWhatTheEyeAsksFor:
         try:
             frame, _ = _started(env)
             assert frame.shape == (64, 128, 3)
+            assert env.model.vis.global_.offwidth == 128
+            assert env.model.vis.global_.offheight == 64
+        finally:
+            env.close()
+
+    def test_the_offscreen_fbo_matches_the_camera_and_skips_shadows(self):
+        """MjrContext allocates the model's offscreen FBO, not the viewport. Leaving that
+        at SceneConfig's 1280² plus a 2048² shadow pass is what made Mac env.step ~12 ms
+        for a 96×96 eye camera. Physics substeps are unchanged; this is the raster path."""
+        env = PracticeTrack()
+        try:
+            _started(env)
+            height, width, _ = env.frame_shape
+            assert env.model.vis.global_.offwidth == width
+            assert env.model.vis.global_.offheight == height
+            assert env.substeps == 10
+            assert env._renderer is not None
+            assert env._renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] == 0
         finally:
             env.close()
 
