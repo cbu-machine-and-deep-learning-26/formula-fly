@@ -1,0 +1,24 @@
+# Optional whole-brain stack (GH-23). The base project and CI do not install this file.
+# Requires Python >=3.10,<3.13 (brian2 2.9 has no wheel above that).
+#
+# Install torch FIRST, from the CUDA index, or pip will give you the CPU build and every
+# GPU timing below will silently be a CPU timing:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128   # Ada, e.g. 4090
+#   pip install -r requirements-brain.txt
+#   pip install -e .
+#
+# cu126 and cu130 are also published; pick the one matching the box's driver, and check
+# https://pytorch.org/get-started/locally/ if unsure. Verify before trusting a number:
+#
+#   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+#
+# Brian2 is CPU-only here on purpose. brian2cuda exists but only runs in standalone mode,
+# which compiles a whole run ahead of time and cannot be stepped one 20 ms frame at a
+# time -- which is exactly how a brain between an eye and a policy is driven.
+
+brian2>=2.9
+numpy<2
+pandas<3
+pyarrow>=14
+matplotlib>=3.7

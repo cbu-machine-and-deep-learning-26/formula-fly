@@ -188,20 +188,28 @@ class SpikeStream:
         return indices, times
 
     def _advance_torch(self) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+        """One frame of torch stepping, with exactly one trip back to the host.
+
+        The obvious version pulls each step's spikes off the device as they happen. On
+        CUDA that is forty synchronisations per frame, and the card ends up slower than
+        a CPU for a reason that has nothing to do with the card. Instead the frame's
+        spike vectors are kept on the device, stacked, and reduced to ``(step, neuron)``
+        pairs in one kernel, which is one transfer of a few kilobytes.
+        """
+        import torch
+
         assert self.config is not None
         step_ms = self.config.dt_ms
         steps = int(round(BIOLOGICAL_MS_PER_FRAME / step_ms))
-        indices: list[npt.NDArray[np.int64]] = []
-        times: list[npt.NDArray[np.float64]] = []
-        for step in range(steps):
-            spiked = self._model.step()
-            fired = spiked.nonzero().flatten().cpu().numpy().astype(np.int64)
-            if fired.size:
-                indices.append(fired)
-                times.append(np.full(fired.size, self.sim_time_ms + step * step_ms, dtype=float))
-        if not indices:
+        # steps x neurons of bool: 40 KB for a 1,000-neuron network, and the whole brain
+        # is never stepped in the loop anyway.
+        fired = torch.stack([self._model.step() for _ in range(steps)])
+        pairs = fired.nonzero().cpu().numpy()
+        if not pairs.size:
             return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
-        return np.concatenate(indices), np.concatenate(times)
+        step_index = pairs[:, 0].astype(np.float64)
+        neurons = pairs[:, 1].astype(np.int64)
+        return neurons, self.sim_time_ms + step_index * step_ms
 
 
 def measure_in_loop(

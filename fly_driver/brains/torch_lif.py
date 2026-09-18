@@ -20,6 +20,13 @@ exponentially. `AGENTS.md` §11 lists LIF numerics as a thing that fails silentl
 looks plausible; a fast backend simulating subtly different neurons is the worst
 outcome this ticket could produce, so the agreement with Brian2 is a test.
 
+**The step loop never touches the host.** Everything below runs 40 times per environment
+frame, and on CUDA a single ``.item()``, ``bool(...)`` or ``.cpu()`` inside that loop
+drains the pipeline -- so 40 steps become 40 stalls and the card comes back slower than a
+laptop. The spike total therefore accumulates in a device tensor and is only read when
+somebody asks for it, and the spike reset is branch-free rather than guarded by
+``if spiked.any()``. :class:`TorchLIF` is where that rule is kept; a test asserts it.
+
 ``torch`` is imported lazily. ``import fly_driver.brains`` works without it.
 """
 
@@ -34,7 +41,7 @@ import numpy as np
 from fly_driver.brains.benchmark import BenchmarkConfig, NeuronParameters, ThroughputResult
 from fly_driver.brains.connectome import Subnetwork
 
-__all__ = ["TorchLIF", "TorchNotInstalledError", "measure"]
+__all__ = ["TorchLIF", "TorchNotInstalledError", "describe_device", "measure", "resolve_device"]
 
 BACKEND_NAME = "torch"
 
@@ -55,6 +62,51 @@ def _import_torch() -> Any:
     return torch
 
 
+def resolve_device(device: str | None = None) -> Any:
+    """Pick the device to run on, and refuse to quietly do something else.
+
+    ``None`` prefers CUDA when it is there and falls back to the CPU when it is not,
+    which is the right default for a laptop and for CI. But asking for ``"cuda"``
+    explicitly and silently getting the CPU is the failure Brian2's codegen fallback
+    already taught us on this ticket: the run succeeds, the number looks plausible, and
+    it is measuring the wrong hardware. So an explicit request that cannot be met raises.
+
+    Args:
+        device: ``"cpu"``, ``"cuda"``, ``"cuda:1"``, or ``None`` to choose.
+
+    Raises:
+        TorchNotInstalledError: If torch is not installed.
+        RuntimeError: If CUDA was asked for by name and is not available.
+    """
+    torch = _import_torch()
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        build = getattr(torch.version, "cuda", None)
+        detail = (
+            f"this is a CPU-only build of torch {torch.__version__}"
+            if build is None
+            else f"torch {torch.__version__} was built for CUDA {build} but no device is visible"
+        )
+        raise RuntimeError(
+            f"device={device!r} was requested but torch.cuda.is_available() is False -- "
+            f"{detail}. Install the CUDA wheel (see requirements-brain.txt) rather than "
+            "letting this fall back to the CPU, or pass device='cpu' on purpose."
+        )
+    return resolved
+
+
+def describe_device(device: Any) -> str:
+    """A human name for a device, so a recorded timing says which machine made it."""
+    torch = _import_torch()
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        return "cpu"
+    index = resolved.index if resolved.index is not None else torch.cuda.current_device()
+    return f"cuda:{index} {torch.cuda.get_device_name(index)}"
+
+
 class TorchLIF:
     """A whole-brain LIF network as sparse matrix products.
 
@@ -62,11 +114,14 @@ class TorchLIF:
         subnetwork: Neurons and weighted synapses.
         parameters: Neuron constants. Defaults to the paper's.
         config: Supplies ``dt_ms`` and the Poisson drive.
-        device: ``"cpu"``, ``"cuda"``, or ``None`` to prefer CUDA when present.
+        device: ``"cpu"``, ``"cuda"``, or ``None`` to prefer CUDA when present. An
+            explicit ``"cuda"`` with no CUDA available raises rather than silently
+            running on the CPU; see :func:`resolve_device`.
         seed: Seeds the Poisson drive, so a run is reproducible.
 
     Raises:
         TorchNotInstalledError: If torch is not installed.
+        RuntimeError: If ``device='cuda'`` was asked for and CUDA is unavailable.
     """
 
     def __init__(
@@ -82,9 +137,7 @@ class TorchLIF:
         self.subnetwork = subnetwork
         self.parameters = parameters or NeuronParameters()
         self.config = config or BenchmarkConfig()
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = torch.device(device)
+        self.device = resolve_device(device)
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
 
         step_ms = self.config.dt_ms
@@ -110,9 +163,14 @@ class TorchLIF:
         weights_mv = subnetwork.weight * self.parameters.synapse_weight_mv
         indices = torch.tensor(np.stack([subnetwork.post, subnetwork.pre]), dtype=torch.int64)
         values = torch.tensor(weights_mv, dtype=torch.float32)
-        self._weights = torch.sparse_coo_tensor(
-            indices, values, (num_neurons, num_neurons), device=self.device
-        ).coalesce()
+        # CSR, not COO. This matrix is built once and multiplied forty times a frame for
+        # the rest of the run, which is exactly what CSR -- and cuSPARSE behind it -- is
+        # for. COO has to sort or hash its coordinates on every product.
+        self._weights = (
+            torch.sparse_coo_tensor(indices, values, (num_neurons, num_neurons), device=self.device)
+            .coalesce()
+            .to_sparse_csr()
+        )
 
         self._num_driven = int(num_neurons * self.config.drive_fraction)
         self._drive_probability = self.config.drive_rate_hz * step_ms / 1000.0
@@ -129,7 +187,15 @@ class TorchLIF:
         self._refractory = torch.zeros(num_neurons, dtype=torch.int32, device=self.device)
         self._delay_line = [zeros.clone() for _ in range(self.delay_steps)]
         self._delay_index = 0
-        self.spike_count = 0
+        # The running total lives on the device. Reading it costs a sync, so the loop
+        # never does; only the `spike_count` property does, when something asks.
+        self._spike_total = torch.zeros((), dtype=torch.int64, device=self.device)
+        # Reused every step so the hot loop stops allocating.
+        self._resting = torch.full_like(zeros, self.parameters.resting_mv)
+        self._zeros = zeros.clone()
+        self._refractory_full = torch.full(
+            (num_neurons,), self.refractory_steps, dtype=torch.int32, device=self.device
+        )
 
     def step(self) -> Any:
         """Advance one timestep. Returns the boolean spike vector."""
@@ -154,17 +220,14 @@ class TorchLIF:
         self._refractory = torch.clamp(self._refractory - 1, min=0)
 
         spiked = (self._v > self.parameters.threshold_mv) & active
-        if bool(spiked.any()):
-            self._v = torch.where(
-                spiked, torch.full_like(self._v, self.parameters.resting_mv), self._v
-            )
-            self._g = torch.where(spiked, torch.zeros_like(self._g), self._g)
-            self._refractory = torch.where(
-                spiked,
-                torch.full_like(self._refractory, self.refractory_steps),
-                self._refractory,
-            )
-            self.spike_count += int(spiked.sum())
+        # Branch-free on purpose. `if spiked.any()` reads a device tensor on the host,
+        # which on CUDA stalls the pipeline once per step -- forty times a frame -- and
+        # the branch only ever saved work on the CPU anyway. Where nothing spiked these
+        # three are no-ops.
+        self._v = torch.where(spiked, self._resting, self._v)
+        self._g = torch.where(spiked, self._zeros, self._g)
+        self._refractory = torch.where(spiked, self._refractory_full, self._refractory)
+        self._spike_total += spiked.sum()
 
         # Synaptic transmission, delayed: this step's spikes land delay_steps later.
         transmitted = torch.sparse.mm(self._weights, spiked.to(torch.float32).unsqueeze(1)).squeeze(
@@ -179,6 +242,16 @@ class TorchLIF:
         self._delay_line[self._delay_index] = transmitted
         self._delay_index = (self._delay_index + 1) % self.delay_steps
         return spiked
+
+    @property
+    def spike_count(self) -> int:
+        """Spikes since the last :meth:`reset`.
+
+        Reading this copies one number off the device, so it costs a synchronisation.
+        That is fine per frame and ruinous per step, which is why the step loop
+        accumulates into :attr:`_spike_total` and never looks at it.
+        """
+        return int(self._spike_total.item())
 
     def run(self, biological_ms: float) -> int:
         """Integrate for a stretch of biology. Returns the spikes counted."""

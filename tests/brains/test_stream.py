@@ -60,59 +60,59 @@ class TestStreaming:
             SpikeStream(_network(), backend="neuromorphic-toaster")
 
     @pytest.mark.parametrize("backend", ["torch"])
-    def test_each_frame_advances_exactly_one_frame_of_biology(self, backend):
+    def test_each_frame_advances_exactly_one_frame_of_biology(self, backend, device):
         """The stream is the loop's clock. If a frame is not 20 ms the eye beside it
         integrates at a dt it was never fitted at, and nothing downstream can tell."""
-        stream = SpikeStream(_network(), backend, config=BenchmarkConfig(dt_ms=0.5))
+        stream = SpikeStream(_network(), backend, config=BenchmarkConfig(dt_ms=0.5), device=device)
         before = stream.sim_time_ms
         stream.advance()
         assert stream.sim_time_ms - before == pytest.approx(BIOLOGICAL_MS_PER_FRAME)
         assert stream.frames == 1
 
-    def test_spikes_are_reported_once_and_not_re_reported(self):
+    def test_spikes_are_reported_once_and_not_re_reported(self, device):
         """The Brian2 monitor accumulates for the session, so a stream that forgot its
         cursor would re-report every earlier spike and the rate would climb forever."""
-        stream = SpikeStream(_network(), "torch", config=BenchmarkConfig(dt_ms=0.5))
+        stream = SpikeStream(_network(), "torch", config=BenchmarkConfig(dt_ms=0.5), device=device)
         stream.warm_up()
         rates = [stream.advance().rate_hz for _ in range(6)]
         assert max(rates) < 200.0, f"rates ran away: {rates}"
 
-    def test_spike_times_fall_inside_the_frame_they_came_from(self):
-        stream = SpikeStream(_network(), "torch", config=BenchmarkConfig(dt_ms=0.5))
+    def test_spike_times_fall_inside_the_frame_they_came_from(self, device):
+        stream = SpikeStream(_network(), "torch", config=BenchmarkConfig(dt_ms=0.5), device=device)
         start = stream.sim_time_ms
         activity = stream.advance()
         if activity.num_spikes:
             assert activity.spike_times_ms.min() >= start - 1e-9
             assert activity.spike_times_ms.max() < start + BIOLOGICAL_MS_PER_FRAME
 
-    def test_indices_stay_inside_the_network(self):
-        stream = SpikeStream(_network(), "torch", config=BenchmarkConfig(dt_ms=0.5))
+    def test_indices_stay_inside_the_network(self, device):
+        stream = SpikeStream(_network(), "torch", config=BenchmarkConfig(dt_ms=0.5), device=device)
         for _ in range(4):
             activity = stream.advance()
             if activity.num_spikes:
                 assert activity.neuron_indices.max() < stream.num_neurons
                 assert activity.neuron_indices.min() >= 0
 
-    def test_the_label_names_the_device_for_torch(self):
-        assert SpikeStream(_network(), "torch", device="cpu").label == "torch:cpu"
+    def test_the_label_names_the_device_for_torch(self, device):
+        assert SpikeStream(_network(), "torch", device=device).label == f"torch:{device}"
 
     def test_backends_is_the_list_the_error_message_promises(self):
         assert set(BACKENDS) == {"brian2", "torch"}
 
 
 class TestMeasureInLoop:
-    def test_it_reports_a_per_frame_cost_and_says_how_it_was_measured(self):
+    def test_it_reports_a_per_frame_cost_and_says_how_it_was_measured(self, device):
         config = BenchmarkConfig(dt_ms=0.5, biological_ms=100.0)
-        result = measure_in_loop(_network(), "torch", config=config, device="cpu")
+        result = measure_in_loop(_network(), "torch", config=config, device=device)
         assert result.wall_ms_per_frame > 0.0
         assert result.num_neurons == 200
         assert "stepped" in result.notes, "the method has to travel with the number"
 
-    def test_the_build_is_excluded_from_the_frame_cost(self):
+    def test_the_build_is_excluded_from_the_frame_cost(self, device):
         """Constructing the network is paid once per episode at most. Folding it into
         the per-frame number would make a small network look worse than a large one."""
         config = BenchmarkConfig(dt_ms=0.5, biological_ms=100.0)
-        result = measure_in_loop(_network(), "torch", config=config, device="cpu")
+        result = measure_in_loop(_network(), "torch", config=config, device=device)
         assert result.build_s >= 0.0
         assert result.wall_ms_per_frame < 1000.0 * result.build_s + 1000.0
 
