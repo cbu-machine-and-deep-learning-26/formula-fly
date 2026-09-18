@@ -292,9 +292,13 @@ behaves. Sweeping `dt` at a fixed 3,000 neurons says why:
 | 1.00 | 20 | 7.5 | 0.375 |
 | 2.00 | 10 | 3.9 | 0.390 |
 
-**0.375 ms per step, independent of `dt` and of network size.** A step issues roughly ten
-kernels, so that is ~37 µs of launch latency each — the card is doing almost no work and
-almost all waiting. The crossover where the GPU finally beats the CPU is around 20,000
+**0.375 ms per step, independent of `dt` and of network size.** Profiling a step at 3,000
+neurons says exactly where it goes: **30 kernel launches, 42.8 µs of actual GPU work, 375 µs
+of wall clock.** The card is busy **11%** of the time and spends the other 89% waiting to be
+told what to do next, at roughly 11 µs of launch latency per kernel.
+
+The GPU is not slow at this. Its 42.8 µs of compute beats the CPU's ~142 µs per step by more
+than three times. It just pays 330 µs to get asked. The crossover where the GPU finally beats the CPU is around 20,000
 neurons, which is far above anything that goes in the loop.
 
 Two consequences worth being clear about:
