@@ -50,3 +50,11 @@ MUJOCO_LOG.TXT
 # never commit it. See RUNNING.md.
 ks_ferrari_sf70h/
 *.acd
+
+# FlyWire connectome data (GH-23). 370 MB of parquet from the Shiu et al. repository:
+# download it once, keep it outside the tree, and point FLY_CONNECTOME_DIR at it.
+# See docs/running-the-stacks.md.
+Connectivity_*.parquet
+Completeness_*.csv
+*_connectivity_*_final.parquet
+*_completeness_*_final.csv

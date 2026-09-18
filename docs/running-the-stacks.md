@@ -171,6 +171,108 @@ when flyvis, the checkpoint, or (for the webcam) OpenCV is missing, so base CI
 does not need any of them. The hex map drawing is shared with
 `scripts/flyvis_eye_demo.py` via `fly_driver.analysis.hex_plots`.
 
+## Shiu whole-brain model (the brain)
+
+A leaky integrate-and-fire network over the whole FlyWire connectome, from Shiu et
+al. It is the base for the whole-brain driver (#23) and the lesion map (#30).
+
+Upstream is [philshiu/Drosophila_brain_model](https://github.com/philshiu/Drosophila_brain_model).
+It ships the connectivity for FlyWire **v630** (the paper's) and **v783** (current
+public) as parquet, plus `model.py` and two notebooks. `fly_driver.brains` wraps it:
+`connectome.py` loads and subsets the data, `shiu.py` builds the published model in
+Brian2, and `torch_lif.py` is the PyTorch implementation #23 asked us to compare
+against.
+
+```bash
+# its own environment: brian2 is not part of the base install
+python3.11 -m venv .venv-brain
+.venv-brain/bin/python -m pip install brian2 "numpy<2" "pandas<3" pyarrow torch
+.venv-brain/bin/python -m pip install -e .
+
+# the data is a 370 MB download and is NOT in this repository
+git clone --depth 1 https://github.com/philshiu/Drosophila_brain_model.git ~/flywire
+export FLY_CONNECTOME_DIR="$HOME/flywire"
+
+.venv-brain/bin/python scripts/brain_throughput.py
+```
+
+`v630` is 127,400 neurons and 14,687,178 synapses. The script exits `0` with a
+`SKIP:` line when the data or the simulators are missing, so base CI needs neither.
+
+### Check the code generation target before quoting a Brian2 number
+
+Brian2's `codegen.target` defaults to `auto`: it compiles through Cython when a C++
+compiler is present and falls back to plain numpy when one is not, with a warning and
+nothing else. **The fallback is the number you will accidentally report.** The
+benchmark prints the live target, and `fly_driver.brains.shiu.codegen_target()`
+returns it. Every figure below is on the **numpy** target, so every figure below is a
+floor — Brian2 can only go faster than this.
+
+### What it costs
+
+One environment step is 20 ms of simulated time at 50 Hz. The eye takes 7.9 ms of
+that and the practice track 2.2 ms, leaving the brain about **10 ms of wall clock to
+simulate 20 ms of biology**. Measured on the Windows box (Python 3.11, brian2 2.9.0,
+numpy target, CPU torch, 1% of neurons driven at 150 Hz, `dt = 0.5 ms`):
+
+| neurons | synapses | Brian2 | PyTorch (CPU) |
+|---|---|---|---|
+| 3,000 | 7,944 | 12.9 ms | 9.9 ms |
+| 5,000 | 19,544 | 14.1 ms | 19.3 ms |
+| 10,000 | 86,842 | 15.5 ms | 66.6 ms |
+| 127,400 (whole brain) | 14,687,178 | 101.5 ms | 10,768 ms |
+
+Firing rates stayed between 1.0 and 4.9 Hz per neuron throughout, and the two
+backends agreed on them to within a few percent, so nothing above is fast because it
+stopped spiking.
+
+Two things decide the backend, and neither is the headline number:
+
+**Brian2's cost tracks activity; the PyTorch version's tracks size.** At 10,000
+neurons and `dt = 0.5 ms`, driving 0%, 1% and 10% of the network costs Brian2 17.1,
+23.7 and 27.1 ms — and PyTorch 75.7, 74.4 and 78.0 ms, flat. Brian2 propagates from
+the neurons that actually spiked; the PyTorch implementation multiplies the whole
+sparse weight matrix every step whether anything fired or not. A fly brain fires at a
+few Hz, so roughly one neuron in a thousand spikes per step, and event-driven
+propagation does about a thousand times less work. That gap widens with every neuron
+added, which is why PyTorch wins at 3,000 and loses by 100× at 127,400.
+
+**`dt` is a bigger lever than either backend.** The work is proportional to steps per
+frame, so `dt = 0.1 ms` means 200 integration steps for every 20 ms of biology and
+`dt = 0.5 ms` means 40. On the whole brain that is 257.3 ms against 101.5 ms. It is
+not free: the synaptic delay is 1.8 ms and the refractory period 2.2 ms, so a coarse
+`dt` quantises both. Measured firing rates hold across `0.1–0.5 ms` and start to drift
+upward by `1.0 ms` (+24% on the whole brain), so **0.5 ms is the floor** and 1.0 ms is
+not defensible.
+
+### The decision
+
+**Brian2, on a central-complex-scale subnetwork, at `dt = 0.5 ms`.** The whole brain
+stays offline — 101.5 ms per frame is 10× over budget before a compiler is involved,
+and it is the wrong shape for the loop regardless. The lesion sweep (#30) runs the
+whole brain offline, where 10× real time is irrelevant.
+
+The PyTorch implementation stays in the tree as the measurement that produced this,
+and as the fallback if the in-loop subnetwork ever has to grow past what Brian2's
+Python overhead allows. It is not the in-loop backend.
+
+Two honest limits on that comparison. The PyTorch version is dense-in-time by
+construction; an event-driven one would close the gap at scale, but it would be
+reimplementing Brian2's scheduler to catch up with Brian2. And it was measured on CPU
+only — a GPU sparse product would help the whole-brain case and would not help the
+central-complex case, where 40 kernel launches per frame dominate, so it does not
+change the decision.
+
+### Cell types are a separate download
+
+The upstream repository ships `root_id`s and a completeness flag, and nothing else —
+the only named set is `sez_neurons.pickle`, for the paper's own subesophageal-zone
+work. Naming the central complex and the descending neurons needs FlyWire's
+annotation table from [Codex](https://codex.flywire.ai/), which is not bundled here.
+Until that lands, `load_subnetwork(num_neurons=N)` takes a contiguous slice, which
+measures the budget just as well: the cost of a timestep depends on how many neurons
+and synapses are integrated, not which ones.
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64
@@ -218,6 +320,22 @@ and was not tested for this ticket.
 
 ## Known failures and sharp edges
 
+- The Shiu model's pins (Python 3.10, `brian2==2.5.1`) do not install on Python 3.11:
+  there is no cp311 wheel for 2.5.1, so pip builds from source, which needs both
+  `setuptools` and a C++ compiler. brian2 2.9.0 installs cleanly and is what the
+  numbers above used.
+- brian2 2.9.0 does not work with numpy 2.x — it calls `np.ndarray.ptp`, removed in
+  NumPy 2.0, and fails at `import brian2`. Pin `numpy<2`.
+- Brian2 silently downgrades from Cython to numpy without a C++ compiler. Check
+  `codegen_target()` before believing a timing.
+- Brian2 raises rather than running when a `Synapses` object was never connected, so a
+  deliberately disconnected control network needs the object left out entirely.
+- `unless refractory` pauses Brian2's differential equations but does **not** gate the
+  synaptic pathway: `on_pre` keeps delivering during the refractory period. Any
+  reimplementation that holds arriving input as well will silently drop most of the
+  synapses in a busy network.
+- The FlyWire connectivity is 370 MB and must never be committed. `.gitignore` covers
+  the file names; point `FLY_CONNECTOME_DIR` at a clone outside the tree.
 - Python 3.13+ cannot install flyvis 1.2.0 and pip reports
   `ERROR: No matching distribution found for flyvis==1.2.0`.
 - `flyvis` from PyPI pulls platform-specific PyTorch/CUDA wheels. Do not assume
