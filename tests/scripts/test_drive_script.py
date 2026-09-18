@@ -8,7 +8,9 @@ constants that were wrong in both directions.
 The current design is simple enough to pin exactly. A held keyboard key is all or nothing.
 A gamepad axis is analog. Both produce the same ControlVector, and the car never knows
 which. The keyboard mapping is tested by setting the held-key set directly, so nothing here
-needs pynput or a real controller.
+needs pynput or a real controller. ``--agent`` is tested without launching the viewer or
+importing flyvis: the constant policy is a real ``Policy``, and loading the script must
+not import torch.
 
 Loaded by path because ``scripts/`` is not an installed package.
 """
@@ -17,11 +19,14 @@ from __future__ import annotations
 
 import importlib.util
 import random
+import subprocess
+import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from fly_driver.interface import ControlVector
+from fly_driver.interface import FEATURE_DTYPE, ControlVector, Policy
 
 _SPEC = importlib.util.spec_from_file_location(
     "drive_script", Path(__file__).resolve().parents[2] / "scripts" / "drive.py"
@@ -224,3 +229,108 @@ class TestBothPathsSatisfyTheContract:
             axes = [rng.uniform(-1.0, 1.0) for _ in range(6)]
             control = drive.gamepad_axes_to_control(axes)
             ControlVector(steer=control.steer, throttle=control.throttle, brake=control.brake)
+
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+class TestConstantPolicy:
+    def test_satisfies_policy_protocol(self):
+        policy = drive.ConstantPolicy(8, throttle=0.4)
+        assert isinstance(policy, Policy)
+
+    def test_holds_the_control_and_ignores_features(self):
+        policy = drive.ConstantPolicy(4, steer=-0.25, throttle=0.4, brake=0.1)
+        features = np.ones(4, dtype=FEATURE_DTYPE)
+        assert policy.act(features) == ControlVector(steer=-0.25, throttle=0.4, brake=0.1)
+        assert policy.act(np.zeros(4, dtype=FEATURE_DTYPE)) == policy.act(features)
+
+    def test_rejects_empty_features(self):
+        with pytest.raises(ValueError, match="feature_dim"):
+            drive.ConstantPolicy(0)
+
+    def test_rejects_out_of_range_throttle(self):
+        with pytest.raises(ValueError, match="throttle"):
+            drive.ConstantPolicy(1, throttle=1.5)
+
+    def test_plugs_into_direct_drive_without_flyvis(self):
+        """The watch policy is a real Policy; DirectDriveAgent must accept it."""
+        from fly_driver.drivers import DirectDriveAgent
+
+        class FakeEye:
+            frame_shape = (2, 2, 3)
+            feature_dim = 4
+
+            def reset(self) -> None:
+                return None
+
+            def encode(self, frame: object) -> np.ndarray:
+                del frame
+                return np.zeros(4, dtype=FEATURE_DTYPE)
+
+        agent = DirectDriveAgent(FakeEye(), drive.ConstantPolicy(4, throttle=0.4))
+        frame = np.zeros((2, 2, 3), dtype=np.uint8)
+        agent.reset()
+        assert agent.act(frame) == ControlVector(steer=0.0, throttle=0.4, brake=0.0)
+
+
+class TestAgentFlag:
+    def test_default_is_human_keyboard(self):
+        args = drive.parse_args([])
+        assert args.agent is False
+        assert args.input == "auto"
+        assert args.throttle == 0.4
+
+    def test_agent_defaults_to_straight_throttle(self):
+        args = drive.parse_args(["--agent"])
+        assert args.agent is True
+        assert args.throttle == pytest.approx(0.4)
+
+    def test_agent_rejects_input_flag(self):
+        with pytest.raises(SystemExit):
+            drive.parse_args(["--agent", "--input", "keyboard"])
+
+    def test_agent_rejects_raw_steer(self):
+        with pytest.raises(SystemExit):
+            drive.parse_args(["--agent", "--raw-steer"])
+
+    def test_throttle_must_be_in_range(self):
+        with pytest.raises(SystemExit):
+            drive.parse_args(["--agent", "--throttle", "1.2"])
+
+    def test_help_mentions_agent(self):
+        result = subprocess.run(
+            [sys.executable, str(REPO / "scripts" / "drive.py"), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=REPO,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "--agent" in result.stdout
+        assert "DirectDriveAgent" in result.stdout
+
+
+def test_drive_import_stays_flyvis_free() -> None:
+    """Loading the script must not import torch/flyvis; only --agent does."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.util, sys\n"
+            "from pathlib import Path\n"
+            "spec = importlib.util.spec_from_file_location(\n"
+            "    'drive_script', Path('scripts/drive.py')\n"
+            ")\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "assert 'flyvis' not in sys.modules\n"
+            "assert 'fly_driver.eyes.flyvis_eye' not in sys.modules\n"
+            "assert 'torch' not in sys.modules\n",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
