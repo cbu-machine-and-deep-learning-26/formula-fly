@@ -35,9 +35,7 @@ def test_brightness_scales_and_clips() -> None:
     """Half brightness halves the frame; large scales saturate at 255."""
     clean, _ = DummyTrackEnv().reset(seed=0)
     dark, _ = Brightness(DummyTrackEnv(), scale=0.5).reset(seed=0)
-    np.testing.assert_array_equal(
-        dark, (clean.astype(np.float64) * 0.5).astype(np.uint8)
-    )
+    np.testing.assert_array_equal(dark, (clean.astype(np.float64) * 0.5).astype(np.uint8))
     bright, _ = Brightness(DummyTrackEnv(), scale=10.0).reset(seed=0)
     assert bright.max() == 255 and bright.dtype == np.uint8
 
@@ -50,9 +48,7 @@ def test_action_delay_shifts_actions_by_n_steps() -> None:
         def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
             return np.zeros((2, 2, 3), dtype=np.uint8), {}
 
-        def step(
-            self, action: np.ndarray
-        ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
             seen.append(np.asarray(action, dtype=np.float32))
             return np.zeros((2, 2, 3), dtype=np.uint8), 0.0, False, False, {}
 

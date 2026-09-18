@@ -46,9 +46,7 @@ class ConstantAgent:
         brake: Brake in ``[0, 1]``.
     """
 
-    def __init__(
-        self, steer: float = 0.0, throttle: float = 0.0, brake: float = 0.0
-    ) -> None:
+    def __init__(self, steer: float = 0.0, throttle: float = 0.0, brake: float = 0.0) -> None:
         self._action = np.array([steer, throttle, brake], dtype=np.float32)
 
     def act(self, observation: object) -> Action:

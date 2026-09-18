@@ -43,12 +43,12 @@ def _make_env() -> DummyTrackEnv:
 def test_same_config_gives_identical_actions_and_metrics() -> None:
     """Same seed, same actions: the determinism guarantee for CI (AGENTS.md §11)."""
     first = evaluate(_make_env, RandomAgent(), PERTURBED)
-    np.random.seed(999)  # global RNG state must not leak into the protocol
+    np.random.seed(999)  # noqa: NPY002  global RNG must not leak into the protocol
     second = evaluate(_make_env, RandomAgent(seed=12345), PERTURBED)
 
     assert first.actions_digest == second.actions_digest
     assert len(first.episodes) == 3 * PERTURBED.episodes
-    for left, right in zip(first.episodes, second.episodes):
+    for left, right in zip(first.episodes, second.episodes, strict=True):
         np.testing.assert_array_equal(left.actions, right.actions)
         assert left.to_row() == right.to_row()
     assert first.to_dict() == second.to_dict()
@@ -57,9 +57,7 @@ def test_same_config_gives_identical_actions_and_metrics() -> None:
 def test_different_seeds_change_the_actions() -> None:
     """The seed is actually wired through to the agent and env."""
     baseline = evaluate(_make_env, RandomAgent(), PERTURBED)
-    other = evaluate(
-        _make_env, RandomAgent(), EvalConfig(episodes=2, seed=12, max_steps=60)
-    )
+    other = evaluate(_make_env, RandomAgent(), EvalConfig(episodes=2, seed=12, max_steps=60))
     assert baseline.actions_digest != other.actions_digest
     assert baseline.episodes[0].seed == 11 and other.episodes[0].seed == 12
 
@@ -98,9 +96,7 @@ def test_lap_time_falls_back_to_steps_over_frame_rate() -> None:
         def render(self) -> None:
             return None
 
-    report = evaluate(
-        FlagOnlyEnv, ConstantAgent(), EvalConfig(episodes=1, frame_rate_hz=50.0)
-    )
+    report = evaluate(FlagOnlyEnv, ConstantAgent(), EvalConfig(episodes=1, frame_rate_hz=50.0))
     assert report.episodes[0].lap_time_s == pytest.approx(0.5)
 
 
@@ -108,17 +104,11 @@ def test_robustness_conditions_share_seeds_and_report_ratio() -> None:
     """Perturbed conditions reuse the clean seeds and report return ratios."""
     report = evaluate(_make_env, CentreSteeringAgent(), PERTURBED)
 
-    assert [item.condition for item in report.conditions] == list(
-        PERTURBED.condition_labels
-    )
+    assert [item.condition for item in report.conditions] == list(PERTURBED.condition_labels)
     clean, noise, delay = report.conditions
     assert clean.return_ratio_to_clean is None
-    assert noise.return_ratio_to_clean == pytest.approx(
-        noise.mean_return / clean.mean_return
-    )
-    assert delay.return_ratio_to_clean == pytest.approx(
-        delay.mean_return / clean.mean_return
-    )
+    assert noise.return_ratio_to_clean == pytest.approx(noise.mean_return / clean.mean_return)
+    assert delay.return_ratio_to_clean == pytest.approx(delay.mean_return / clean.mean_return)
     seeds_by_condition = {
         label: [e.seed for e in report.episodes if e.condition == label]
         for label in PERTURBED.condition_labels
@@ -148,9 +138,7 @@ def test_agent_output_is_validated() -> None:
 
 def test_outputs_are_written(tmp_path: Path) -> None:
     """``episodes.csv`` and ``summary.json`` land in ``output_dir``."""
-    config = EvalConfig(
-        episodes=2, seed=1, max_steps=20, output_dir=str(tmp_path / "run")
-    )
+    config = EvalConfig(episodes=2, seed=1, max_steps=20, output_dir=str(tmp_path / "run"))
     report = evaluate(_make_env, ConstantAgent(), config)
 
     with (tmp_path / "run" / "episodes.csv").open(encoding="utf-8") as handle:
@@ -164,9 +152,7 @@ def test_outputs_are_written(tmp_path: Path) -> None:
         "total_return",
         "lap_time_s",
     } <= set(rows[0])
-    summary = json.loads(
-        (tmp_path / "run" / "summary.json").read_text(encoding="utf-8")
-    )
+    summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary["actions_digest"] == report.actions_digest
     assert summary["config"] == config.to_dict()
     assert summary["conditions"][0]["condition"] == CLEAN_CONDITION
@@ -207,9 +193,7 @@ def test_video_is_written_when_a_backend_exists(tmp_path: Path) -> None:
     report = evaluate(_make_env, ConstantAgent(), config)
 
     assert report.video_backend == "imageio"
-    recorded = [
-        episode for episode in report.episodes if episode.video_path is not None
-    ]
+    recorded = [episode for episode in report.episodes if episode.video_path is not None]
     assert [episode.episode for episode in recorded] == [0, 0]
     for episode in recorded:
         path = Path(episode.video_path)

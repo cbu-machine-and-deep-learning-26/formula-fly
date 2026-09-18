@@ -21,12 +21,8 @@ def test_reset_and_step_follow_the_frame_contract() -> None:
     assert frame.shape == DEFAULT_DUMMY_FRAME_SHAPE
     assert frame.dtype == np.uint8
     assert info["lap_complete"] is False and info["lap_time"] is None
-    next_frame, reward, terminated, truncated, info = env.step(
-        np.zeros(3, dtype=np.float32)
-    )
-    assert (
-        next_frame.shape == DEFAULT_DUMMY_FRAME_SHAPE and next_frame.dtype == np.uint8
-    )
+    next_frame, reward, terminated, truncated, info = env.step(np.zeros(3, dtype=np.float32))
+    assert next_frame.shape == DEFAULT_DUMMY_FRAME_SHAPE and next_frame.dtype == np.uint8
     assert isinstance(reward, float)
     assert (terminated, truncated) == (False, False)
     assert env.render().shape == DEFAULT_DUMMY_FRAME_SHAPE
@@ -36,8 +32,7 @@ def test_same_seed_and_actions_give_identical_episodes() -> None:
     """The wind is the only randomness and it is seeded."""
     rng = np.random.default_rng(3)
     actions = [
-        np.array([rng.uniform(-1, 1), rng.uniform(0, 1), 0.0], dtype=np.float32)
-        for _ in range(50)
+        np.array([rng.uniform(-1, 1), rng.uniform(0, 1), 0.0], dtype=np.float32) for _ in range(50)
     ]
 
     def rollout(seed: int) -> list[tuple[bytes, float]]:
@@ -97,10 +92,7 @@ def test_proportional_steering_completes_a_lap() -> None:
 
     assert info["lap_complete"] is True
     assert info["off_track"] is False
-    assert (
-        isinstance(info["lap_time"], float)
-        and 0 < info["lap_time"] < env.max_steps * env.dt
-    )
+    assert isinstance(info["lap_time"], float) and 0 < info["lap_time"] < env.max_steps * env.dt
 
 
 def test_passive_steering_leaves_the_track() -> None:

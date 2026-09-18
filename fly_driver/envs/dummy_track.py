@@ -71,13 +71,9 @@ class DummyTrackEnv:
         wind_std: float = 0.02,
     ) -> None:
         if len(frame_shape) != 3 or frame_shape[2] != 3:
-            raise ValueError(
-                f"frame_shape must be (height, width, 3), got {frame_shape}"
-            )
+            raise ValueError(f"frame_shape must be (height, width, 3), got {frame_shape}")
         if track_length <= 0 or half_width <= 0 or max_steps < 1 or frame_rate_hz <= 0:
-            raise ValueError(
-                "track_length, half_width, frame_rate_hz > 0; max_steps >= 1"
-            )
+            raise ValueError("track_length, half_width, frame_rate_hz > 0; max_steps >= 1")
         self.frame_shape = tuple(int(size) for size in frame_shape)
         self.track_length = float(track_length)
         self.half_width = float(half_width)
@@ -143,18 +139,14 @@ class DummyTrackEnv:
             raise RuntimeError("call reset() before step(); the episode has ended")
         steer, throttle, brake = self._validate_action(action)
 
-        accel = (
-            throttle * self.max_accel - brake * self.max_brake - self.drag * self._speed
-        )
+        accel = throttle * self.max_accel - brake * self.max_brake - self.drag * self._speed
         self._speed = float(np.clip(self._speed + accel * self.dt, 0.0, self.max_speed))
         bend = self.curvature * np.sin(
             2.0 * np.pi * self.turns * self._progress / self.track_length
         )
         wind = float(self._rng.normal(0.0, self.wind_std)) if self.wind_std > 0 else 0.0
         self._lateral = float(
-            self._lateral
-            + (steer * self.steer_gain - bend) * self._speed * self.dt
-            + wind
+            self._lateral + (steer * self.steer_gain - bend) * self._speed * self.dt + wind
         )
         progress_delta = self._speed * self.dt
         self._progress += progress_delta
@@ -193,7 +185,7 @@ class DummyTrackEnv:
             raise ValueError(f"action must have shape (3,), got {values.shape}")
         if not np.all(np.isfinite(values)):
             raise ValueError(f"action must be finite, got {values.tolist()}")
-        for name, value, (low, high) in zip(_ACTION_NAMES, values, _ACTION_BOUNDS):
+        for name, value, (low, high) in zip(_ACTION_NAMES, values, _ACTION_BOUNDS, strict=True):
             if not low <= value <= high:
                 raise ValueError(
                     f"{name}={float(value)!r} is outside [{low}, {high}]; "

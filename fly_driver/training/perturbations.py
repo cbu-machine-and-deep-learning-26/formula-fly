@@ -38,9 +38,7 @@ class _Wrapper:
     def __init__(self, env: Any) -> None:
         self.env = env
 
-    def reset(
-        self, *, seed: int | None = None, **kwargs: Any
-    ) -> tuple[Any, dict[str, Any]]:
+    def reset(self, *, seed: int | None = None, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
         return self.env.reset(seed=seed, **kwargs)
 
     def step(self, action: object) -> tuple[Any, float, bool, bool, dict[str, Any]]:
@@ -70,9 +68,7 @@ class ObservationNoise(_Wrapper):
         self.std = float(std)
         self._rng = np.random.default_rng()
 
-    def reset(
-        self, *, seed: int | None = None, **kwargs: Any
-    ) -> tuple[Any, dict[str, Any]]:
+    def reset(self, *, seed: int | None = None, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
         self._rng = np.random.default_rng(None if seed is None else seed + 1_000_003)
         observation, info = self.env.reset(seed=seed, **kwargs)
         return self._perturb(observation), info
@@ -101,9 +97,7 @@ class Brightness(_Wrapper):
             raise ValueError("scale must be non-negative")
         self.scale = float(scale)
 
-    def reset(
-        self, *, seed: int | None = None, **kwargs: Any
-    ) -> tuple[Any, dict[str, Any]]:
+    def reset(self, *, seed: int | None = None, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
         observation, info = self.env.reset(seed=seed, **kwargs)
         return self._perturb(observation), info
 
@@ -131,9 +125,7 @@ class ActionDelay(_Wrapper):
         self.steps = int(steps)
         self._queue: deque[object] = deque()
 
-    def reset(
-        self, *, seed: int | None = None, **kwargs: Any
-    ) -> tuple[Any, dict[str, Any]]:
+    def reset(self, *, seed: int | None = None, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
         neutral = np.zeros(3, dtype=np.float32)
         self._queue = deque(neutral.copy() for _ in range(self.steps))
         return self.env.reset(seed=seed, **kwargs)
@@ -184,9 +176,7 @@ class PerturbationSpec:
     @property
     def label(self) -> str:
         """Condition label such as ``observation_noise(std=0.1)``."""
-        inner = ", ".join(
-            f"{key}={value}" for key, value in sorted(self.params.items())
-        )
+        inner = ", ".join(f"{key}={value}" for key, value in sorted(self.params.items()))
         return f"{self.name}({inner})"
 
 

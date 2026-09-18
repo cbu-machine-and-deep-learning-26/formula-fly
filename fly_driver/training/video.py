@@ -68,9 +68,7 @@ def available_backend(preferred: str = "auto") -> str | None:
     elif preferred in VIDEO_BACKENDS:
         candidates = (preferred,)
     else:
-        raise ValueError(
-            f"unknown video backend {preferred!r}; choose from {VIDEO_BACKENDS}"
-        )
+        raise ValueError(f"unknown video backend {preferred!r}; choose from {VIDEO_BACKENDS}")
     for name in candidates:
         loader = _import_imageio if name == "imageio" else _import_cv2
         if loader() is not None:
@@ -115,9 +113,7 @@ class _Cv2Writer:
         if self._writer is None:
             height, width, _ = frame.shape
             fourcc = self._cv2.VideoWriter_fourcc(*"mp4v")
-            self._writer = self._cv2.VideoWriter(
-                str(self.path), fourcc, self._fps, (width, height)
-            )
+            self._writer = self._cv2.VideoWriter(str(self.path), fourcc, self._fps, (width, height))
         self._writer.write(self._cv2.cvtColor(frame, self._cv2.COLOR_RGB2BGR))
 
     def close(self) -> None:

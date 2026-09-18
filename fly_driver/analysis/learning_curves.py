@@ -60,9 +60,7 @@ def learning_curve(
     points = []
     for report in reports:
         value = getattr(report.summary(condition), metric)
-        points.append(
-            (report.config.env_steps, np.nan if value is None else float(value))
-        )
+        points.append((report.config.env_steps, np.nan if value is None else float(value)))
     points.sort(key=lambda point: point[0])
     steps = np.array([point[0] for point in points], dtype=np.int64)
     values = np.array([point[1] for point in points], dtype=np.float64)

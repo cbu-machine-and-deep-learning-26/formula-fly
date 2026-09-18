@@ -19,9 +19,7 @@ from fly_driver.envs import DummyTrackEnv
 from fly_driver.policies import ConstantAgent, RandomAgent
 from fly_driver.training import EvalConfig, EvalReport, evaluate
 
-DEFAULT_CONFIG = (
-    Path(__file__).resolve().parents[1] / "fly_driver/configs/eval_default.yaml"
-)
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "fly_driver/configs/eval_default.yaml"
 
 ENVS: dict[str, Callable[[], DummyTrackEnv]] = {"dummy": DummyTrackEnv}
 AGENTS: dict[str, Callable[[], object]] = {
@@ -48,14 +46,8 @@ def _print_report(report: EvalReport) -> None:
     header = f"{'condition':<32}{'return':>10}{'laps':>7}{'lap_time_s':>12}{'ratio':>8}"
     print(header)
     for item in report.conditions:
-        lap_time = (
-            "-" if item.mean_lap_time_s is None else f"{item.mean_lap_time_s:.2f}"
-        )
-        ratio = (
-            "-"
-            if item.return_ratio_to_clean is None
-            else f"{item.return_ratio_to_clean:.2f}"
-        )
+        lap_time = "-" if item.mean_lap_time_s is None else f"{item.mean_lap_time_s:.2f}"
+        ratio = "-" if item.return_ratio_to_clean is None else f"{item.return_ratio_to_clean:.2f}"
         print(
             f"{item.condition:<32}{item.mean_return:>10.2f}"
             f"{item.lap_completion_rate:>7.2f}{lap_time:>12}{ratio:>8}"

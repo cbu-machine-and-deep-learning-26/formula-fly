@@ -123,16 +123,12 @@ class EvalConfig:
         if self.env_steps < 0:
             raise ValueError("env_steps must be non-negative")
         specs = tuple(
-            spec
-            if isinstance(spec, PerturbationSpec)
-            else PerturbationSpec.from_dict(spec)
+            spec if isinstance(spec, PerturbationSpec) else PerturbationSpec.from_dict(spec)
             for spec in self.perturbations
         )
         labels = [spec.label for spec in specs]
         if len(set(labels)) != len(labels) or CLEAN_CONDITION in labels:
-            raise ValueError(
-                f"perturbation labels must be unique and not 'clean': {labels}"
-            )
+            raise ValueError(f"perturbation labels must be unique and not 'clean': {labels}")
         object.__setattr__(self, "perturbations", specs)
 
     @classmethod
@@ -141,9 +137,7 @@ class EvalConfig:
         known = {item.name for item in fields(cls)}
         unknown = sorted(set(data) - known)
         if unknown:
-            raise ValueError(
-                f"unknown eval config keys {unknown}; known: {sorted(known)}"
-            )
+            raise ValueError(f"unknown eval config keys {unknown}; known: {sorted(known)}")
         values = dict(data)
         if "perturbations" in values:
             values["perturbations"] = tuple(values["perturbations"] or ())
@@ -155,9 +149,7 @@ class EvalConfig:
         try:
             import yaml
         except ImportError as error:
-            raise ImportError(
-                "EvalConfig.from_yaml needs PyYAML: pip install pyyaml"
-            ) from error
+            raise ImportError("EvalConfig.from_yaml needs PyYAML: pip install pyyaml") from error
         with Path(path).open(encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         if not isinstance(data, Mapping):
@@ -228,9 +220,7 @@ class EvalReport:
         for item in self.conditions:
             if item.condition == condition:
                 return item
-        raise KeyError(
-            f"no condition {condition!r}; have {[c.condition for c in self.conditions]}"
-        )
+        raise KeyError(f"no condition {condition!r}; have {[c.condition for c in self.conditions]}")
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe summary (episode rows without actions)."""
@@ -265,7 +255,7 @@ def seed_everything(seed: int) -> None:
     and a numpy-only run should not pay for it.
     """
     random.seed(seed)
-    np.random.seed(seed)
+    np.random.seed(seed)  # noqa: NPY002  load-bearing for determinism protocol
     torch = sys.modules.get("torch")
     if torch is not None:
         torch.manual_seed(seed)
@@ -329,16 +319,8 @@ def _run_episode(
         if info.get("lap_complete"):
             lap_complete = True
             reported = info.get("lap_time")
-            lap_time = (
-                float(reported)
-                if reported is not None
-                else steps / config.frame_rate_hz
-            )
-        if (
-            config.max_steps is not None
-            and steps >= config.max_steps
-            and not terminated
-        ):
+            lap_time = float(reported) if reported is not None else steps / config.frame_rate_hz
+        if config.max_steps is not None and steps >= config.max_steps and not terminated:
             truncated = True
 
     stacked = np.stack(actions) if actions else np.zeros((0, 3), dtype=np.float32)
@@ -387,9 +369,7 @@ def _digest(records: Sequence[EpisodeRecord]) -> str:
     return hasher.hexdigest()
 
 
-def evaluate(
-    make_env: Callable[[], Env], agent: Agent, config: EvalConfig
-) -> EvalReport:
+def evaluate(make_env: Callable[[], Env], agent: Agent, config: EvalConfig) -> EvalReport:
     """Run the evaluation protocol and optionally write its outputs.
 
     Args:
@@ -418,9 +398,7 @@ def evaluate(
                 writer: VideoWriter | None = None
                 if video_wanted and episode < config.video_episodes:
                     path = video_dir / f"{_slug(label)}_ep{episode:03d}.mp4"
-                    writer = open_video(
-                        path, config.frame_rate_hz, config.video_backend
-                    )
+                    writer = open_video(path, config.frame_rate_hz, config.video_backend)
                     if writer is None:
                         video_wanted = False
                     else:
