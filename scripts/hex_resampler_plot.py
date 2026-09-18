@@ -88,7 +88,7 @@ def _plot_hex(axes: plt.Axes, values: np.ndarray) -> PatchCollection:
             radius=HEX_CIRCUMRADIUS,
             orientation=np.pi / 6,
         )
-        for x_position, y_position in zip(x_positions, y_positions)
+        for x_position, y_position in zip(x_positions, y_positions, strict=True)
     ]
     # Face-colored edges hide anti-aliasing seams between adjacent hexagons.
     collection = PatchCollection(patches, cmap="gray", edgecolor="face", linewidth=0.3)
@@ -121,9 +121,7 @@ def save_figure(output: Path, dpi: int) -> Path:
     gray = frame_to_gray(frame)
     hex_values = HexResampler().frame(frame)[0, 0, 0].numpy()
 
-    figure, (source_axes, hex_axes) = plt.subplots(
-        1, 2, figsize=(10, 4.6), layout="constrained"
-    )
+    figure, (source_axes, hex_axes) = plt.subplots(1, 2, figsize=(10, 4.6), layout="constrained")
     _plot_source(source_axes, gray)
     collection = _plot_hex(hex_axes, hex_values)
     figure.colorbar(collection, ax=hex_axes, label="luminance", shrink=0.7)

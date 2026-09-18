@@ -41,9 +41,7 @@ def test_pretrained_t4_t5_direction_selectivity() -> None:
     if not checkpoint_dir.is_dir():
         pytest.skip("run `flyvis download-pretrained` to enable this gate")
 
-    sequences = torch.stack(
-        [_create_grating_sequence(direction) for direction in DIRECTIONS]
-    )
+    sequences = torch.stack([_create_grating_sequence(direction) for direction in DIRECTIONS])
     assert sequences.shape == (
         len(DIRECTIONS),
         PRESTIMULUS_FRAMES + DRIFT_FRAMES,

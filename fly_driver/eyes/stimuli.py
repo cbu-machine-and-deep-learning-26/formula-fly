@@ -153,6 +153,4 @@ def moving_edge_frames(
     sweep = np.where(is_bright, 255, 0).astype(np.uint8)
     hold = np.repeat(sweep[-1:], hold_frames, axis=0)
     baseline = grey_frames(prestimulus_frames, frame_shape=frame_shape)
-    return np.concatenate(
-        [baseline, _rgb_from_luminance(sweep), _rgb_from_luminance(hold)], axis=0
-    )
+    return np.concatenate([baseline, _rgb_from_luminance(sweep), _rgb_from_luminance(hold)], axis=0)

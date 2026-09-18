@@ -46,17 +46,13 @@ def measure_q95_amplitudes(readout_response: ReadoutResponse) -> Amplitudes:
         amplitudes[direction] = {}
         for readout in MOTION_READOUTS:
             response = np.asarray(readout_response(direction, readout))
-            amplitudes[direction][readout] = float(
-                np.quantile(response[response_start:], 0.95)
-            )
+            amplitudes[direction][readout] = float(np.quantile(response[response_start:], 0.95))
     return amplitudes
 
 
 def combine_t4_t5(amplitudes: Amplitudes, direction: str, subtype: str) -> float:
     """Average ON-pathway T4 and OFF-pathway T5 amplitudes for one subtype."""
-    return (
-        amplitudes[direction][f"T4{subtype}"] + amplitudes[direction][f"T5{subtype}"]
-    ) / 2
+    return (amplitudes[direction][f"T4{subtype}"] + amplitudes[direction][f"T5{subtype}"]) / 2
 
 
 def assert_t4_t5_direction_selectivity(amplitudes: Amplitudes) -> None:

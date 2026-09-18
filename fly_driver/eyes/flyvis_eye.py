@@ -190,9 +190,7 @@ class FlyvisEye:
         self.available_readouts = available
         unknown = [name for name in readouts if name not in available]
         if unknown:
-            raise ValueError(
-                f"unknown readout cell types {unknown}; choose from {list(available)}"
-            )
+            raise ValueError(f"unknown readout cell types {unknown}; choose from {list(available)}")
         self.readout_names = tuple(readouts)
         layer_index = self.network.connectome.nodes.layer_index
         self._readout_indices = torch.as_tensor(
@@ -303,9 +301,7 @@ class FlyvisEye:
             )
         if frames.shape[0] == 0:
             raise ValueError("frames must contain at least one frame")
-        gray = np.stack(
-            [frame_to_gray(frame, expected_shape=self.frame_shape) for frame in frames]
-        )
+        gray = np.stack([frame_to_gray(frame, expected_shape=self.frame_shape) for frame in frames])
         retina = self.resampler(torch.from_numpy(gray)[None])
         if reset:
             self.reset()
