@@ -8,6 +8,12 @@ including everything this repo's automation can do -- it crashes with
 other variable removed. Nothing to route around; run it yourself::
 
     ./.venv-flybody/bin/mjpython scripts/drive_fly_live.py
+    ./.venv-flybody/bin/mjpython scripts/drive_fly_live.py --input keyboard
+
+Default is the scripted autopilot weave. ``--input keyboard`` puts your held arrow keys
+(same as `scripts/drive.py`) in as the *intent*; the fly's body still turns that into
+whatever the cockpit actually reads, same as it does the autopilot's intent -- your input
+does not bypass the body, it goes through it.
 
 ESC/SPACE/BACKSPACE/[/] are the viewer's own bindings, same as `scripts/drive.py`.
 Close the window or Ctrl-C to stop.
@@ -26,6 +32,7 @@ be a frame or two stale.
 
 from __future__ import annotations
 
+import argparse
 import atexit
 import subprocess
 import sys
@@ -59,6 +66,17 @@ def _read_latest_control() -> ControlVector:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--input",
+        choices=("scripted", "keyboard"),
+        default="scripted",
+        help="scripted: autopilot weave. keyboard: your arrow keys -- needs Accessibility "
+        "permission granted to your terminal app first (System Settings > Privacy & "
+        "Security > Accessibility), or held keys are silently never seen",
+    )
+    args = parser.parse_args()
+
     try:
         import mujoco.viewer as _  # noqa: F401 -- fails clearly here, not deep in launch_passive
     except ImportError:
@@ -71,6 +89,8 @@ def main() -> int:
             str(Path(__file__).resolve().parent / "_drive_fly_body_stream.py"),
             "--out",
             str(CONTROL_FILE),
+            "--input",
+            args.input,
         ]
     )
     atexit.register(body_process.terminate)
