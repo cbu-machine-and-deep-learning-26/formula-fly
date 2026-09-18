@@ -27,6 +27,17 @@ python -m venv .venv
 
 Lap times land in [lap_times.md](lap_times.md).
 
+## Train it
+
+```bash
+python scripts/train.py --seed 0      # frozen flyvis eye + PPO head on the practice track
+```
+
+One YAML file is one condition (eye type, brain, frozen or fine-tuned, seeds 0, 1 and 2);
+every run writes per-term rewards to CSV, and W&B is opt-in.
+**[docs/training.md](docs/training.md)** has the config reference, the outputs and which
+virtualenv to run it from.
+
 ## Pipeline
 
 ```
@@ -68,7 +79,7 @@ stretch goal, and shares the practice track's circuit geometry.
 | Car (science) | MuJoCo practice track — our own, built from the Silverstone centerline |
 | Physics | [MuJoCo](https://github.com/google-deepmind/mujoco) (Google DeepMind, Apache 2.0) |
 | Track geometry | [TUMFTM racetrack-database](https://github.com/TUMFTM/racetrack-database) (LGPL-3.0) |
-| Learning | PyTorch, PPO |
+| Learning | PyTorch, PPO (CleanRL-style, `fly_driver/training/ppo.py`) |
 
 We use **FlyWire**, not MaleCNS: flyvis and the Shiu whole-brain model are built
 on FlyWire.
