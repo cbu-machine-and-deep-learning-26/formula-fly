@@ -30,6 +30,10 @@ from fly_driver.brains.torch_lif import (  # noqa: E402
 
 PARAMETERS = NeuronParameters()
 
+# `membrane_mv` hands back the live device tensor on purpose -- copying it to the host
+# would cost a synchronisation, which is the thing this backend was rewritten to avoid.
+# So a test that wants numbers asks for them explicitly with `.cpu()`.
+
 
 def _pair(weight: float, device: str = "cpu", dt_ms: float = 0.5) -> TorchLIF:
     """Two neurons, one synapse, no Poisson drive."""
@@ -55,7 +59,7 @@ class TestTheDynamicsAreTheOnesOnPaper:
         would show up here as a slow slide and nowhere else."""
         model = _pair(0.0, device)
         model.run(200.0)
-        assert model.membrane_mv.numpy() == pytest.approx(PARAMETERS.resting_mv)
+        assert model.membrane_mv.cpu().numpy() == pytest.approx(PARAMETERS.resting_mv)
 
     def test_the_membrane_follows_the_closed_form(self, device):
         """Brian2 integrates this model exactly (`method="linear"`). Forward Euler
@@ -138,7 +142,7 @@ class TestStability:
         network = _random_network(500, 5_000)
         model = TorchLIF(network, PARAMETERS, BenchmarkConfig(dt_ms=0.5), device=device)
         spikes = model.run(2_000.0)  # two seconds of biology
-        membrane = model.membrane_mv.numpy()
+        membrane = model.membrane_mv.cpu().numpy()
         assert np.all(np.isfinite(membrane)), "membrane potential went non-finite"
         assert membrane.min() > -500.0, "runaway inhibition"
         assert membrane.max() <= PARAMETERS.threshold_mv + 1e-3, "above threshold"
@@ -162,7 +166,7 @@ class TestStability:
         model.run(100.0)
         model.reset()
         assert model.spike_count == 0
-        assert model.membrane_mv.numpy() == pytest.approx(PARAMETERS.resting_mv)
+        assert model.membrane_mv.cpu().numpy() == pytest.approx(PARAMETERS.resting_mv)
 
 
 class TestItAgreesWithBrian2:

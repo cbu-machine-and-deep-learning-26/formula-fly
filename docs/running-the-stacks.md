@@ -260,76 +260,79 @@ over, and is advanced again. *Stepped* is `measure_in_loop()`; *batched* is
 divide. Mixing them up is the easiest mistake here, and for Brian2 they differ by an order
 of magnitude.
 
-Windows box (RTX 4060 Ti, CPU-only torch build), Python 3.11, brian2 2.9.0 on the numpy
-target, 1% of neurons driven at 150 Hz, `dt = 0.5 ms`:
+One machine, both devices — 12-core AMD (Zen 4), RTX 4060 Ti, driver 616.56, Windows,
+Python 3.11, torch 2.11.0+cu128, brian2 2.9.0 on the numpy target, 1% of neurons driven at
+150 Hz, `dt = 0.5 ms`, stepped:
 
-| neurons | synapses | Brian2 batched | Brian2 **stepped** | torch CPU **stepped** |
+| neurons | synapses | Brian2 | torch **CPU** | torch **CUDA** |
 |---|---|---|---|---|
-| 1,000 | 1,105 | 18.3 ms | 35.9 ms | **4.5 ms** |
-| 3,000 | 7,944 | 19.5 ms | 53.3 ms | **5.6 ms** |
-| 5,000 | 19,544 | 5.8 ms | 56.2 ms | **6.2 ms** |
-| 10,000 | 86,842 | 7.8 ms | 58.6 ms | **8.7 ms** |
-| 20,000 | 370,563 | — | — | 16.7 ms |
-| 127,400 (whole brain) | 14,687,178 | 101.5 ms | — | — |
+| 1,000 | 1,105 | 35.9 ms | **5.0 ms** | 16.3 ms |
+| 3,000 | 7,944 | 53.3 ms | **5.7 ms** | 15.0 ms |
+| 5,000 | 19,544 | 56.2 ms | **7.1 ms** | — |
+| 10,000 | 86,842 | 58.6 ms | **9.5 ms** | 17.3 ms |
+| 20,000 | 370,563 | — | 17.4 ms | **15.8 ms** |
+| 50,000 | 2,284,882 | — | 47.6 ms | **14.5 ms** |
 
-Firing rates stayed between 1.0 and 4.9 Hz per neuron throughout and the two backends
-agreed on them, so nothing above is fast because it stopped spiking.
+CPU figures are the median of three runs; they are stable to about ±0.5 ms at 3,000 and to
+0.1 ms at 10,000. Firing rates held at 1.0–2.1 Hz per neuron across every row, so nothing
+here is fast because it stopped spiking. **Do not measure the two devices concurrently** —
+an early CPU sweep taken while the GPU tests were running read 10.9 ms at 10,000 against a
+true 9.5 ms.
 
-**The torch numbers are ~9x better than they were**, and the reason is worth knowing. The
-first version built its weight matrix as sparse COO and called `bool(spiked.any())` and
-`int(spiked.sum())` inside the step loop. Those were written off as free on a CPU and were
-not: at 10,000 neurons the same measurement was 77.7 ms before and is 8.7 ms now. Switching
-to CSR and removing the per-step host reads was done to make the GPU path honest, and it
-moved the CPU by an order of magnitude on the way past.
+### The GPU is launch-bound, and that is the whole story
 
-**Brian2 charges a fixed 33–52 ms per `run()` call, independent of network size.** It
-re-prepares the network every call. Batched over 1,000 ms that is invisible; stepped 20 ms
-at a time it is the entire cost.
+The CUDA column is flat at ~15–17 ms whatever the network size, which is not how compute
+behaves. Sweeping `dt` at a fixed 3,000 neurons says why:
 
-**The two backends have opposite scaling.** Brian2 propagates from the neurons that
-actually spiked, so its cost tracks *activity*: driving 0%, 1% and 10% of a 10,000-neuron
-network costs 17.1, 23.7 and 27.1 ms. The torch version multiplies the whole sparse weight
-matrix every step whether anything fired or not, so its cost tracks *size*.
+| dt (ms) | steps per frame | CUDA ms/frame | **ms per step** |
+|---|---|---|---|
+| 0.10 | 200 | 74.3 | 0.372 |
+| 0.25 | 80 | 29.8 | 0.373 |
+| 0.50 | 40 | 15.0 | 0.375 |
+| 1.00 | 20 | 7.5 | 0.375 |
+| 2.00 | 10 | 3.9 | 0.390 |
 
-**`dt` is a bigger lever than either backend**, since work is proportional to steps per
-frame: 0.1 ms is 200 steps per frame, 0.5 ms is 40. It is not free — the synaptic delay is
-1.8 ms and the refractory period 2.2 ms — so measured rates hold from 0.1 to 0.5 ms and
-drift upward by 1.0 ms (+24% on the whole brain). **0.5 ms is the floor**, and 1.0 ms is
-not defensible.
+**0.375 ms per step, independent of `dt` and of network size.** A step issues roughly ten
+kernels, so that is ~37 µs of launch latency each — the card is doing almost no work and
+almost all waiting. The crossover where the GPU finally beats the CPU is around 20,000
+neurons, which is far above anything that goes in the loop.
+
+Two consequences worth being clear about:
+
+- **A faster card will not fix this.** Kernel launch latency is driver- and CPU-side, not
+  silicon, so a 4090 has the same floor. It will win bigger above the crossover, where the
+  sparse product actually dominates, and it will not move the small-network case.
+- **The two things that would fix it** are CUDA graphs — capturing a frame's ~400 launches
+  into one replay — and Linux, whose launch latency is several times lower than Windows's
+  WDDM path. Neither has been tried. If the lab's 4090s run Linux, that alone is worth
+  re-measuring for.
 
 ### The decision
 
-**PyTorch in the loop. Brian2 offline. The in-loop network fits about 10,000 neurons at
-`dt = 0.5 ms` on this machine's CPU** — which covers a central complex plus descending
-neurons (~4,300) with room to spare, and is the finding that makes RQ2 reachable with a
-real circuit rather than a toy one.
+**PyTorch on the CPU in the loop. Brian2 offline. CUDA only above ~20,000 neurons, which
+is not the in-loop regime.**
 
-Nothing fits on Brian2 when stepped, at any size, because the per-call setup dominates.
-Brian2 stays the backend for everything that is not in the loop: the lesion sweep (#30),
+The in-loop network fits about **10,000 neurons at `dt = 0.5 ms`** (9.5 ms against a 9.9 ms
+budget), and a central complex plus descending neurons — roughly 4,300 — costs about 7 ms
+with room to spare. That is the finding that makes RQ2 reachable with a real circuit.
+
+Nothing fits on Brian2 when stepped, at any size, because its fixed 33–52 ms of per-`run()`
+setup dominates. Brian2 keeps everything that is not in the loop: the lesion sweep (#30),
 parameter searches, anything that can be handed a second of biology at a time. It is
 5.8–7.8 ms per frame batched at these sizes and it is the published model, so offline
 results stay directly comparable with the paper.
-
-**Still to measure: CUDA.** Everything above is CPU. The GPU path is written and tested as
-far as a machine without a card allows, and the lab's 4090s are where the comparison gets
-made — `--device cpu cuda`, both on one machine. A GPU pays a fixed cost per kernel launch
-(~10 kernels × 40 steps per frame) regardless of network size, so the expectation is a
-wash at small sizes and a large win above ~10,000 neurons, where the sparse product starts
-to dominate. That is a prediction, not a measurement, and this section gets rewritten when
-it is one.
 
 Three honest limits:
 
 - Every Brian2 figure is on the **uncompiled numpy target**, because this box has no C++
   compiler. The compiled target would speed up per-step work, but what disqualifies Brian2
-  in the loop is per-*call* setup, so it probably does not move the decision. Untested; the
-  Linux CI runner has a compiler and could settle it for free.
+  in the loop is per-*call* setup, so it probably does not move the decision. Untested.
 - Brian2 integrates in float64 and the torch LIF in float32. That is a real difference
   between "the same model", and it is why the cross-backend checks use tolerances and
   firing rates rather than exact spike trains.
 - The torch version is dense-in-time by construction. An event-driven one would scale like
-  Brian2 and win everywhere — but it would be reimplementing Brian2's scheduler to catch
-  up with Brian2.
+  Brian2 and win everywhere — but it would be reimplementing Brian2's scheduler to catch up
+  with Brian2.
 
 ### Cell types are a separate download
 
@@ -388,6 +391,14 @@ and was not tested for this ticket.
 
 ## Known failures and sharp edges
 
+- CUDA is **slower than the CPU** for anything under ~20,000 neurons here, and it is not
+  the card's fault: at 0.375 ms per step it is pure kernel-launch latency. Do not read a
+  GPU row as "the GPU is bad at this" without checking the per-step figure first.
+- `torch.cuda.set_sync_debug_mode("error")` passes through `TorchLIF.step`, so cuSPARSE
+  does not synchronise internally for this workload. That was not obvious in advance.
+- A test that calls `.numpy()` on a tensor from `TorchLIF.membrane_mv` fails on CUDA and
+  passes on the CPU. The property hands back the live device tensor deliberately — copying
+  it would cost the synchronisation the backend exists to avoid — so tests ask with `.cpu()`.
 - `pip install torch` gives you the **CPU build**. The CUDA wheel needs
   `--index-url https://download.pytorch.org/whl/cu128` (or cu126/cu130), and installing it
   second will not fix an environment that already has the CPU build — uninstall first.
