@@ -268,6 +268,8 @@ class PracticeTrack:
 
         self._lap = LapTimer(self.centerline)
         self._renderer: mujoco.Renderer | None = None
+        self._rgb_buffer: np.ndarray | None = None
+        self._eye_camera: mujoco.MjvCamera | None = None
         self._closed = False
         self._done = True
         self._steps = 0
@@ -462,6 +464,8 @@ class PracticeTrack:
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+        self._rgb_buffer = None
+        self._eye_camera = None
         self._closed = True
 
     def __enter__(self) -> PracticeTrack:
@@ -480,20 +484,41 @@ class PracticeTrack:
         position = self._data.xpos[self._body]
         return self.centerline.project(float(position[0]), float(position[1]))
 
-    def _render(self) -> Frame:
-        """One camera image, checked against the contract on the way out.
+    def _ensure_renderer(self) -> mujoco.Renderer:
+        """Build the offscreen renderer on first use.
 
-        Built on first use rather than in ``__init__`` so that a headless machine can still
-        construct the env, export the model and run every non-rendering test.
+        Deferred so a headless machine can still construct the env, export the model and
+        run every non-rendering test. ``mujoco.Renderer`` / ``MjrContext`` allocate the
+        *model's* offscreen FBO (``visual/global offwidth``), not the 96×96 viewport, and
+        they draw a 2048² shadow map when ``mjRND_SHADOW`` is on. That is a full extra
+        pass over every geom, which is why Mac ``env.step`` was ~12 ms for a camera the
+        eye reads at 96×96. Size the FBO to this camera and skip shadows here; the GLFW
+        viewer has its own context and still uses the MJCF light.
         """
         if self._renderer is None:
             height, width, _ = self._frame_shape
+            self._model.vis.global_.offwidth = width
+            self._model.vis.global_.offheight = height
             self._renderer = mujoco.Renderer(self._model, height, width)
-        self._renderer.update_scene(self._data, camera=self._camera)
-        # Copied so the caller owns the array: the renderer is free to reuse its buffer,
-        # and a policy comparing this frame with the last one would silently compare a
-        # frame with itself.
-        frame = np.array(self._renderer.render(), dtype=np.uint8, copy=True)
+            self._renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = False
+            self._rgb_buffer = np.empty((height, width, 3), dtype=np.uint8)
+            camera_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, self._camera)
+            eye_camera = mujoco.MjvCamera()
+            eye_camera.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            eye_camera.fixedcamid = camera_id
+            self._eye_camera = eye_camera
+        return self._renderer
+
+    def _render(self) -> Frame:
+        """One camera image, checked against the contract on the way out."""
+        renderer = self._ensure_renderer()
+        assert self._eye_camera is not None and self._rgb_buffer is not None
+        renderer.update_scene(self._data, camera=self._eye_camera)
+        # ``out=`` is the live buffer; copy so the caller owns the array. The renderer
+        # (and the next step) reuse that buffer, and a policy comparing this frame with
+        # the last one would otherwise compare a frame with itself.
+        renderer.render(out=self._rgb_buffer)
+        frame = self._rgb_buffer.copy()
         # No silent resize: a frame that quietly changed size would land on the hex
         # resampler's fixed 721-column lattice and corrupt the retinal geometry rather
         # than merely look wrong.

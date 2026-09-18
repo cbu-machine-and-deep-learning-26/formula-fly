@@ -223,9 +223,13 @@ Two constants in `fly_driver/interface.py` hold the agreement:
 | `FRAME_SHAPE = (96, 96, 3)` | ours to change, as long as both sides read it from here |
 | `FRAME_RATE_HZ = 50.0` | **fixed.** One frame is one Euler step of flyvis; it raises below 50 Hz |
 
-Measured on this machine: the env runs about **400 steps/s** with rendering (≈2.5 ms/step,
-of which ≈1.5 ms is the render), against the eye's 7.9 ms per frame. So the optic lobe is
-the bottleneck, not the track, and one environment comfortably feeds one eye in real time.
+`PracticeTrack` renders only the fly-head camera, at `FRAME_SHAPE`, and skips the
+offscreen shadow pass (the GLFW viewer still has shadows). It also sizes MuJoCo's
+offscreen FBO to that camera rather than `SceneConfig`'s 1280² ceiling — `MjrContext`
+allocates the model buffer, not the 96×96 viewport, and a 2048² shadow map is a second
+full scene pass. Physics is still 10× 2 ms substeps per env step. Re-time on the Mac
+with the snippet in the GH-63 notes; a box that used to quote ≈2.5 ms/step was not
+the Mac, and the old path was paying for a buffer the eye never reads.
 
 ---
 
