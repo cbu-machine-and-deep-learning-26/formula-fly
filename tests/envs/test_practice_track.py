@@ -25,6 +25,7 @@ import pytest
 from fly_driver.envs.penalty import PenaltyWeights
 from fly_driver.envs.practice_track import PracticeTrack, ProgressReward
 from fly_driver.envs.scene import SceneConfig
+from fly_driver.envs.segment_log import SegmentLog
 from fly_driver.interface import FRAME_DTYPE, FRAME_RATE_HZ, FRAME_SHAPE, ControlVector
 
 Step = namedtuple("Step", "frame reward terminated truncated info")
@@ -941,3 +942,62 @@ class TestSegmentTiming:
             assert info["segment_dirty"] is False
         finally:
             env.close()
+
+
+@pytest.mark.render
+class TestTheRecordBookEndToEnd:
+    """The env publishes segment times, the document stores them. Each half is tested on
+    its own; this is the join, which is where a renamed key or a changed type would show.
+
+    Note what the car actually does here: the grid sits in T10, the last corner before the
+    line, so a car with no steering leaves the circuit within a couple of seconds and every
+    segment it completes is dirty. That makes this a good test of the refusal path and a
+    poor one for the writing path, so the writing path is driven from the same env values
+    with the flag flipped rather than from a lap nothing can drive yet.
+    """
+
+    def _run(self, log: SegmentLog, is_clean: bool | None = None) -> list:
+        env = PracticeTrack()
+        outcomes = []
+        try:
+            _started(env)
+            for _ in range(900):
+                info = _step(env, FLAT_OUT).info
+                if info["segment_complete"] is None:
+                    continue
+                outcomes.append(
+                    log.record(
+                        info["segment_complete"],
+                        info["segment_time"],
+                        is_clean=info["segment_clean"] if is_clean is None else is_clean,
+                        driver="test",
+                    )
+                )
+        finally:
+            env.close()
+        return outcomes
+
+    def test_the_env_and_the_document_agree_on_names_and_types(self, tmp_path):
+        log = SegmentLog(tmp_path / "lap_times.md")
+        outcomes = self._run(log)
+        assert outcomes, "no segment completed, so nothing was actually joined up"
+        assert all(outcome.seconds > 0.0 for outcome in outcomes)
+        assert all(outcome.name for outcome in outcomes)
+
+    def test_a_lap_the_car_cannot_keep_on_the_track_sets_no_records(self, tmp_path):
+        """Driving straight out of the last corner is not a lap, and must not fill the
+        record book with times for corners that were cut."""
+        log = SegmentLog(tmp_path / "lap_times.md")
+        outcomes = self._run(log)
+        assert not any(outcome.is_clean for outcome in outcomes), "expected an untidy run"
+        assert log.records() == {}
+
+    def test_the_same_values_are_written_when_the_run_is_clean(self, tmp_path):
+        """Same names and times straight out of info, only the flag differs -- so this
+        isolates the refusal above from a plumbing fault that would look identical."""
+        log = SegmentLog(tmp_path / "lap_times.md")
+        outcomes = self._run(log, is_clean=True)
+        assert outcomes
+        assert list(log.records()) == [outcome.name for outcome in outcomes]
+        assert all(log.best(outcome.name) > 0.0 for outcome in outcomes)
+        assert "## Best segments" in log.path.read_text(encoding="utf-8")

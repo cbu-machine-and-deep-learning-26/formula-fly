@@ -83,6 +83,10 @@ _MAP_START: Colour = (235, 235, 235)
 _FLY_BODY: Colour = (255, 82, 62)
 _FLY_WING: Colour = (198, 216, 246)
 _BEST: Colour = (255, 205, 90)
+#: Green for time gained, red for time lost. Separate names from the pedal colours they
+#: happen to match, because these mean something else and may want to diverge.
+_FASTER: Colour = (57, 197, 90)
+_SLOWER: Colour = (224, 59, 59)
 
 # Layout, in panel pixels with y down. One place, so the drawing code reads as geometry.
 _MARGIN = 10
@@ -105,7 +109,13 @@ _LAP_X = 10
 _LAP_ROWS = (176, 198, 220)
 _LAP_VALUE_X = 76
 _LAP_COUNT_X = 250
+#: The segment block shares the lap block's rows, in the gap between the lap count and the
+#: map. There is no vertical room for rows of its own: the panel is 244 px tall and the
+#: last lap row already ends at 234.
+_SEGMENT_X = 250
 MAP_RECT = (432, 8, 642, 236)  # x0, y0, x1, y1
+#: How wide the segment block may draw before it would run into the map.
+_SEGMENT_MAX_W = MAP_RECT[0] - 8 - _SEGMENT_X
 
 # 5x7 bitmap font: only what the panel prints. '#' is ink.
 _FONT: dict[str, tuple[str, ...]] = {
@@ -186,6 +196,15 @@ class Telemetry:
         lap_count: Laps completed this session.
         on_out_lap: True while the car is still driving up to the line for the first
             time, when there is no lap time to show yet.
+        penalty_s: Seconds this lap has earned by leaving the circuit, including an
+            excursion still in progress. Shown while it is being earned rather than at the
+            line, so a driver can see what a mistake is costing them during it.
+        segment: Name of the segment being driven, or ``None`` before the first update.
+        segment_elapsed: Seconds since entering it.
+        segment_delta: The last completed segment's time against its record. Negative is
+            faster. ``None`` when nothing has completed, or when there was no record to
+            compare against.
+        segment_is_best: Whether that last completed segment set a new record.
     """
 
     speed_mps: float
@@ -201,6 +220,11 @@ class Telemetry:
     lap_best: float | None = None
     lap_count: int = 0
     on_out_lap: bool = False
+    penalty_s: float = 0.0
+    segment: str | None = None
+    segment_elapsed: float = 0.0
+    segment_delta: float | None = None
+    segment_is_best: bool = False
 
 
 def rpm_fraction(rpm: float, limiter_rpm: float) -> float:
@@ -365,6 +389,61 @@ def _lap_text(seconds: float | None) -> str:
     return "--" if seconds is None else format_lap_time(seconds)
 
 
+def _fit(text: str, scale: int, max_width: int) -> str:
+    """Trim ``text`` from the right until it fits in ``max_width`` pixels.
+
+    The segment block draws into a fixed gap beside the lap times, and `_text` happily
+    writes past it and over the track map. Names are short today -- ``T4``, ``S11`` -- so
+    this never bites, which is exactly why it is enforced here rather than assumed.
+    """
+    while text and text_width(text, scale) > max_width:
+        text = text[:-1]
+    return text
+
+
+def delta_colour(delta: float | None, *, is_best: bool = False) -> Colour:
+    """Green for a gain, red for a loss, amber for a record.
+
+    A new best is amber rather than green so it reads as different from an ordinary
+    improvement -- it matches the BEST row, which is the thing it just changed.
+    """
+    if is_best:
+        return _BEST
+    if delta is None:
+        return _DIM
+    return _FASTER if delta < 0 else _SLOWER
+
+
+def delta_text(delta: float | None) -> str:
+    """A signed delta for the panel, or a dash when there is nothing to compare to."""
+    return "--" if delta is None else f"{delta:+.3f}"
+
+
+def _draw_segment(img: npt.NDArray[np.uint8], telemetry: Telemetry) -> None:
+    """The segment block: which one, how long so far, and how the last one went."""
+    if telemetry.segment is not None:
+        _text(
+            img,
+            _SEGMENT_X,
+            _LAP_ROWS[1],
+            _fit(f"{telemetry.segment} {telemetry.segment_elapsed:5.1f}", 2, _SEGMENT_MAX_W),
+            2,
+            _TEXT,
+        )
+    if telemetry.segment_delta is not None or telemetry.segment_is_best:
+        label = delta_text(telemetry.segment_delta)
+        if telemetry.segment_is_best:
+            label = f"{label} BEST" if telemetry.segment_delta is not None else "BEST"
+        _text(
+            img,
+            _SEGMENT_X,
+            _LAP_ROWS[2],
+            _fit(label, 2, _SEGMENT_MAX_W),
+            2,
+            delta_colour(telemetry.segment_delta, is_best=telemetry.segment_is_best),
+        )
+
+
 def render(
     telemetry: Telemetry,
     *,
@@ -455,7 +534,19 @@ def render(
     for y, (label, value, colour) in zip(_LAP_ROWS, rows, strict=True):
         _text(img, _LAP_X, y, label, 2, _DIM)
         _text(img, _LAP_VALUE_X, y, value, 2, colour)
-    _text(img, _LAP_COUNT_X, _LAP_ROWS[0], f"LAP {telemetry.lap_count}", 2, _DIM)
+    count_text = f"LAP {telemetry.lap_count}"
+    _text(img, _LAP_COUNT_X, _LAP_ROWS[0], count_text, 2, _DIM)
+    if telemetry.penalty_s > 0.0:
+        offset = text_width(count_text + " ", 2)
+        _text(
+            img,
+            _LAP_COUNT_X + offset,
+            _LAP_ROWS[0],
+            _fit(f"+{telemetry.penalty_s:.2f}", 2, _SEGMENT_MAX_W - offset),
+            2,
+            _SLOWER,
+        )
+    _draw_segment(img, telemetry)
 
     # The map, with the fly where the car is.
     if track is not None:
