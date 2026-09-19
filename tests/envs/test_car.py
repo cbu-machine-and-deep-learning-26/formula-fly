@@ -505,12 +505,18 @@ class TestMatchesSF70HSpecification:
     def test_rear_tyre_friction_is_still_in_the_published_slick_range(self):
         assert 1.5 <= CONFIG.wheel_friction_rear[0] <= 2.0
 
-    def test_the_axles_average_near_assetto_corsas_reference_grip(self):
-        """What actually pins the pair. AC gives DY_REF 1.88 front and rear and carries
-        the axle difference in load sensitivity, which MuJoCo cannot express -- so the
-        spread stands in for it and the average is the part that has to stay honest."""
+    def test_the_axles_average_within_reach_of_assetto_corsas_reference_grip(self):
+        """AC gives DY_REF 1.88 front and rear and carries the axle difference in load
+        sensitivity, which MuJoCo cannot express -- so the spread stands in for it and the
+        average is the part that has to stay honest.
+
+        This asserted equality with 1.88 until grip was raised a second time by request.
+        The pair now sits above AC rather than on it, so what is pinned is how far above:
+        close enough that the car is still recognisably the same one, and bounded so the
+        drift cannot continue unremarked. Every step up also costs 0-100 time against a
+        floor of 2.2 s -- see test_zero_to_100, which is the harder limit of the two."""
         average = (CONFIG.wheel_friction[0] + CONFIG.wheel_friction_rear[0]) / 2.0
-        assert average == pytest.approx(1.88, abs=0.03)
+        assert 1.88 <= average <= 1.88 * 1.05, f"{average:.3f} against AC's 1.88"
 
 
 class TestMassProperties:

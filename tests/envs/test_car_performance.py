@@ -189,7 +189,11 @@ class TestHandlingBalance:
             loose = measure_sideslip(bed, 60.0)["sideslip at 60 km/h (deg)"]
         finally:
             bed.dynamics = CarDynamics(bed.model, bed.car)
-        assert loose > 20.0, f"only {loose:.1f} degrees with the aid off"
+        # 20 when the limiter was first loosened; 15 now that on-track grip has been
+        # raised twice since, which takes sliding away whether the aid is on or not. The
+        # ratio in test_the_limiter_is_still_doing_the_larger_part is the part that has
+        # not moved, and is the better guard of the two if these keep drifting.
+        assert loose > 15.0, f"only {loose:.1f} degrees with the aid off"
 
     def test_the_rear_can_be_provoked(self, provoked):
         """The point of loosening the limiter to 0.20. At AC's 0.10 this input produced

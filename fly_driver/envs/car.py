@@ -275,14 +275,24 @@ class CarConfig:
             range at 1.9. Equal grip on both axles, which is what AC literally states,
             spins the car. Both are the same missing curve seen from different ends.
 
-            Both axles went up by 0.05 when Payton asked for more grip on the road,
-            and the pair is better aligned with Assetto Corsa for it, not worse: 1.85 and
-            1.9 average to 1.875 against AC's stated ``DY_REF`` of 1.88, where the
-            previous pair averaged 1.825. It does cost something at both ends. 0-100 km/h
-            goes 2.40 -> 2.32 s, further below the real car's 2.6 rather than closer to
-            it, and the car is measurably harder to provoke: sideslip under full lock and
-            full throttle at 60 km/h falls 10.6 -> 9.2 degrees, partly undoing the
-            traction-control change made in the same session.
+            Both axles have been raised twice, 0.05 each time, on Payton's asking for
+            more grip on the road. The first step landed the pair on Assetto Corsa's
+            number -- 1.85 and 1.9 average to 1.875 against AC's stated ``DY_REF`` of
+            1.88. The second passes it: 1.9 and 1.95 average to 1.925, about 2.4% above
+            AC. That is worth knowing rather than hiding, because everything else about
+            this car is fitted to AC.
+
+            The cost is measured and it accumulates in one direction. 0-100 km/h has gone
+            2.40 -> 2.32 -> 2.25 s across the two steps, further below the real car's 2.6
+            each time rather than closer to it, and the sanity bound is 2.2 -- so one more
+            step of this size breaks it. The launch is traction-limited, so rear grip buys
+            acceleration whether or not that is what was wanted.
+
+            It also keeps undoing the traction-control change made in the same session.
+            Sideslip under full lock and full throttle at 60 km/h went 1.9 degrees before
+            the limiter was loosened, 10.6 after, and is now 8.3. Grip and provokability
+            pull against each other; the limiter is the lever that does not cost lap time,
+            since 0-100 was flat at 2.40 s across its whole range.
 
             The rear sits 0.05 above the front rather than the 0.1 it had, moved
             deliberately back towards the spinning end. At the old spread the car could
@@ -347,8 +357,8 @@ class CarConfig:
     anti_roll_stiffness_front_n_m: float = 108_000.0
     anti_roll_stiffness_rear_n_m: float = 0.0
     max_actuator_torque_nm: float = 20_000.0
-    wheel_friction: tuple[float, float, float] = (1.85, 0.02, 0.001)
-    wheel_friction_rear: tuple[float, float, float] = (1.9, 0.02, 0.001)
+    wheel_friction: tuple[float, float, float] = (1.9, 0.02, 0.001)
+    wheel_friction_rear: tuple[float, float, float] = (1.95, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
     fly_mount_z_m: float = 0.17
     camera_height_above_mount_m: float = 0.45

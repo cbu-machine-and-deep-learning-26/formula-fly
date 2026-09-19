@@ -373,6 +373,19 @@ def main(argv: list[str] | None = None) -> int:
     last_delta: float | None = None
     last_was_best = False
 
+    def reanchor() -> None:
+        """Point everything that accumulates at the car's current pose and clock.
+
+        Shared by the track-limits restart and by the viewer's own BACKSPACE, so the two
+        cannot drift apart in what they remember to clear.
+        """
+        dynamics.reset()
+        penalty.reset()
+        surface.reset()
+        grid = centerline.project(float(data.xpos[car_body][0]), float(data.xpos[car_body][1]))
+        lap_timer.reset(grid.arclength, float(data.time))
+        segment_timer.reset(grid.arclength, float(data.time))
+
     data = mujoco.MjData(model)
     reset_to_start(model, data)
 
@@ -414,8 +427,21 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
             last_report = 0.0
+            last_sim_time = float(data.time)
             while viewer.is_running():
                 step_start = time.perf_counter()
+
+                # BACKSPACE is the viewer's own binding and it calls mj_resetData behind
+                # this loop's back, putting the simulation clock to zero without saying
+                # so. A clock that has gone backwards is the one signal that reaches us.
+                # Everything that accumulates has to come back with it, or the restarted
+                # lap opens owing seconds of penalty it never earned.
+                if float(data.time) < last_sim_time:
+                    reanchor()
+                    last_delta, last_was_best = None, False
+                    print()
+                    print("reset to the grid -- lap, segments and penalty cleared", flush=True)
+                last_sim_time = float(data.time)
 
                 speed = dynamics.speed_mps(data)
                 control = source.control(speed)
@@ -456,14 +482,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.track_limit > 0.0 and beyond > args.track_limit:
                     excursions += 1
                     reset_to_start(model, data)
-                    dynamics.reset()
-                    grid = centerline.project(
-                        float(data.xpos[car_body][0]), float(data.xpos[car_body][1])
-                    )
-                    lap_timer.reset(grid.arclength, float(data.time))
-                    segment_timer.reset(grid.arclength, float(data.time))
-                    penalty.reset()
-                    surface.reset()
+                    reanchor()
+                    last_sim_time = float(data.time)
                     print()
                     print(
                         f"off track: {beyond * 100:.0f}% of the car past the kerb "

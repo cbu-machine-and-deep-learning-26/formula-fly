@@ -224,3 +224,42 @@ class TestBothPathsSatisfyTheContract:
             axes = [rng.uniform(-1.0, 1.0) for _ in range(6)]
             control = drive.gamepad_axes_to_control(axes)
             ControlVector(steer=control.steer, throttle=control.throttle, brake=control.brake)
+
+
+class TestTheViewerResetIsDetectable:
+    """BACKSPACE is MuJoCo's own binding, not ours.
+
+    It calls ``mj_resetData`` behind the driving loop, which never sees the key. The only
+    signal that reaches us is the simulation clock going backwards, and everything the lap
+    has accumulated -- the clocks, the penalty, the per-wheel grip -- is cleared off the
+    back of it. If MuJoCo ever stopped zeroing the clock there, nothing would raise: the
+    car would jump to the grid still owing whatever penalty it had built up, and the next
+    lap would silently start dirty. So the assumption is pinned here rather than trusted.
+    """
+
+    def test_resetting_puts_the_clock_back_to_zero(self):
+        import mujoco
+
+        from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
+        from fly_driver.envs.centerline import Centerline
+        from fly_driver.envs.scene import SceneConfig
+
+        square = Centerline(
+            points=[(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)],
+            half_width_right=[6.0] * 4,
+            half_width_left=[6.0] * 4,
+        )
+        model = mujoco.MjModel.from_xml_string(
+            assemble_model_xml(square, SceneConfig(mesh_spacing_m=100.0), CarConfig())
+        )
+        data = mujoco.MjData(model)
+        dynamics = CarDynamics(model)
+        dynamics.step(ControlVector(steer=0.0, throttle=1.0, brake=0.0), data, 50)
+
+        ran_to = float(data.time)
+        assert ran_to > 0.0, "the clock never advanced, so the check proves nothing"
+
+        mujoco.mj_resetData(model, data)
+        mujoco.mj_forward(model, data)
+        assert float(data.time) == 0.0
+        assert float(data.time) < ran_to, "a reset is no longer detectable from the clock"
