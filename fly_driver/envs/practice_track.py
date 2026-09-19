@@ -93,6 +93,7 @@ from fly_driver.envs.lap import LapTimer
 from fly_driver.envs.penalty import OffTrackPenalty, PenaltyWeights
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segments import SegmentTimer, SegmentTiming, find_segments
+from fly_driver.envs.surface import SurfaceGrip
 from fly_driver.interface import (
     FRAME_RATE_HZ,
     FRAME_SHAPE,
@@ -261,7 +262,14 @@ class PracticeTrack:
         # Everything that moves the car goes through CarDynamics, because aerodynamics are
         # not in the MJCF -- MuJoCo knows nothing about wings -- and writing data.ctrl here
         # would give the fly a car with no downforce while the hand-driven one had some.
-        self._dynamics = CarDynamics(self._model, self.car)
+        self._surface = SurfaceGrip(
+            self._model,
+            self.centerline,
+            car=self.car,
+            kerb_width_m=self.scene.kerb_width_m,
+            grass_friction_scale=self.scene.grass_friction_scale,
+        )
+        self._dynamics = CarDynamics(self._model, self.car, surface=self._surface)
 
         self._body = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "car")
         if self._body < 0:  # pragma: no cover - assemble_model_xml always adds it
@@ -354,6 +362,11 @@ class PracticeTrack:
         return self._segments
 
     @property
+    def surface(self) -> SurfaceGrip:
+        """Per-wheel grip, which is lower off the circuit than on it."""
+        return self._surface
+
+    @property
     def penalty(self) -> OffTrackPenalty:
         """Seconds owed for leaving the circuit this lap, including any excursion in
         progress."""
@@ -384,6 +397,7 @@ class PracticeTrack:
         mujoco.mj_resetData(self._model, self._data)
         mujoco.mj_forward(self._model, self._data)
         self._dynamics.reset()
+        self._surface.reset()
         self._steps = 0
         self._done = False
 

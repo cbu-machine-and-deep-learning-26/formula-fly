@@ -41,6 +41,12 @@ class SceneConfig:
         mesh_spacing_m: Centerline resampling distance for the track ribbon. The raw data
             is ~5 m apart, which is finer than the visual mesh needs; 10 m halves the
             triangle count with no visible difference on straights.
+        grass_friction_scale: Fraction of its asphalt grip a tyre keeps on the grass,
+            applied per wheel by :class:`~fly_driver.envs.surface.SurfaceGrip`. Low enough
+            that dropping two wheels off at speed spins the car, which is what running
+            wide should feel like and what the car has to be able to do before any of this
+            transfers to Assetto Corsa. ``1.0`` restores the old behaviour, where the grass
+            gripped exactly as well as the circuit.
         surface_height_m: How far the visual ribbon floats above the ground plane. Small
             but non-zero to avoid z-fighting with the plane.
         texture_repeat_m: Road texture repeat distance along the track, in metres. This
@@ -128,6 +134,7 @@ class SceneConfig:
     """
 
     mesh_spacing_m: float = 10.0
+    grass_friction_scale: float = 0.35
     surface_height_m: float = 0.02
     texture_repeat_m: float = 8.0
     grass_texture_repeat_m: float = 5.0
@@ -166,6 +173,10 @@ class SceneConfig:
             raise ValueError(f"kerb_width_m must be non-negative, got {self.kerb_width_m}")
         if self.timestep <= 0:
             raise ValueError(f"timestep must be positive, got {self.timestep}")
+        if not 0.0 < self.grass_friction_scale <= 1.0:
+            raise ValueError(
+                f"grass_friction_scale must be in (0, 1], got {self.grass_friction_scale}"
+            )
         if self.friction_cone not in ("pyramidal", "elliptic"):
             raise ValueError(
                 f"friction_cone must be pyramidal or elliptic, got {self.friction_cone!r}"
@@ -601,7 +612,12 @@ def build_scene_xml(
   <worldbody>
     <light name="sun" directional="true" pos="0 0 200" dir="0.2 0.3 -1"
            diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" castshadow="true"/>
-    <geom name="ground" type="plane" size="0 0 1" material="grass" friction="1.0 0.005 0.0001"
+    <!-- Deliberately slippier than any tyre. MuJoCo combines contact friction by
+         element-wise MAXIMUM, so whichever of the two geoms grips harder wins outright:
+         with a value near the tyre's this plane would become a floor under grip and
+         fly_driver/envs/surface.py could not take grip away off the circuit. Lowering it
+         changes nothing on asphalt, where the tyre was already the maximum. -->
+    <geom name="ground" type="plane" size="0 0 1" material="grass" friction="0.05 0.005 0.0001"
           contype="{config.world_contype}" conaffinity="{config.world_conaffinity}"/>
     <geom name="road_geom" type="mesh" mesh="road" material="asphalt"
           contype="0" conaffinity="0" group="1"/>{kerb_geoms}{line_geom}{walls}{scenery}

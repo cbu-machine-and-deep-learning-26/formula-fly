@@ -106,6 +106,7 @@ from fly_driver.envs.penalty import OffTrackPenalty
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segment_log import SegmentLog
 from fly_driver.envs.segments import SegmentTimer, find_segments
+from fly_driver.envs.surface import SurfaceGrip
 from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD
 from fly_driver.interface import ControlVector
 
@@ -378,7 +379,14 @@ def main(argv: list[str] | None = None) -> int:
     # Everything goes through CarDynamics, which is the only path that applies
     # aerodynamics. Setting data.ctrl directly here would let you hand-drive a car with no
     # downforce while the trained policy drove a different one.
-    dynamics = CarDynamics(model, car)
+    surface = SurfaceGrip(
+        model,
+        centerline,
+        car=car,
+        kerb_width_m=scene.kerb_width_m,
+        grass_friction_scale=scene.grass_friction_scale,
+    )
+    dynamics = CarDynamics(model, car, surface=surface)
     car_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car")
     substeps = max(1, int(round((1.0 / CONTROL_HZ) / model.opt.timestep)))
     # Simulated seconds per loop iteration, not wall clock: the penalty is charged in
@@ -455,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                     lap_timer.reset(grid.arclength, float(data.time))
                     segment_timer.reset(grid.arclength, float(data.time))
                     penalty.reset()
+                    surface.reset()
                     print()
                     print(
                         f"off track: {beyond * 100:.0f}% of the car past the kerb "

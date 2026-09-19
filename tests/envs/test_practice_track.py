@@ -676,9 +676,10 @@ class TestInfo:
             env.close()
 
     def test_the_clock_starts_when_the_car_crosses_the_line(self):
-        # Track limits off: flat out from the grid runs wide at the first corner, and this
-        # test is about the lap clock, not about how well a held throttle drives.
-        env = PracticeTrack(track_limit=0.0)
+        # Track limits off and the grass gripping like asphalt: flat out from the grid runs
+        # wide at the first corner, and this test is about the lap clock, not about how well
+        # a held throttle drives or how much grip there is once it has run out of road.
+        env = PracticeTrack(track_limit=0.0, scene=SceneConfig(grass_friction_scale=1.0))
         try:
             _started(env)
             for _ in range(600):
