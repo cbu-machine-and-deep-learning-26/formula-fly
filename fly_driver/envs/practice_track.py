@@ -90,7 +90,9 @@ import numpy as np
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline, Projection, off_track_fraction
 from fly_driver.envs.lap import LapTimer
+from fly_driver.envs.penalty import OffTrackPenalty, PenaltyWeights
 from fly_driver.envs.scene import SceneConfig
+from fly_driver.envs.segments import SegmentTimer, SegmentTiming, find_segments
 from fly_driver.interface import (
     FRAME_RATE_HZ,
     FRAME_SHAPE,
@@ -180,8 +182,18 @@ class PracticeTrack:
         frame_shape: ``(height, width, 3)``. Must fit inside the scene's offscreen buffer.
         frame_rate_hz: Environment steps per second of simulated time. One step advances
             the physics by exactly ``1 / frame_rate_hz`` and produces exactly one frame.
-        track_limit: Fraction of the car's width past the kerb that ends the episode.
-            ``0`` turns the rule off and lets the car drive across the infield.
+        track_limit: Fraction of the car's width past the kerb that counts as leaving
+            the circuit, for termination when ``terminate_off_track`` is on. ``0`` turns
+            the rule off entirely and lets the car drive across the infield.
+        terminate_off_track: End the episode on leaving the circuit. **Off by default**,
+            which is a change: the env used to throw the lap away the moment the car put a
+            wheel past the kerb. Going off now costs seconds instead (see
+            :mod:`fly_driver.envs.penalty`), because a terminated episode teaches a
+            learning agent that something ended and nothing about how badly, and because
+            it is unforgiving to drive by hand. Turn it back on for a curriculum that
+            wants the hard rule.
+        penalty_weights: What an excursion costs in seconds. Defaults to
+            :data:`~fly_driver.envs.penalty.DEFAULT_PENALTY_WEIGHTS`.
         camera: Name of the MJCF camera to render from.
         reward: Scores each step. Defaults to :class:`ProgressReward`.
 
@@ -201,6 +213,8 @@ class PracticeTrack:
         frame_shape: tuple[int, int, int] = FRAME_SHAPE,
         frame_rate_hz: float = FRAME_RATE_HZ,
         track_limit: float = DEFAULT_TRACK_LIMIT,
+        terminate_off_track: bool = False,
+        penalty_weights: PenaltyWeights | None = None,
         camera: str = DEFAULT_CAMERA,
         reward: RewardFunction | None = None,
     ) -> None:
@@ -222,6 +236,8 @@ class PracticeTrack:
         self._frame_shape: tuple[int, int, int] = (shape[0], shape[1], 3)
         self._frame_rate_hz = float(frame_rate_hz)
         self._track_limit = float(track_limit)
+        self._terminate_off_track = bool(terminate_off_track)
+        self._penalty = OffTrackPenalty(penalty_weights or PenaltyWeights())
         self._max_steps = max_steps
         self._camera = camera
         self.seed = int(seed)
@@ -267,6 +283,7 @@ class PracticeTrack:
             )
 
         self._lap = LapTimer(self.centerline)
+        self._segments = SegmentTimer(find_segments(self.centerline))
         self._renderer: mujoco.Renderer | None = None
         self._closed = False
         self._done = True
@@ -331,6 +348,17 @@ class PracticeTrack:
         """Lap detection, shared with the hand-driving tool's semantics."""
         return self._lap
 
+    @property
+    def segment_timer(self) -> SegmentTimer:
+        """Which segment of the circuit the car is in, and how long it has been there."""
+        return self._segments
+
+    @property
+    def penalty(self) -> OffTrackPenalty:
+        """Seconds owed for leaving the circuit this lap, including any excursion in
+        progress."""
+        return self._penalty
+
     # -- the loop ---------------------------------------------------------------------
 
     def reset(
@@ -362,6 +390,8 @@ class PracticeTrack:
         projection = self._project()
         self._previous_s = projection.arclength
         self._lap.reset(projection.arclength, float(self._data.time))
+        self._segments.reset(projection.arclength, float(self._data.time))
+        self._penalty.reset()
 
         self._frame = self._render()
         info = self._info(
@@ -428,8 +458,24 @@ class PracticeTrack:
             car_width_m=self.car.overall_width_m,
             kerb_width_m=self.scene.kerb_width_m,
         )
-        completed = self._lap.update(projection.arclength, float(self._data.time))
-        terminated = self._track_limit > 0.0 and beyond > self._track_limit
+        # The penalty is charged against the depth measured this step, before the lap
+        # timer gets a chance to close the lap -- a car that is off the circuit as it
+        # crosses the line has still been off the circuit.
+        self._penalty.update(beyond, self.dt)
+        is_off = beyond > self._penalty.weights.minimum_depth
+
+        now = float(self._data.time)
+        segment = self._segments.update(projection.arclength, now, off_track=is_off)
+        completed = self._lap.update(projection.arclength, now)
+
+        lap_penalty: float | None = None
+        if completed is not None:
+            lap_penalty = self._penalty.finish_lap()
+            self._penalty.reset()
+
+        terminated = (
+            self._terminate_off_track and self._track_limit > 0.0 and beyond > self._track_limit
+        )
 
         info = self._info(
             projection=projection,
@@ -439,6 +485,8 @@ class PracticeTrack:
             diverged=False,
             terms={},
             lap_time=completed,
+            lap_penalty_s=lap_penalty,
+            segment=segment,
         )
         reward, terms = self.reward(info, self.dt)
         info["reward_terms"] = terms
@@ -509,6 +557,8 @@ class PracticeTrack:
         diverged: bool,
         terms: dict[str, float],
         lap_time: float | None = None,
+        lap_penalty_s: float | None = None,
+        segment: SegmentTiming | None = None,
     ) -> dict[str, Any]:
         """Raw signals, plus the two keys the evaluation harness reads by name.
 
@@ -518,7 +568,17 @@ class PracticeTrack:
         substitutes ``steps / frame_rate_hz`` when it is ``None``, so putting a running
         clock here would fabricate lap times that look entirely reasonable. The running
         clock is ``lap_elapsed_s``.
+
+        ``lap_time`` is the **real** lap time: the stopwatch plus whatever the lap earned
+        by going off the circuit. That is what Payton asked for -- "at the end of the lap
+        add it to the lap time and thats the real lap time" -- and it means a lap that cut
+        a corner cannot out-rank a clean one in the harness either. ``lap_time_raw`` keeps
+        the stopwatch figure for anyone who wants to see the two apart.
         """
+        raw_lap_time = lap_time
+        penalty = 0.0 if lap_penalty_s is None else float(lap_penalty_s)
+        if lap_time is not None:
+            lap_time = lap_time + penalty
         return {
             # the evaluation harness's contract
             "lap_complete": lap_complete,
@@ -541,4 +601,18 @@ class PracticeTrack:
             "lap_count": self._lap.completed,
             "on_out_lap": not self._lap.timing,
             "diverged": diverged,
+            # going off the circuit, in seconds rather than in a restart
+            "lap_time_raw": raw_lap_time,
+            "lap_penalty_s": lap_penalty_s,
+            "penalty_s": self._penalty.total_seconds,
+            "excursions": self._penalty.excursions,
+            # segment timing. The completed segment's *delta* is deliberately not here:
+            # it needs the record book, and the env does not touch the filesystem. The
+            # caller that owns the document works it out (see scripts/drive.py).
+            "segment": None if self._segments.current is None else self._segments.current.name,
+            "segment_elapsed_s": self._segments.elapsed(float(self._data.time)),
+            "segment_dirty": self._segments.went_off_track,
+            "segment_complete": None if segment is None else segment.segment.name,
+            "segment_time": None if segment is None else segment.seconds,
+            "segment_clean": None if segment is None else segment.is_clean,
         }
