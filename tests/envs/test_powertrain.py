@@ -316,8 +316,21 @@ class TestTractionFactor:
     def test_it_is_on_for_the_sf70h(self):
         assert P.traction_control_enabled
 
-    def test_the_slip_limit_matches_the_data(self):
-        assert P.traction_slip_full == pytest.approx(0.10)
+    def test_the_slip_limit_is_deliberately_looser_than_the_data(self):
+        """This used to assert AC's own 0.10 and it is a real departure, recorded rather
+        than quietly dropped. At 0.10 the car could not be provoked into a slide at all
+        (1.9 degrees of sideslip under full lock and full throttle at 60 km/h), and a
+        policy cannot learn to catch something that never happens. The cost is that the AC
+        car will be tighter than this one, so a policy may arrive expecting a slide it can
+        no longer provoke -- this is the first number to put back if transfer disappoints.
+        """
+        assert P.traction_slip_full > 0.10, "no longer the AC value; see the docstring"
+        assert P.traction_slip_full == pytest.approx(0.20)
+
+    def test_the_limiter_still_eases_in_rather_than_switching(self):
+        """The ramp has to keep its width or the aid becomes a switch, which shows up as
+        the car snapping between full torque and none."""
+        assert P.traction_slip_cut - P.traction_slip_full >= 0.15
 
     def test_rejects_inverted_thresholds(self):
         from dataclasses import replace

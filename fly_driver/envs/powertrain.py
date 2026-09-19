@@ -109,12 +109,33 @@ class PowertrainConfig:
             spin up. Assetto Corsa has this **active** on the SF70H --
             ``SLIP_RATIO_LIMIT=0.10``, ``ACTIVE=1``, above 30 km/h -- and has ABS switched
             off, which is the opposite of what this model had. Without it the car spins on
-            the throttle out of slow corners, which is what Payton hit.
-        traction_slip_full: Wheelspin slip below which the engine gets full torque. AC's
-            0.10, matched.
+            the throttle out of slow corners, which is what Payton hit. It is still on;
+            what changed is how much slip it allows before intervening, which
+            ``traction_slip_full`` covers.
+        traction_slip_full: Wheelspin slip below which the engine gets full torque.
+
+            0.20, which is **looser than Assetto Corsa's 0.10** and a deliberate departure
+            from matching it. At 0.10 the car could not be made to break traction by hand:
+            full lock and full throttle at 60 km/h produced 1.9 degrees of sideslip, which
+            is a rail, not a car. Payton's call, on the grounds that a car that cannot
+            oversteer teaches a driver -- or a policy -- nothing about catching one.
+
+            Measured at 60 km/h with the clumsiest input available, sideslip goes 1.9
+            degrees at 0.10, 10.6 at 0.20, and 24.4 with the limiter switched off
+            entirely. 0.20 is the setting where the back steps out and can still be
+            caught. 0-100 km/h is 2.40 s at all three, so none of this is paid for in a
+            straight line.
+
+            Worth knowing when this is revisited: AC's own SF70H really does run
+            ``SLIP_RATIO_LIMIT=0.10, ACTIVE=1`` above 30 km/h, so 0.10 was the faithful
+            value and this is not. If a policy trained here transfers badly because it
+            has learned to catch slides the AC car will not give it, this is the first
+            number to put back.
         traction_slip_cut: Slip at which drive torque is cut to zero, ramping linearly from
             ``traction_slip_full``. AC cuts on a curve rather than a ramp; this is the same
-            shape the brake limiter already uses, so the two read alike.
+            shape the brake limiter already uses, so the two read alike. Widened with
+            ``traction_slip_full`` to keep the ramp's width, so the limiter still eases in
+            rather than becoming a switch.
         traction_min_speed_mps: Below this the limiter stands down, or it would strangle
             every standing start. AC uses 30 km/h.
         abs_min_speed_mps: Below this ground speed slip is ill-conditioned and the limiter
@@ -143,8 +164,8 @@ class PowertrainConfig:
     abs_slip_release: float = 0.25
     abs_min_speed_mps: float = 2.0
     traction_control_enabled: bool = True
-    traction_slip_full: float = 0.10
-    traction_slip_cut: float = 0.25
+    traction_slip_full: float = 0.20
+    traction_slip_cut: float = 0.45
     traction_min_speed_mps: float = 8.3
 
     def __post_init__(self) -> None:

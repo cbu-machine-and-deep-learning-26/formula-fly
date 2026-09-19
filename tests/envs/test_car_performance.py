@@ -175,13 +175,9 @@ class TestHandlingBalance:
         assert angle < self.SPIN_DEG, f"spun to {angle:.0f} degrees of sideslip"
 
     def test_the_car_underneath_is_still_lively(self, bed):
-        """Not a rail. Traction control now holds the same provocation to about 2 degrees,
-        which is what Payton asked for after spinning on the throttle -- but the aid should
-        be doing that work, not an inherently inert car. Switch it off and the back must
-        still step out, or the rear grip has gone too far.
-
-        Assetto Corsa runs traction control on this car too (slip ratio 0.10 above
-        30 km/h), so having it on by default is the faithful setting, not a crutch."""
+        """Not a rail. The limiter should be shaping how the car slides, not standing in
+        for a car that cannot. Switch it off and the back must step out much further than
+        it does with the aid on, or the rear grip itself has gone too far."""
         from dataclasses import replace
 
         from fly_driver.envs.car import CarDynamics
@@ -193,11 +189,29 @@ class TestHandlingBalance:
             loose = measure_sideslip(bed, 60.0)["sideslip at 60 km/h (deg)"]
         finally:
             bed.dynamics = CarDynamics(bed.model, bed.car)
-        assert loose > 8.0, f"only {loose:.1f} degrees with the aid off"
+        assert loose > 20.0, f"only {loose:.1f} degrees with the aid off"
 
-    def test_traction_control_is_what_tames_it(self, provoked):
-        """With the aid on, the same input barely moves the car."""
-        assert provoked["sideslip at 60 km/h (deg)"] < 6.0
+    def test_the_rear_can_be_provoked(self, provoked):
+        """The point of loosening the limiter to 0.20. At AC's 0.10 this input produced
+        1.9 degrees, which is a rail rather than a car, and a driver -- or a policy --
+        cannot learn to catch a slide that never happens."""
+        assert provoked["sideslip at 60 km/h (deg)"] > 6.0
+
+    def test_the_limiter_is_still_doing_the_larger_part(self, bed, provoked):
+        """Provokable, not undamped. Turning the aid off must still be a big step, or the
+        limiter has been loosened until it may as well not be there."""
+        from dataclasses import replace
+
+        from fly_driver.envs.car import CarDynamics
+        from fly_driver.envs.powertrain import SF70H_POWERTRAIN
+
+        no_tc = replace(SF70H_POWERTRAIN, traction_control_enabled=False)
+        bed.dynamics = CarDynamics(bed.model, bed.car, powertrain=no_tc)
+        try:
+            loose = measure_sideslip(bed, 60.0)["sideslip at 60 km/h (deg)"]
+        finally:
+            bed.dynamics = CarDynamics(bed.model, bed.car)
+        assert loose > 2.0 * provoked["sideslip at 60 km/h (deg)"]
 
     def test_a_fast_corner_stays_planted(self, bed):
         """Where downforce dominates, nothing the driver does should unstick it."""
