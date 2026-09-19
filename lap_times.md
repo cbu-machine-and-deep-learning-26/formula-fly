@@ -21,3 +21,4 @@ on the same car. Rows above a `car changed` marker were driven on an earlier one
 | 2026-09-17 13:14:07 | 2:21.178 | gamepad (PS5 Controller) | new best |
 | 2026-09-17 13:41:44 | 2:16.673 | gamepad (PS5 Controller) | new best |
 | 2026-09-17 | -- | car changed | aero and tyres calibrated from Assetto Corsa data |
+| 2026-09-17 17:29:13 | 1:52.229 | gamepad (PS5 Controller) | new best |
