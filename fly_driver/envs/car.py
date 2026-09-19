@@ -275,8 +275,18 @@ class CarConfig:
             range at 1.9. Equal grip on both axles, which is what AC literally states,
             spins the car. Both are the same missing curve seen from different ends.
 
-            The rear is now 1.85 rather than 1.9, moved deliberately back towards the
-            spinning end. At 1.9 the car could not be made to break traction by hand, and
+            Both axles went up by 0.05 when Payton asked for more grip on the road,
+            and the pair is better aligned with Assetto Corsa for it, not worse: 1.85 and
+            1.9 average to 1.875 against AC's stated ``DY_REF`` of 1.88, where the
+            previous pair averaged 1.825. It does cost something at both ends. 0-100 km/h
+            goes 2.40 -> 2.32 s, further below the real car's 2.6 rather than closer to
+            it, and the car is measurably harder to provoke: sideslip under full lock and
+            full throttle at 60 km/h falls 10.6 -> 9.2 degrees, partly undoing the
+            traction-control change made in the same session.
+
+            The rear sits 0.05 above the front rather than the 0.1 it had, moved
+            deliberately back towards the spinning end. At the old spread the car could
+            not be made to break traction by hand, and
             a car that cannot oversteer is a poor thing to learn to drive in before
             Assetto Corsa, where it can. Note what this does *not* fix: the dominant
             reason the rear stays planted on the throttle is the traction control in
@@ -337,8 +347,8 @@ class CarConfig:
     anti_roll_stiffness_front_n_m: float = 108_000.0
     anti_roll_stiffness_rear_n_m: float = 0.0
     max_actuator_torque_nm: float = 20_000.0
-    wheel_friction: tuple[float, float, float] = (1.8, 0.02, 0.001)
-    wheel_friction_rear: tuple[float, float, float] = (1.85, 0.02, 0.001)
+    wheel_friction: tuple[float, float, float] = (1.85, 0.02, 0.001)
+    wheel_friction_rear: tuple[float, float, float] = (1.9, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
     fly_mount_z_m: float = 0.17
     camera_height_above_mount_m: float = 0.45

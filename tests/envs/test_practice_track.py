@@ -816,7 +816,11 @@ class TestThePenalty:
             deepest = 0.0
             for _ in range(200):
                 deepest = max(deepest, _step(env, lock).info["off_track_fraction"])
-            assert deepest > 10.0, f"expected a deep excursion, got {deepest:.2f}"
+            # Was 10 when the grass gripped at 0.35 and the car kept sliding once it
+            # left the circuit. At 0.55 it slides less far, which is the point of the
+            # change; what this test is about is that the depth runs far past the cap of
+            # 1.0, and 5 makes that point without re-pinning how slippery the grass is.
+            assert deepest > 5.0, f"expected a deep excursion, got {deepest:.2f}"
             charged = env.penalty.total_seconds
             assert charged > 0.0
             assert charged <= env.penalty.excursions * weights.maximum_depth

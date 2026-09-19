@@ -14,12 +14,20 @@ in the numbers:
 
 from __future__ import annotations
 
+import re
+
 import mujoco
 import numpy as np
 import pytest
 
 from fly_driver.envs.centerline import Centerline
-from fly_driver.envs.scene import SceneConfig, _ribbon_mesh, build_scene_xml, scenery_xml
+from fly_driver.envs.scene import (
+    SceneConfig,
+    _ribbon_mesh,
+    build_scene_xml,
+    checkpoint_pillars_xml,
+    scenery_xml,
+)
 
 
 @pytest.fixture(scope="module")
@@ -340,3 +348,117 @@ class TestScenery:
     def test_everything_sits_on_or_above_the_ground(self, scenery_model):
         for i in self._scenery_geoms(scenery_model):
             assert scenery_model.geom_pos[i][2] >= 0.0
+
+
+class TestCheckpointPillars:
+    """Grey posts at every segment boundary, marking where each timed checkpoint starts.
+
+    The failure worth guarding is not that they look wrong -- it is that they become
+    solid. A collidable post a metre off the racing line would rewrite every lap time on
+    the circuit, and nothing about the geometry would look different.
+
+    Placement is checked against Silverstone rather than the ``square`` fixture. The square
+    is 100 m on a side and 10 m wide, so a post set 7.5 m outside one edge lands exactly on
+    the centerline of the edge opposite -- a degenerate case for any "is this clear of the
+    circuit" question, and nothing to do with whether the code is right.
+    """
+
+    @pytest.fixture(scope="class")
+    def circuit(self):
+        from fly_driver.envs.centerline import Centerline
+
+        return Centerline.load()
+
+    @staticmethod
+    def _positions(xml: str) -> list[tuple[float, float, float]]:
+        return [
+            tuple(float(value) for value in match.split())
+            for match in re.findall(r'pos="([^"]+)"', xml)
+        ]
+
+    def test_there_is_a_pair_at_every_segment_boundary(self, circuit):
+        from fly_driver.envs.segments import find_segments
+
+        xml = checkpoint_pillars_xml(circuit, SceneConfig())
+        assert xml.count("<geom") == 2 * len(find_segments(circuit))
+
+    def test_they_are_named_after_the_segment_they_mark(self, circuit):
+        """So a pillar in the render can be tied back to the split it belongs to."""
+        from fly_driver.envs.segments import find_segments
+
+        xml = checkpoint_pillars_xml(circuit, SceneConfig())
+        for segment in find_segments(circuit):
+            name = segment.name.replace(" ", "_")
+            assert f'name="pillar_{name}_left"' in xml
+            assert f'name="pillar_{name}_right"' in xml
+
+    def test_nothing_can_hit_them(self, square):
+        """Visual only, like the kerbs and the scenery. A driver running wide should be
+        paying the track-limits penalty, not bouncing off furniture."""
+        model = mujoco.MjModel.from_xml_string(build_scene_xml(square, SceneConfig()))
+        found = False
+        for index in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, index)
+            if name and name.startswith("pillar_"):
+                found = True
+                assert model.geom_contype[index] == 0
+                assert model.geom_conaffinity[index] == 0
+        assert found, "no pillars in the model, so nothing was actually checked"
+
+    def test_they_stand_clear_of_the_circuit(self, circuit):
+        """Outside the kerb on both sides. Inside it they would be in the way, and a post
+        on the racing line would quietly rewrite every lap time on the circuit."""
+        config = SceneConfig()
+        for x, y, _ in self._positions(checkpoint_pillars_xml(circuit, config)):
+            projection = circuit.project(x, y)
+            edge = (
+                projection.half_width_left
+                if projection.lateral >= 0.0
+                else projection.half_width_right
+            )
+            assert abs(projection.lateral) > edge + config.kerb_width_m
+
+    def test_they_do_not_stand_so_far_out_they_mark_nothing(self, circuit):
+        config = SceneConfig()
+        for x, y, _ in self._positions(checkpoint_pillars_xml(circuit, config)):
+            projection = circuit.project(x, y)
+            assert abs(projection.lateral) < 30.0
+
+    def test_a_bigger_margin_pushes_them_further_out(self, circuit):
+        def spread(margin: float) -> float:
+            xml = checkpoint_pillars_xml(circuit, SceneConfig(pillar_margin_m=margin))
+            return max(abs(circuit.project(x, y).lateral) for x, y, _ in self._positions(xml))
+
+        assert spread(6.0) > spread(1.5)
+
+    def test_one_goes_each_side(self, circuit):
+        """A pair, not two posts on the same side -- which would still count right."""
+        xml = checkpoint_pillars_xml(circuit, SceneConfig())
+        laterals = [circuit.project(x, y).lateral for x, y, _ in self._positions(xml)]
+        assert sum(value > 0 for value in laterals) == sum(value < 0 for value in laterals)
+
+    def test_they_stand_on_the_ground(self, square):
+        """Centred at half their height, or they float or sink."""
+        config = SceneConfig()
+        model = mujoco.MjModel.from_xml_string(build_scene_xml(square, config))
+        for index in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, index)
+            if name and name.startswith("pillar_"):
+                assert model.geom_pos[index][2] == pytest.approx(config.pillar_height_m / 2)
+
+    def test_they_are_tall_and_thin(self):
+        """A fly's eye reads a tall narrow high-contrast object as an expansion cue; a
+        squat one gives it much less to work with (AGENTS.md section 6)."""
+        config = SceneConfig()
+        assert config.pillar_height_m > 4.0 * config.pillar_radius_m
+
+    def test_they_can_be_turned_off(self, square):
+        assert checkpoint_pillars_xml(square, SceneConfig(checkpoint_pillars=False)) == ""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"pillar_radius_m": 0.0}, {"pillar_height_m": -1.0}, {"pillar_margin_m": 0.0}],
+    )
+    def test_their_dimensions_must_be_positive(self, kwargs):
+        with pytest.raises(ValueError, match="must be positive"):
+            SceneConfig(**kwargs)

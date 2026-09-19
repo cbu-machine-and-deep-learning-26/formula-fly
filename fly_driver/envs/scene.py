@@ -29,6 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from fly_driver.envs.centerline import Centerline
+from fly_driver.envs.segments import find_segments
 
 __all__ = ["SceneConfig", "build_scene_xml", "scenery_xml"]
 
@@ -43,10 +44,17 @@ class SceneConfig:
             triangle count with no visible difference on straights.
         grass_friction_scale: Fraction of its asphalt grip a tyre keeps on the grass,
             applied per wheel by :class:`~fly_driver.envs.surface.SurfaceGrip`. Low enough
-            that dropping two wheels off at speed spins the car, which is what running
-            wide should feel like and what the car has to be able to do before any of this
-            transfers to Assetto Corsa. ``1.0`` restores the old behaviour, where the grass
-            gripped exactly as well as the circuit.
+            that dropping two wheels off at speed unsettles the car and costs real time,
+            high enough that a driver who runs wide can gather it up and rejoin. The first
+            version of this was 0.35, which spun the car on contact and left it sliding;
+            Payton asked for more after driving it. ``1.0`` restores the old behaviour,
+            where the grass gripped exactly as well as the circuit.
+        checkpoint_pillars: Put a pair of pillars at every segment boundary, marking where
+            each timed checkpoint starts and ends.
+        pillar_radius_m: Radius of those pillars.
+        pillar_height_m: How tall they stand.
+        pillar_margin_m: How far outside the kerb they sit, so they frame the circuit
+            without narrowing it.
         surface_height_m: How far the visual ribbon floats above the ground plane. Small
             but non-zero to avoid z-fighting with the plane.
         texture_repeat_m: Road texture repeat distance along the track, in metres. This
@@ -134,7 +142,11 @@ class SceneConfig:
     """
 
     mesh_spacing_m: float = 10.0
-    grass_friction_scale: float = 0.35
+    grass_friction_scale: float = 0.55
+    checkpoint_pillars: bool = True
+    pillar_radius_m: float = 0.3
+    pillar_height_m: float = 2.5
+    pillar_margin_m: float = 1.5
     surface_height_m: float = 0.02
     texture_repeat_m: float = 8.0
     grass_texture_repeat_m: float = 5.0
@@ -173,6 +185,9 @@ class SceneConfig:
             raise ValueError(f"kerb_width_m must be non-negative, got {self.kerb_width_m}")
         if self.timestep <= 0:
             raise ValueError(f"timestep must be positive, got {self.timestep}")
+        for name in ("pillar_radius_m", "pillar_height_m", "pillar_margin_m"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
         if not 0.0 < self.grass_friction_scale <= 1.0:
             raise ValueError(
                 f"grass_friction_scale must be in (0, 1], got {self.grass_friction_scale}"
@@ -375,6 +390,50 @@ def _push_clear(
     return spot if abs(projection.lateral) - edge >= margin else None
 
 
+#: Concrete grey, so the pillars read as track furniture rather than as scenery.
+_PILLAR_RGBA = "0.62 0.63 0.65 1"
+
+
+def checkpoint_pillars_xml(centerline: Centerline, config: SceneConfig | None = None) -> str:
+    """A pair of pillars at every segment boundary, one each side of the circuit.
+
+    The segments are the ones :func:`~fly_driver.envs.segments.find_segments` times, so
+    these mark exactly where a checkpoint time starts and stops. Driving past a pair is the
+    moment a split appears in the terminal and on the panel, which until now happened with
+    nothing on screen to explain it.
+
+    Visual only -- no contact class, like the kerbs and the scenery -- so hitting one costs
+    nothing. They sit ``pillar_margin_m`` outside the kerb rather than on the track edge,
+    for the same reason: a driver running wide should be paying the track-limits penalty,
+    not bouncing off furniture that a real circuit marks with paint.
+
+    They are also the most useful thing on the circuit for the fly. AGENTS.md section 6
+    picked this simulator over CarRacing for egocentric optic flow, and a tall thin
+    high-contrast object at a known distance is the cleanest expansion cue there is -- far
+    stronger than the road texture, and unlike the trees it appears at a position the timing
+    code already knows about.
+    """
+    config = config or SceneConfig()
+    if not config.checkpoint_pillars:
+        return ""
+
+    half_height = config.pillar_height_m / 2.0
+    pillars = ""
+    for segment in find_segments(centerline):
+        point, normal, half_left, half_right = _scenery_frame(centerline, segment.start_m)
+        for side, sign, half_width in (("left", 1.0, half_left), ("right", -1.0, half_right)):
+            offset = half_width + config.kerb_width_m + config.pillar_margin_m
+            position = point + normal * sign * offset
+            pillars += (
+                f'\n    <geom name="pillar_{segment.name.replace(" ", "_")}_{side}" '
+                f'type="cylinder" {_SCENERY_GEOM} '
+                f'pos="{position[0]:.3f} {position[1]:.3f} {half_height:.3f}" '
+                f'size="{config.pillar_radius_m:.3f} {half_height:.3f}" '
+                f'rgba="{_PILLAR_RGBA}"/>'
+            )
+    return pillars
+
+
 def scenery_xml(centerline: Centerline, config: SceneConfig | None = None) -> str:
     """Trees, buildings and small crowds scattered outside the track edges.
 
@@ -554,7 +613,7 @@ def build_scene_xml(
                 )
 
     start_position, start_yaw = centerline.pose_at(0.0)
-    scenery = scenery_xml(centerline, config)
+    scenery = scenery_xml(centerline, config) + checkpoint_pillars_xml(centerline, config)
     tendon_block = f"\n\n  <tendon>{extra_tendons}\n  </tendon>" if extra_tendons.strip() else ""
     # texuniform makes texrepeat world-scaled, so this is tiles per metre.
     grass_repeat = 1.0 / config.grass_texture_repeat_m

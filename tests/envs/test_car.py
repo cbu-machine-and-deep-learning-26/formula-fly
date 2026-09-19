@@ -484,7 +484,11 @@ class TestMatchesSF70HSpecification:
         assert 15.0 <= np.degrees(CONFIG.max_steer_rad) <= 28.0
 
     def test_tyre_friction_is_in_the_published_slick_range(self):
-        assert 1.5 <= CONFIG.wheel_friction[0] <= 1.8
+        """The ceiling was 1.8, from published slick figures. It is 1.9 because this car
+        is fitted to Assetto Corsa rather than to those figures, and AC's UltraSoft gives
+        DY_REF 1.88 on both axles -- so a pair averaging 1.875 sits on AC's number while
+        1.8 and below sits under it. Above 1.9 the pair would average past AC's."""
+        assert 1.5 <= CONFIG.wheel_friction[0] <= 1.9
 
     def test_the_rear_tyres_grip_harder_than_the_fronts(self):
         """Payton asked for oversteer to stop being a constant problem. With one mu
@@ -500,6 +504,13 @@ class TestMatchesSF70HSpecification:
 
     def test_rear_tyre_friction_is_still_in_the_published_slick_range(self):
         assert 1.5 <= CONFIG.wheel_friction_rear[0] <= 2.0
+
+    def test_the_axles_average_near_assetto_corsas_reference_grip(self):
+        """What actually pins the pair. AC gives DY_REF 1.88 front and rear and carries
+        the axle difference in load sensitivity, which MuJoCo cannot express -- so the
+        spread stands in for it and the average is the part that has to stay honest."""
+        average = (CONFIG.wheel_friction[0] + CONFIG.wheel_friction_rear[0]) / 2.0
+        assert average == pytest.approx(1.88, abs=0.03)
 
 
 class TestMassProperties:
