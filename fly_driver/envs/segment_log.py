@@ -42,8 +42,9 @@ __all__ = ["SegmentLog", "SegmentOutcome", "SegmentRecord", "format_delta"]
 
 _TABLE_HEADING = """## Best segments
 
-The fastest clean time through each segment of the circuit, in the order they are driven.
-A run with an off-track excursion in it never sets one of these, however quick it was.
+The fastest clean time through each segment of the circuit. A run with an off-track
+excursion in it never sets one of these, however quick it was -- so a segment appears here
+the first time it is driven cleanly, which is why the order is not always track order.
 
 Same rule as the lap table: delete a row and the next car through sets it again.
 
@@ -251,7 +252,10 @@ class SegmentLog:
         the table -- which is where they land, the lap table being append-only -- survive.
         """
         records = dict(self.records())
-        records[record.name] = record  # new names land at the end, which is track order
+        # New names land at the end. That is track order for a clean lap and not for a
+        # messy one, since a segment only appears once it has been driven without going
+        # off -- which the table's own text now says rather than claiming track order.
+        records[record.name] = record
 
         try:
             text = self.path.read_text(encoding="utf-8")
