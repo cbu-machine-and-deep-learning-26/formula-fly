@@ -138,12 +138,19 @@ class TestLapTimer:
         assert got is not None, "a lap was driven in total and never registered"
 
     def test_a_teleport_does_not_count_as_progress(self, square):
-        """A reset, or a car dropped back on track, must not gift most of a lap."""
+        """A reset, or a car dropped back on track, must not gift most of a lap.
+
+        What is checked is that the jump credits nothing, not that the timer is wiped.
+        It used to zero the lap and restart the clock, which cost a driver their lap
+        every time an off-track projection jumped -- see
+        test_running_wide_does_not_restart_the_clock.
+        """
         timer = LapTimer(square, min_lap_seconds=0.0, max_step_m=50.0, start_on_crossing=False)
         timer.reset(0.0, 0.0)
         timer.update(10.0, 0.1)
+        before = timer.lap_fraction
         assert timer.update(190.0, 0.2) is None  # 180 m in one step
-        assert timer.lap_fraction == 0.0
+        assert timer.lap_fraction == before, "the jump was credited"
 
     def test_implausibly_fast_laps_are_dropped(self, square):
         timer = LapTimer(square, min_lap_seconds=30.0, start_on_crossing=False)
@@ -587,3 +594,74 @@ class TestTheSegmentFence:
         text = log.path.read_text(encoding="utf-8")
         assert SEGMENT_TABLE_START in text
         assert text.index(SEGMENT_TABLE_START) < text.index(SEGMENT_TABLE_END)
+
+
+class TestRunningWideNearTheLine:
+    """The two failures Payton hit running wide at the end of a lap.
+
+    Both are silent. A restarted clock looks like a finished lap, and a lap awarded to a
+    car drifting past the line through the grass looks like a fast lap. Neither raises.
+
+    The square is 400 m and the steps are 10 m, so step 40 lands exactly on the line.
+    These stop at 390 m and let the grass carry the car across it.
+    """
+
+    @staticmethod
+    def _drive_to_the_last_corner(timer: LapTimer) -> None:
+        for step in range(1, 40):
+            assert timer.update(step * 10.0, step * 0.1, on_track=True) is None
+
+    def test_running_wide_does_not_restart_the_clock(self, square):
+        """A car off the circuit projects onto the centerline unreliably -- the circuit
+        loops back on itself, so a point in the infield can be nearest a completely
+        different part of the lap. Measured at Silverstone: 40 m off at 5500 m projects
+        56 m further round, past max_step_m. That used to zero the clock mid-lap, which
+        reads to a driver as the lap having ended."""
+        timer = LapTimer(square, min_lap_seconds=0.0, max_step_m=50.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        for step in range(1, 30):
+            timer.update(step * 5.0, step * 0.1)
+        assert timer.current_lap_time(3.0) == pytest.approx(3.0)
+
+        # The projection jumps while the car is in the grass, then comes back.
+        timer.update(320.0, 3.1, on_track=False)
+        timer.update(150.0, 3.2, on_track=False)
+        assert timer.current_lap_time(4.0) == pytest.approx(4.0), "the clock was restarted"
+
+    def test_a_lap_does_not_end_off_the_circuit(self, square):
+        """Payton's rule: the lap ends at the line, on the circuit -- not by drifting past
+        it through the grass."""
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        self._drive_to_the_last_corner(timer)
+        assert timer.update(5.0, 3.95, on_track=False) is None, "lap awarded off the circuit"
+        assert timer.completed == 0
+
+    def test_the_lap_completes_once_the_car_is_back_on(self, square):
+        """Held, not thrown away. The driver still finished the lap."""
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        self._drive_to_the_last_corner(timer)
+        timer.update(5.0, 3.95, on_track=False)
+        assert timer.update(15.0, 4.0, on_track=True) is not None
+        assert timer.completed == 1
+
+    def test_waiting_off_track_does_not_pre_credit_the_next_lap(self, square):
+        """Progress is held at exactly one lap while the completion waits. Banking what is
+        driven out in the grass would start the next lap already part-way round."""
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        self._drive_to_the_last_corner(timer)
+        for step in range(20):  # a long scrappy excursion, all of it past the line
+            timer.update(5.0 + step * 2.0, 3.95 + step * 0.05, on_track=False)
+        assert timer.update(45.0, 5.0, on_track=True) is not None
+        assert timer.completed == 1
+        assert timer.lap_fraction < 0.25, f"next lap started {timer.lap_fraction:.0%} done"
+
+    def test_a_clean_lap_is_unaffected(self, square):
+        """The default is on_track, so nothing that never leaves the circuit changes."""
+        timer = LapTimer(square, min_lap_seconds=0.0, start_on_crossing=False)
+        timer.reset(0.0, 0.0)
+        self._drive_to_the_last_corner(timer)
+        assert timer.update(400.0, 4.0) is not None
+        assert timer.completed == 1

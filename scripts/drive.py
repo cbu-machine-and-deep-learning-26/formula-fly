@@ -472,7 +472,11 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     continue
 
-                completed = lap_timer.update(projection.arclength, float(data.time))
+                completed = lap_timer.update(
+                    projection.arclength,
+                    float(data.time),
+                    on_track=beyond <= penalty.weights.minimum_depth,
+                )
                 if completed is not None:
                     owed = penalty.finish_lap()
                     penalty.reset()

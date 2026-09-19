@@ -180,18 +180,30 @@ class LapTimer:
     """Turns arclength along the centerline into completed lap times.
 
     A lap is counted when a full track length of *forward* progress has been accumulated,
-    not merely when the start line is crossed. That distinction matters: reversing over
-    the line and crossing it again would otherwise hand out a lap for a few metres of
-    driving, and the reward plumbing in GH-17 will lean on the same signal.
+    **and** the car is on the circuit at the moment it completes. Both halves matter.
+
+    Progress rather than a line crossing: reversing over the line and crossing it again
+    would otherwise hand out a lap for a few metres of driving, and the reward plumbing in
+    GH-17 leans on the same signal.
+
+    On the circuit rather than anywhere: a car in the grass projects onto the centerline
+    unreliably, because the circuit loops back on itself and a point in the infield can be
+    nearest to a completely different part of the lap. Measured at Silverstone, a car 40 m
+    off the road at 5500 m projects 56 m further round, and 80 m off projects 82 m further
+    -- both past ``max_step_m``. That used to reset the clock mid-lap, which looks exactly
+    like the lap having ended early, and is what Payton hit running wide near the end.
 
     Args:
         centerline: The track. Supplies the lap length and the seam-safe progress delta.
         min_lap_seconds: A lap faster than this is treated as a glitch and dropped. The
             practice track's outright record is about 87 s, so anything under 20 s did not
             happen.
-        max_step_m: Forward progress larger than this in a single update is treated as a
-            teleport (a reset, or a car dropped back onto the track) and re-anchors the
-            timer instead of counting. At 350 km/h a 50 Hz step covers about 2 m.
+        max_step_m: Progress larger than this in a single update is not driving -- a
+            reset, a car dropped back onto the track, or the projection of a car that is
+            off the circuit. The distance is skipped. The clock is deliberately **not**
+            touched: the driver is still on the lap they started, and restarting it under
+            them is worse than the jump it was guarding against. At 350 km/h a 50 Hz step
+            covers about 2 m.
         start_on_crossing: Wait for the car to cross the start line before timing anything.
             This is what makes the out lap work: the car is parked behind the line, drives
             up to it, and lap one is timed from the crossing rather than from wherever the
@@ -249,12 +261,16 @@ class LapTimer:
             return 0.0
         return min(1.0, max(0.0, self._progress / self.centerline.length))
 
-    def update(self, arclength: float, now: float) -> float | None:
+    def update(self, arclength: float, now: float, on_track: bool = True) -> float | None:
         """Feed one sample. Returns the lap time when this sample completed a lap.
 
         Args:
             arclength: Distance along the centerline, from :meth:`Centerline.project`.
             now: Simulation time in seconds.
+            on_track: Whether the car is within the track limits right now. A lap will not
+                complete while this is false; the completion is held until the car is back
+                on the circuit. Pass the same signal the penalty is charged on, so the two
+                rules agree about where the circuit ends.
         """
         arclength, now = float(arclength), float(now)
         if self._previous_s is None:
@@ -267,10 +283,12 @@ class LapTimer:
         step_seconds = now - previous_time
 
         if abs(delta) > self.max_step_m:
-            # A jump this big is not driving. Re-anchor without crediting the distance,
-            # so a reset or a shortcut across the infield cannot hand out a free lap.
-            self._progress = 0.0
-            self._lap_started_at = now
+            # A jump this big is not driving: a reset, a car dropped back on, or -- far
+            # more often -- the projection of a car that is off the circuit. The distance
+            # is skipped, so a shortcut across the infield cannot hand out a free lap.
+            # The clock is left alone. Zeroing it here restarted the lap under the driver
+            # every time they ran wide near the end, which reads as the lap ending early.
+            # A genuine episode boundary calls reset() and does not rely on this.
             return None
 
         if not self._timing:
@@ -284,6 +302,14 @@ class LapTimer:
 
         self._progress += delta
         if self._progress < self.centerline.length:
+            return None
+
+        if not on_track:
+            # A lap ends at the line, on the circuit -- not by drifting past it through
+            # the grass. Hold the completion exactly at a lap's worth of progress rather
+            # than banking what is driven while waiting, or a long excursion past the line
+            # would start the next lap already part-driven.
+            self._progress = self.centerline.length
             return None
 
         # Interpolate back to the instant the line was actually crossed. A whole control

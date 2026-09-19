@@ -27,6 +27,7 @@ from fly_driver.envs.scene import (
     build_scene_xml,
     checkpoint_pillars_xml,
     scenery_xml,
+    start_line_xml,
 )
 
 
@@ -383,12 +384,14 @@ class TestCheckpointPillars:
         assert xml.count("<geom") == 2 * len(find_segments(circuit))
 
     def test_they_are_named_after_the_segment_they_mark(self, circuit):
-        """So a pillar in the render can be tied back to the split it belongs to."""
+        """So a pillar in the render can be tied back to the split it belongs to. The pair
+        on the line is the exception, named for the line rather than for the segment that
+        happens to start there."""
         from fly_driver.envs.segments import find_segments
 
         xml = checkpoint_pillars_xml(circuit, SceneConfig())
         for segment in find_segments(circuit):
-            name = segment.name.replace(" ", "_")
+            name = "start_finish" if segment.start_m == 0.0 else segment.name.replace(" ", "_")
             assert f'name="pillar_{name}_left"' in xml
             assert f'name="pillar_{name}_right"' in xml
 
@@ -462,3 +465,88 @@ class TestCheckpointPillars:
     def test_their_dimensions_must_be_positive(self, kwargs):
         with pytest.raises(ValueError, match="must be positive"):
             SceneConfig(**kwargs)
+
+
+class TestTheStartFinishLine:
+    """A checkered band across the circuit, and a checkered pair of pillars beside it.
+
+    Payton's reason for the check is that the one boundary which ends a lap should not
+    look like the twenty others that do not.
+    """
+
+    @pytest.fixture(scope="class")
+    def circuit(self):
+        from fly_driver.envs.centerline import Centerline
+
+        return Centerline.load()
+
+    def test_the_band_spans_the_road_and_its_kerbs(self, circuit):
+        """It marks where the lap ends, and the lap only ends when the car crosses it on
+        the circuit -- so the band and the rule have to agree about how wide that is."""
+        import re
+
+        config = SceneConfig()
+        xml = start_line_xml(circuit, config)
+        centre = [float(v) for v in re.search(r'pos="([^"]+)"', xml).group(1).split()]
+        half_span = float(re.search(r'size="[^ ]+ ([^ ]+)', xml).group(1))
+
+        point, yaw = circuit.pose_at(0.0)
+        normal = np.array([-np.sin(yaw), np.cos(yaw)])
+        for sign in (1.0, -1.0):
+            end = np.array(centre[:2]) + normal * sign * half_span
+            projection = circuit.project(float(end[0]), float(end[1]))
+            edge = (
+                projection.half_width_left
+                if projection.lateral >= 0.0
+                else projection.half_width_right
+            )
+            assert abs(projection.lateral) == pytest.approx(edge + config.kerb_width_m, abs=0.05), (
+                "the band does not reach the outside of the kerb"
+            )
+
+    def test_it_sits_at_the_line_not_somewhere_near_it(self, circuit):
+        import re
+
+        xml = start_line_xml(circuit, SceneConfig())
+        centre = [float(v) for v in re.search(r'pos="([^"]+)"', xml).group(1).split()]
+        projection = circuit.project(centre[0], centre[1])
+        assert min(projection.arclength, circuit.length - projection.arclength) < 1.0
+
+    def test_it_is_checkered_black_and_white(self, square):
+        xml = build_scene_xml(square, SceneConfig())
+        assert 'material="start_finish"' in xml
+        assert '<texture name="start_tex" type="2d" builtin="checker"' in xml
+
+    def test_nothing_can_hit_it(self, square):
+        """Like the kerbs and the racing line. Paint does not stop a car."""
+        model = mujoco.MjModel.from_xml_string(build_scene_xml(square, SceneConfig()))
+        index = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "start_finish_line")
+        assert index >= 0
+        assert model.geom_contype[index] == 0
+        assert model.geom_conaffinity[index] == 0
+
+    def test_it_lies_above_the_road_and_the_racing_line(self, square):
+        """Stacked, or it z-fights with whichever it is level with and flickers."""
+        config = SceneConfig()
+        model = mujoco.MjModel.from_xml_string(build_scene_xml(square, config))
+        index = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "start_finish_line")
+        assert model.geom_pos[index][2] > config.surface_height_m + 0.010
+
+    def test_the_pillars_on_the_line_are_checkered_and_the_rest_are_not(self, circuit):
+        xml = checkpoint_pillars_xml(circuit, SceneConfig())
+        for side in ("left", "right"):
+            assert f'name="pillar_start_finish_{side}"' in xml
+        checkered = [line for line in xml.split("\n") if 'material="start_finish"' in line]
+        assert len(checkered) == 2, "exactly one pair marks the line"
+        assert all("start_finish" in line for line in checkered)
+
+    def test_every_other_checkpoint_stays_grey(self, circuit):
+        from fly_driver.envs.segments import find_segments
+
+        xml = checkpoint_pillars_xml(circuit, SceneConfig())
+        grey = xml.count("rgba=")
+        assert grey == 2 * len(find_segments(circuit)) - 2
+
+    def test_the_band_must_have_a_positive_depth(self):
+        with pytest.raises(ValueError, match="must be positive"):
+            SceneConfig(start_line_depth_m=0.0)

@@ -480,7 +480,7 @@ class PracticeTrack:
 
         now = float(self._data.time)
         segment = self._segments.update(projection.arclength, now, off_track=is_off)
-        completed = self._lap.update(projection.arclength, now)
+        completed = self._lap.update(projection.arclength, now, on_track=not is_off)
 
         lap_penalty: float | None = None
         if completed is not None:

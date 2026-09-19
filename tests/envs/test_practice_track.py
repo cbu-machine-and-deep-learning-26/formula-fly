@@ -1007,3 +1007,46 @@ class TestTheRecordBookEndToEnd:
         assert list(log.records()) == [outcome.name for outcome in outcomes]
         assert all(log.best(outcome.name) > 0.0 for outcome in outcomes)
         assert "## Best segments" in log.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.render
+class TestTheClockSurvivesRunningWide:
+    """Payton's symptom, on the real circuit rather than a synthetic square.
+
+    Driving flat out from the grid leaves the circuit within a couple of seconds, which is
+    exactly the case that used to restart the lap clock: a car in the grass projects onto
+    the centerline unreliably, the jump trips max_step_m, and the guard used to zero the
+    clock. To a driver that reads as the lap having ended.
+    """
+
+    def test_the_lap_clock_never_goes_backwards(self):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            elapsed: list[float] = []
+            went_off = False
+            for _ in range(900):
+                info = _step(env, FLAT_OUT).info
+                went_off = went_off or info["off_track_fraction"] > 1.0
+                if info["on_out_lap"] or info["lap_complete"]:
+                    elapsed.clear()  # a completed lap legitimately restarts the clock
+                    continue
+                elapsed.append(info["lap_elapsed_s"])
+            assert went_off, "the car never left the circuit, so nothing was tested"
+            assert elapsed, "the clock never started"
+            assert elapsed == sorted(elapsed), "the lap clock restarted under the driver"
+        finally:
+            env.close()
+
+    def test_no_lap_is_awarded_while_off_the_circuit(self):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            for _ in range(900):
+                info = _step(env, FLAT_OUT).info
+                if info["lap_complete"]:
+                    assert info["off_track_fraction"] <= env.penalty.weights.minimum_depth, (
+                        "a lap ended with the car off the circuit"
+                    )
+        finally:
+            env.close()

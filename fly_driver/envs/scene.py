@@ -50,7 +50,11 @@ class SceneConfig:
             Payton asked for more after driving it. ``1.0`` restores the old behaviour,
             where the grass gripped exactly as well as the circuit.
         checkpoint_pillars: Put a pair of pillars at every segment boundary, marking where
-            each timed checkpoint starts and ends.
+            each timed checkpoint starts and ends. The pair on the start/finish line is
+            checkered black and white rather than grey, so the one boundary that ends a lap
+            is not just another checkpoint to look at.
+        start_line_depth_m: How far the checkered start/finish band reaches along the
+            circuit. The squares are sized from this, so the band is two rows deep.
         pillar_radius_m: Radius of those pillars.
         pillar_height_m: How tall they stand.
         pillar_margin_m: How far outside the kerb they sit, so they frame the circuit
@@ -144,6 +148,7 @@ class SceneConfig:
     mesh_spacing_m: float = 10.0
     grass_friction_scale: float = 0.55
     checkpoint_pillars: bool = True
+    start_line_depth_m: float = 1.6
     pillar_radius_m: float = 0.3
     pillar_height_m: float = 2.5
     pillar_margin_m: float = 1.5
@@ -185,7 +190,7 @@ class SceneConfig:
             raise ValueError(f"kerb_width_m must be non-negative, got {self.kerb_width_m}")
         if self.timestep <= 0:
             raise ValueError(f"timestep must be positive, got {self.timestep}")
-        for name in ("pillar_radius_m", "pillar_height_m", "pillar_margin_m"):
+        for name in ("pillar_radius_m", "pillar_height_m", "pillar_margin_m", "start_line_depth_m"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
         if not 0.0 < self.grass_friction_scale <= 1.0:
@@ -394,6 +399,31 @@ def _push_clear(
 _PILLAR_RGBA = "0.62 0.63 0.65 1"
 
 
+def start_line_xml(centerline: Centerline, config: SceneConfig | None = None) -> str:
+    """The checkered band across the circuit at the start/finish line.
+
+    Visual only, like the kerbs and the racing line, and stacked just above them so it is
+    never in a z-fight with either. It spans the full width of the road including the
+    kerbs, because that is what it does on a real circuit -- and because the lap only ends
+    when the car crosses it *on the circuit*, so the band and the rule agree about how wide
+    the finish is.
+    """
+    config = config or SceneConfig()
+    point, yaw = centerline.pose_at(0.0)
+    _, _, half_left, half_right = _scenery_frame(centerline, 0.0)
+    half_span = (half_left + half_right) / 2.0 + config.kerb_width_m
+    # Centred on the road rather than on the centerline, since the two half-widths differ.
+    normal = np.array([-np.sin(yaw), np.cos(yaw)])
+    centre = point + normal * ((half_left - half_right) / 2.0)
+    return (
+        f'\n    <geom name="start_finish_line" type="box" {_SCENERY_GEOM} '
+        f'pos="{centre[0]:.3f} {centre[1]:.3f} {config.surface_height_m + 0.012:.4f}" '
+        f'euler="0 0 {yaw:.5f}" '
+        f'size="{config.start_line_depth_m / 2:.3f} {half_span:.3f} 0.005" '
+        f'material="start_finish"/>'
+    )
+
+
 def checkpoint_pillars_xml(centerline: Centerline, config: SceneConfig | None = None) -> str:
     """A pair of pillars at every segment boundary, one each side of the circuit.
 
@@ -421,15 +451,20 @@ def checkpoint_pillars_xml(centerline: Centerline, config: SceneConfig | None = 
     pillars = ""
     for segment in find_segments(centerline):
         point, normal, half_left, half_right = _scenery_frame(centerline, segment.start_m)
+        # The boundary on the line is the one that ends a lap, so it is checkered rather
+        # than grey and does not read as just another checkpoint.
+        is_start_finish = segment.start_m == 0.0
+        finish = 'material="start_finish"' if is_start_finish else f'rgba="{_PILLAR_RGBA}"'
         for side, sign, half_width in (("left", 1.0, half_left), ("right", -1.0, half_right)):
             offset = half_width + config.kerb_width_m + config.pillar_margin_m
             position = point + normal * sign * offset
+            name = "start_finish" if is_start_finish else segment.name.replace(" ", "_")
             pillars += (
-                f'\n    <geom name="pillar_{segment.name.replace(" ", "_")}_{side}" '
+                f'\n    <geom name="pillar_{name}_{side}" '
                 f'type="cylinder" {_SCENERY_GEOM} '
                 f'pos="{position[0]:.3f} {position[1]:.3f} {half_height:.3f}" '
                 f'size="{config.pillar_radius_m:.3f} {half_height:.3f}" '
-                f'rgba="{_PILLAR_RGBA}"/>'
+                f"{finish}/>"
             )
     return pillars
 
@@ -613,10 +648,16 @@ def build_scene_xml(
                 )
 
     start_position, start_yaw = centerline.pose_at(0.0)
-    scenery = scenery_xml(centerline, config) + checkpoint_pillars_xml(centerline, config)
+    scenery = (
+        scenery_xml(centerline, config)
+        + checkpoint_pillars_xml(centerline, config)
+        + start_line_xml(centerline, config)
+    )
     tendon_block = f"\n\n  <tendon>{extra_tendons}\n  </tendon>" if extra_tendons.strip() else ""
     # texuniform makes texrepeat world-scaled, so this is tiles per metre.
     grass_repeat = 1.0 / config.grass_texture_repeat_m
+    # Two rows of squares across the band, which is what a real start line looks like.
+    start_check_repeat = 2.0 / config.start_line_depth_m
 
     return f"""<mujoco model="practice_track">
   <compiler angle="radian" autolimits="true"/>
@@ -660,6 +701,13 @@ def build_scene_xml(
     <material name="kerb" texture="kerb_tex"/>
     <material name="wall" rgba="0.8 0.8 0.85 1"/>
     <material name="racing_line" rgba="0.15 0.55 0.95 0.85"/>
+    <!-- The start/finish check. texuniform keeps the squares world-scaled, so they stay
+         square across the full width of the circuit instead of stretching with the geom. -->
+    <texture name="start_tex" type="2d" builtin="checker" width="64" height="64"
+             rgb1="0.95 0.95 0.95" rgb2="0.05 0.05 0.05"/>
+    <material name="start_finish" texture="start_tex"
+              texrepeat="{start_check_repeat:.4f} {start_check_repeat:.4f}"
+              texuniform="true"/>
 
     <mesh name="road" inertia="shell"
           vertex="{road_vertex}"
