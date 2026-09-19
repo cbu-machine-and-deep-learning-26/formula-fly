@@ -325,7 +325,7 @@ class TestTractionFactor:
         no longer provoke -- this is the first number to put back if transfer disappoints.
         """
         assert P.traction_slip_full > 0.10, "no longer the AC value; see the docstring"
-        assert P.traction_slip_full == pytest.approx(0.20)
+        assert P.traction_slip_full == pytest.approx(0.16)
 
     def test_the_limiter_still_eases_in_rather_than_switching(self):
         """The ramp has to keep its width or the aid becomes a switch, which shows up as

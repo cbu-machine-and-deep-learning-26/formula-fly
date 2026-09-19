@@ -114,17 +114,21 @@ class PowertrainConfig:
             ``traction_slip_full`` covers.
         traction_slip_full: Wheelspin slip below which the engine gets full torque.
 
-            0.20, which is **looser than Assetto Corsa's 0.10** and a deliberate departure
+            0.16, which is **looser than Assetto Corsa's 0.10** and a deliberate departure
             from matching it. At 0.10 the car could not be made to break traction by hand:
             full lock and full throttle at 60 km/h produced 1.9 degrees of sideslip, which
             is a rail, not a car. Payton's call, on the grounds that a car that cannot
             oversteer teaches a driver -- or a policy -- nothing about catching one.
 
-            Measured at 60 km/h with the clumsiest input available, sideslip goes 1.9
-            degrees at 0.10, 10.6 at 0.20, and 24.4 with the limiter switched off
-            entirely. 0.20 is the setting where the back steps out and can still be
-            caught. 0-100 km/h is 2.40 s at all three, so none of this is paid for in a
-            straight line.
+            It went to 0.20 first and came back to 0.16 after driving it, because 0.20
+            span too readily. Measured at 60 km/h with the clumsiest input available:
+            1.9 degrees of sideslip at 0.10, 4.5 at 0.13, 5.5 at 0.16, 8.3 at 0.20, and
+            24.4 with the limiter switched off entirely.
+
+            **This is the lever to reach for when the car slides too much or too little,**
+            because it is the only one that is free. 0-100 km/h is 2.25 s across that
+            whole range and lateral grip at 250 km/h does not move either, where every
+            0.05 of tyre friction costs about 0.07 s of 0-100 against a floor of 2.2.
 
             Worth knowing when this is revisited: AC's own SF70H really does run
             ``SLIP_RATIO_LIMIT=0.10, ACTIVE=1`` above 30 km/h, so 0.10 was the faithful
@@ -164,8 +168,8 @@ class PowertrainConfig:
     abs_slip_release: float = 0.25
     abs_min_speed_mps: float = 2.0
     traction_control_enabled: bool = True
-    traction_slip_full: float = 0.20
-    traction_slip_cut: float = 0.45
+    traction_slip_full: float = 0.16
+    traction_slip_cut: float = 0.41
     traction_min_speed_mps: float = 8.3
 
     def __post_init__(self) -> None:
