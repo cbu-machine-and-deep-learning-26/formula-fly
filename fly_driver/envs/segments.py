@@ -149,9 +149,13 @@ def signed_curvature(points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]
     """
     first = np.roll(points, -1, axis=0) - np.roll(points, 1, axis=0)
     second = np.roll(points, -1, axis=0) - 2.0 * points + np.roll(points, 1, axis=0)
-    speed = np.linalg.norm(first, axis=1) / 2.0
     cross = first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]
-    return cross / np.maximum(speed**3, 1e-9) / 4.0
+    # kappa = (x'y" - y'x") / (x'^2 + y'^2)^(3/2). With central differences over a step h,
+    # `first` is 2h*x' and `second` is h^2*x", and the h's cancel to leave a factor of 4.
+    # A circle of radius r must come back as exactly 1/r, and a test pins that -- an
+    # earlier version was out by a factor of two, which quietly made every radius setting
+    # in SegmentSettings mean twice what it said.
+    return 4.0 * cross / np.maximum(np.linalg.norm(first, axis=1) ** 3, 1e-12)
 
 
 def _smooth_cyclic(values: npt.NDArray[np.float64], window: int) -> npt.NDArray[np.float64]:
