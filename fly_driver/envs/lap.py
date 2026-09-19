@@ -26,6 +26,8 @@ from fly_driver.envs.centerline import Centerline
 
 __all__ = [
     "DEFAULT_LAP_LOG_PATH",
+    "SEGMENT_TABLE_END",
+    "SEGMENT_TABLE_START",
     "LapEntry",
     "LapLog",
     "LapTimer",
@@ -36,7 +38,14 @@ __all__ = [
 #: Where the record book lives. Repo root, so it is easy to find and edit by hand.
 DEFAULT_LAP_LOG_PATH = Path(__file__).resolve().parents[2] / "lap_times.md"
 
-_HEADER = """# Lap times
+#: Fences around the segment-best table, which :mod:`fly_driver.envs.segment_log` owns and
+#: rewrites in place. They are load-bearing rather than decorative: a segment row looks
+#: exactly like a lap row to :meth:`LapLog._read`, so without somewhere explicit to stop,
+#: a four-second corner would quietly become the fastest lap in the book.
+SEGMENT_TABLE_START = "<!-- segments -->"
+SEGMENT_TABLE_END = "<!-- /segments -->"
+
+_HEADER = f"""# Lap times
 
 The record book for the MuJoCo practice track (Silverstone). Every completed lap is
 appended here by `scripts/drive.py`.
@@ -49,10 +58,17 @@ keeping this in a document rather than in the code.
 A lap only counts if it was driven the whole way round; cutting back across the start line
 does not register one.
 
+`Lap` is the time that counts. It is `Raw` plus `Penalty`, where the penalty is the seconds
+earned by going off the circuit -- see `fly_driver/envs/penalty.py` for what an excursion
+costs. A lap driven entirely on the track has a penalty of zero and a `Lap` equal to `Raw`.
+
 Times are `M:SS.mmm`. Rows may be deleted or reordered freely, but keep the table header.
 
-| Date | Time | Driver | Note |
-| --- | --- | --- | --- |
+{SEGMENT_TABLE_START}
+{SEGMENT_TABLE_END}
+
+| Date | Lap | Penalty | Raw | Driver | Note |
+| --- | --- | --- | --- | --- | --- |
 """
 
 _TIME_PATTERN = re.compile(r"^\s*(?:(\d+):)?(\d+(?:\.\d+)?)\s*$")
@@ -84,6 +100,43 @@ def parse_lap_time(text: str) -> float | None:
     return value if value > 0 else None
 
 
+def _parse_seconds(text: str) -> float:
+    """A bare number of seconds, or 0.0 when the cell cannot be read.
+
+    Forgiving for the same reason :func:`parse_lap_time` is: a hand-edited penalty cell
+    reading ``--`` should cost that row its penalty, not the whole document.
+    """
+    try:
+        return max(0.0, float(text.strip().lstrip("+")))
+    except ValueError:
+        return 0.0
+
+
+def _entry_from(cells: list[str], seconds: float) -> LapEntry:
+    """Build a row from its cells, tolerating both layouts of the table.
+
+    Rows written before penalties existed have four columns and their time is the whole
+    story. Newer rows carry the penalty and the raw time between the lap time and the
+    driver. Column 1 is the lap time in both, which is what keeps an old record book
+    comparable with a new one rather than quietly unreadable.
+    """
+    has_penalty = len(cells) >= 5
+    if has_penalty:
+        return LapEntry(
+            seconds=seconds,
+            penalty_seconds=_parse_seconds(cells[2]),
+            when=cells[0],
+            driver=cells[4],
+            note=cells[5] if len(cells) > 5 else "",
+        )
+    return LapEntry(
+        seconds=seconds,
+        when=cells[0],
+        driver=cells[2] if len(cells) > 2 else "",
+        note=cells[3] if len(cells) > 3 else "",
+    )
+
+
 def _fraction_of(part: float, whole: float) -> float:
     """``part / whole`` clamped to [0, 1], for interpolating back within one step."""
     if whole <= 0:
@@ -96,16 +149,31 @@ class LapEntry:
     """One row of the record book.
 
     Args:
-        seconds: Lap time.
+        seconds: The lap time that counts -- raw plus penalty. This is what is compared,
+            so a lap with a five-second cut in it does not hold the record over a clean
+            lap that was four seconds slower on the stopwatch.
+        penalty_seconds: Of that, how much was earned by leaving the circuit. Zero for a
+            clean lap, and zero for rows written before penalties existed.
         when: Timestamp text exactly as written in the file.
         driver: Who or what drove it.
         note: Free text; ``new best`` is written when the lap beat the record at the time.
     """
 
     seconds: float
+    penalty_seconds: float = 0.0
     when: str = ""
     driver: str = ""
     note: str = ""
+
+    @property
+    def raw_seconds(self) -> float:
+        """The stopwatch time, before the penalty was added."""
+        return self.seconds - self.penalty_seconds
+
+    @property
+    def is_clean(self) -> bool:
+        """Whether the lap was driven without ever leaving the circuit."""
+        return self.penalty_seconds == 0.0
 
 
 class LapTimer:
@@ -273,9 +341,18 @@ class LapLog:
         except OSError:
             return []
         entries: list[LapEntry] = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line.startswith("|"):
+        in_segments = False
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            # The segment table is rows of times in this same document, and every one of
+            # them would read as a very fast lap. Skip the fenced block outright.
+            if line == SEGMENT_TABLE_START:
+                in_segments = True
+                continue
+            if line == SEGMENT_TABLE_END:
+                in_segments = False
+                continue
+            if in_segments or not line.startswith("|"):
                 continue
             cells = [cell.strip() for cell in line.strip("|").split("|")]
             if len(cells) < 2:
@@ -283,14 +360,7 @@ class LapLog:
             seconds = parse_lap_time(cells[1])
             if seconds is None:
                 continue  # the header row and any mangled row land here
-            entries.append(
-                LapEntry(
-                    seconds=seconds,
-                    when=cells[0],
-                    driver=cells[2] if len(cells) > 2 else "",
-                    note=cells[3] if len(cells) > 3 else "",
-                )
-            )
+            entries.append(_entry_from(cells, seconds))
         return entries
 
     def best(self) -> float | None:
@@ -302,6 +372,7 @@ class LapLog:
         self,
         seconds: float,
         *,
+        penalty_seconds: float = 0.0,
         driver: str = "",
         when: datetime | None = None,
         note: str = "",
@@ -310,16 +381,36 @@ class LapLog:
 
         The comparison reads the document first, so a record deleted by hand stops
         counting from that moment on.
+
+        Args:
+            seconds: The stopwatch time, before any penalty.
+            penalty_seconds: Seconds earned by leaving the circuit, from
+                :meth:`~fly_driver.envs.penalty.OffTrackPenalty.finish_lap`. Added to
+                ``seconds`` to give the time that is recorded and compared. Taking the two
+                separately rather than pre-added is what stops a caller adding the penalty
+                twice, or forgetting it and filing a cut lap as though it were clean.
+            driver: Who or what drove it.
+            when: Timestamp; defaults to now.
+            note: Free text. ``new best`` is written when the lap beat the record.
+
+        Raises:
+            ValueError: If the raw time is not positive, or the penalty is negative.
         """
         if seconds <= 0:
             raise ValueError(f"lap time must be positive, got {seconds}")
+        if penalty_seconds < 0:
+            raise ValueError(f"penalty must be non-negative, got {penalty_seconds}")
+        lap_seconds = seconds + penalty_seconds
         previous = self.best()
-        is_best = previous is None or seconds < previous
+        is_best = previous is None or lap_seconds < previous
         if not note:
             note = "new best" if is_best else ""
 
         stamp = (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-        row = f"| {stamp} | {format_lap_time(seconds)} | {driver} | {note} |\n"
+        row = (
+            f"| {stamp} | {format_lap_time(lap_seconds)} | {penalty_seconds:.3f} "
+            f"| {format_lap_time(seconds)} | {driver} | {note} |\n"
+        )
         if not self.path.exists():
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(_HEADER, encoding="utf-8")

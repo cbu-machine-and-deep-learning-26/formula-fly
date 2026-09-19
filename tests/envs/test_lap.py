@@ -15,6 +15,8 @@ import pytest
 
 from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.lap import (
+    SEGMENT_TABLE_END,
+    SEGMENT_TABLE_START,
     LapLog,
     LapTimer,
     format_lap_time,
@@ -183,7 +185,7 @@ class TestLapLog:
         log.record(95.5, driver="gamepad")
         text = log.path.read_text(encoding="utf-8")
         assert text.startswith("# Lap times")
-        assert "| Date | Time | Driver | Note |" in text
+        assert "| Date | Lap | Penalty | Raw | Driver | Note |" in text
         assert "1:35.500" in text
 
     def test_the_first_lap_is_a_best(self, tmp_path):
@@ -458,3 +460,130 @@ class TestSubStepAccuracy:
         assert len(laps) >= 4
         for lap in laps:
             assert lap == pytest.approx(square.length / speed, abs=1e-3)
+
+
+class TestPenalties:
+    """The lap that counts is raw plus penalty, and the two are kept visible separately.
+
+    The failure this guards is quiet: a cut lap filed as though it were clean holds the
+    record, and the document gives no sign that anything happened.
+    """
+
+    def test_the_penalty_is_added_to_the_recorded_time(self, tmp_path):
+        log = LapLog(tmp_path / "l.md")
+        log.record(90.0, penalty_seconds=5.0)
+        assert log.best() == pytest.approx(95.0)
+
+    def test_a_clean_lap_beats_a_faster_dirty_one(self, tmp_path):
+        """The reason the penalty is added before comparing rather than after."""
+        log = LapLog(tmp_path / "l.md")
+        assert log.record(90.0, penalty_seconds=7.0) is True
+        assert log.record(95.0) is True, "a clean 95 beats a 90 that cost 7 seconds"
+        assert log.best() == pytest.approx(95.0)
+
+    def test_raw_and_penalty_are_both_readable_afterwards(self, tmp_path):
+        log = LapLog(tmp_path / "l.md")
+        log.record(90.0, penalty_seconds=5.25, driver="gamepad")
+        entry = log.entries()[0]
+        assert entry.seconds == pytest.approx(95.25)
+        assert entry.penalty_seconds == pytest.approx(5.25)
+        assert entry.raw_seconds == pytest.approx(90.0)
+        assert entry.driver == "gamepad"
+        assert not entry.is_clean
+
+    def test_a_lap_with_no_penalty_is_clean(self, tmp_path):
+        log = LapLog(tmp_path / "l.md")
+        log.record(90.0, driver="fly", note="hello")
+        entry = log.entries()[0]
+        assert entry.is_clean
+        assert entry.raw_seconds == pytest.approx(entry.seconds)
+        assert (entry.driver, entry.note) == ("fly", "hello")
+
+    def test_rows_written_before_penalties_existed_still_read(self, tmp_path):
+        """Payton's 1:52.229 is on file in the four-column layout. Losing it to a schema
+        change would be the worst kind of silent break: the record book still parses, and
+        the human lap the fly is measured against has simply gone."""
+        path = tmp_path / "l.md"
+        path.write_text(
+            "| Date | Time | Driver | Note |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 2026-09-18 22:14:03 | 1:52.229 | gamepad (PS5 Controller) | new best |\n",
+            encoding="utf-8",
+        )
+        entry = LapLog(path).entries()[0]
+        assert entry.seconds == pytest.approx(112.229)
+        assert entry.penalty_seconds == 0.0
+        assert entry.driver == "gamepad (PS5 Controller)"
+        assert entry.note == "new best"
+
+    def test_old_and_new_rows_compare_against_each_other(self, tmp_path):
+        path = tmp_path / "l.md"
+        path.write_text(
+            "| Date | Time | Driver | Note |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 2026-09-18 22:14:03 | 1:52.229 | gamepad | new best |\n",
+            encoding="utf-8",
+        )
+        log = LapLog(path)
+        assert log.record(100.0, penalty_seconds=20.0) is False, "120s does not beat 112.229"
+        assert log.best() == pytest.approx(112.229)
+
+    def test_an_unreadable_penalty_cell_costs_only_that_row_its_penalty(self, tmp_path):
+        path = tmp_path / "l.md"
+        path.write_text(
+            "| 2026-09-19 10:00:00 | 1:35.500 | -- | 1:35.500 | fly |  |\n", encoding="utf-8"
+        )
+        entry = LapLog(path).entries()[0]
+        assert entry.seconds == pytest.approx(95.5)
+        assert entry.penalty_seconds == 0.0
+
+    def test_a_negative_penalty_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="non-negative"):
+            LapLog(tmp_path / "l.md").record(90.0, penalty_seconds=-1.0)
+
+
+class TestTheSegmentFence:
+    """Segment rows live in the same document and look exactly like lap rows.
+
+    Nothing raises if the fence stops working -- the record book simply reports a
+    four-second lap, which is why this is tested rather than trusted.
+    """
+
+    def _with_segments(self, path, *rows):
+        path.write_text(
+            "| Date | Lap | Penalty | Raw | Driver | Note |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| 2026-09-19 10:00:00 | 1:35.500 | 0.000 | 1:35.500 | fly |  |\n"
+            "\n" + SEGMENT_TABLE_START + "\n" + "".join(rows) + SEGMENT_TABLE_END + "\n",
+            encoding="utf-8",
+        )
+        return LapLog(path)
+
+    def test_a_segment_best_does_not_become_the_fastest_lap(self, tmp_path):
+        log = self._with_segments(
+            tmp_path / "l.md",
+            "| Segment | Best | Driver | Set |\n",
+            "| --- | --- | --- | --- |\n",
+            "| T1 | 0:04.812 | gamepad | 2026-09-19 |\n",
+        )
+        assert log.best() == pytest.approx(95.5)
+        assert len(log.entries()) == 1
+
+    def test_laps_after_the_fence_are_still_read(self, tmp_path):
+        """Lap rows append at the end of the file, so the fence has to close as well as
+        open -- otherwise every lap after the first is invisible."""
+        path = tmp_path / "l.md"
+        self._with_segments(path, "| T1 | 0:04.812 | gamepad | 2026-09-19 |\n")
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write("| 2026-09-19 10:05:00 | 1:30.000 | 0.000 | 1:30.000 | fly |  |\n")
+        log = LapLog(path)
+        assert len(log.entries()) == 2
+        assert log.best() == pytest.approx(90.0)
+
+    def test_a_fresh_document_carries_the_fence(self, tmp_path):
+        """So the segment table has somewhere to go without rewriting the prose."""
+        log = LapLog(tmp_path / "l.md")
+        log.record(95.5)
+        text = log.path.read_text(encoding="utf-8")
+        assert SEGMENT_TABLE_START in text
+        assert text.index(SEGMENT_TABLE_START) < text.index(SEGMENT_TABLE_END)
