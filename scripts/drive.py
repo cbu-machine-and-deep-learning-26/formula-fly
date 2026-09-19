@@ -45,17 +45,28 @@ and brake as bars, steering as a bar running -1 to +1 as the ControlVector does,
 of each coilover, lap times, and a map of the circuit with a fly marking where you are.
 ``--no-hud`` suppresses it.
 
-Run wide and the lap is thrown away: once 15% of the car's width is past the kerb and onto
-the grass the car goes back to the grid and the clock resets, the same way a real timed lap
-is lost. ``--track-limit`` changes the fraction, and 0 turns the rule off.
+Run wide and it costs you seconds rather than the lap. The penalty scales with how far off
+the car went and how long it stayed there, so brushing a kerb is worth a few tenths and
+cutting a corner outright is worth several seconds; it is added to the stopwatch at the
+line, and that total is the real lap time. The panel shows it climbing while you are still
+off, and the terminal prints the raw time and the penalty separately afterwards so one
+number cannot hide a cut. ``--track-limit`` brings back the old rule -- back to the grid,
+clock reset -- at whatever fraction of the car's width you give it; it is off by default.
+
+The lap is also cut into segments, corner by corner and straight by straight, and each is
+timed. Crossing into the next one prints the time just set and how it compares with the
+best on record: ``T4  0:06.221  -0.184  NEW BEST``, or a ``+`` and no fanfare when it was
+slower. The panel shows the same delta in green or red beside the lap times. A segment you
+went off in is timed but can never set a record, so a corner cut is not a corner time.
 
 The car starts behind the start line, and the clock only begins when it first crosses:
 the panel shows ``OUT`` until then, so the run-up is not charged to lap one.
 
 Every completed lap is appended to the lap-time document (``lap_times.md`` by default,
-``--lap-log`` to point elsewhere, ``--no-lap-log`` to time laps without writing them down).
-The best time on the panel is read back out of that document rather than remembered here,
-so deleting a row from it changes the record straight away -- even mid-session.
+``--lap-log`` to point elsewhere, ``--no-lap-log`` to time laps and segments without
+writing either down), along with a table of the best time through each segment. Both are
+read back out of that document rather than remembered here, so deleting a row changes the
+record straight away -- even mid-session.
 
 Everything else is MuJoCo's own viewer binding, and those take precedence:
 
