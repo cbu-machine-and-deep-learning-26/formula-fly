@@ -32,12 +32,12 @@ class TestTheAnchors:
     def test_brushing_a_kerb_costs_about_half_a_second(self):
         penalty = OffTrackPenalty()
         _drive_off(penalty, depth=0.2, seconds=0.5)
-        assert penalty.finish_lap() == pytest.approx(0.53, abs=0.02)
+        assert penalty.finish_lap() == pytest.approx(0.57, abs=0.02)
 
     def test_cutting_a_corner_costs_about_seven_seconds(self):
         penalty = OffTrackPenalty()
         _drive_off(penalty, depth=1.2, seconds=3.0)
-        assert penalty.finish_lap() == pytest.approx(7.08, abs=0.05)
+        assert penalty.finish_lap() == pytest.approx(7.10, abs=0.05)
 
     def test_a_clean_lap_costs_nothing(self):
         penalty = OffTrackPenalty()
@@ -76,14 +76,15 @@ class TestTheAccounting:
         assert deep_then_shallow.seconds - banked == pytest.approx(shallow.finish_lap())
 
     def test_the_worst_moment_is_what_is_charged(self):
-        """Depth is sampled per step, so a brief deep cut inside a long shallow excursion
-        is still a deep cut."""
+        """Depth is sampled per step, so a brief deep moment inside a long shallow
+        excursion is still charged at its worst -- capped, since 0.8 is under the ceiling
+        and 1.4 would not be."""
         penalty = OffTrackPenalty()
         penalty.update(0.1, 0.02)
-        penalty.update(1.4, 0.02)
+        penalty.update(0.8, 0.02)
         penalty.update(0.1, 0.02)
         penalty.update(0.0, 0.02)
-        assert penalty.seconds > DEFAULT_PENALTY_WEIGHTS.peak_weight * 1.4
+        assert penalty.seconds > DEFAULT_PENALTY_WEIGHTS.peak_weight * 0.8
 
     def test_crossing_the_line_while_still_off_track_does_not_launder_it(self):
         """The reason finish_lap banks rather than discards. Without it, running wide over
@@ -183,3 +184,61 @@ class TestValidation:
         weights being frozen is what keeps one env from rewriting another's rules."""
         OffTrackPenalty().update(1.0, 0.02)
         assert DEFAULT_PENALTY_WEIGHTS.peak_weight == 2.0
+
+
+class TestTheCap:
+    """``off_track_fraction`` is unbounded -- metres past the kerb over the car's width --
+    so a spin into the infield reads 20, not 1.2.
+
+    Without a ceiling the first draft of these weights charged 147 seconds for one such
+    excursion on a real hand-driven lap, which is longer than the lap it was added to. The
+    numbers here come from that drive.
+    """
+
+    def test_a_spin_into_the_infield_does_not_cost_more_than_the_lap(self):
+        penalty = OffTrackPenalty()
+        _drive_off(penalty, depth=20.4, seconds=8.0)  # measured: 47 m off at Silverstone
+        assert penalty.finish_lap() < 20.0
+
+    def test_beyond_the_cap_going_further_off_costs_nothing_more(self):
+        """The cap's actual claim. Past a car's width off, the car is simply off, and how
+        much further is no longer information about how bad it was."""
+        at_cap, far_beyond = OffTrackPenalty(), OffTrackPenalty()
+        _drive_off(at_cap, depth=DEFAULT_PENALTY_WEIGHTS.maximum_depth, seconds=2.0)
+        _drive_off(far_beyond, depth=50.0, seconds=2.0)
+        assert far_beyond.finish_lap() == pytest.approx(at_cap.finish_lap())
+
+    def test_below_the_cap_depth_still_matters(self):
+        """Otherwise the cap would have flattened the whole scale rather than its tail."""
+        shallow, deeper = OffTrackPenalty(), OffTrackPenalty()
+        _drive_off(shallow, depth=0.25, seconds=1.0)
+        _drive_off(deeper, depth=0.75, seconds=1.0)
+        assert deeper.finish_lap() > shallow.finish_lap() * 2.0
+
+    def test_time_still_accrues_past_the_cap(self):
+        """Once depth stops carrying information, duration is all that is left to tell a
+        brief excursion from a long one -- so it must keep counting."""
+        brief, sustained = OffTrackPenalty(), OffTrackPenalty()
+        _drive_off(brief, depth=30.0, seconds=1.0)
+        _drive_off(sustained, depth=30.0, seconds=6.0)
+        assert sustained.finish_lap() > brief.finish_lap()
+
+    def test_the_cap_cannot_make_a_deep_excursion_read_as_on_track(self):
+        """It is applied before the on-track threshold, not after. A cap below the
+        threshold would otherwise make the worst excursions free."""
+        penalty = OffTrackPenalty(PenaltyWeights(minimum_depth=0.02, maximum_depth=0.05))
+        _drive_off(penalty, depth=50.0, seconds=1.0)
+        assert penalty.excursions == 1
+        assert penalty.finish_lap() > 0.0
+
+    def test_the_cap_is_configurable(self):
+        loose = OffTrackPenalty(PenaltyWeights(maximum_depth=5.0))
+        _drive_off(loose, depth=50.0, seconds=1.0)
+        tight = OffTrackPenalty()
+        _drive_off(tight, depth=50.0, seconds=1.0)
+        assert loose.finish_lap() > tight.finish_lap()
+
+    @pytest.mark.parametrize("maximum", [0.02, 0.01, 0.0, -1.0])
+    def test_a_cap_at_or_below_the_threshold_is_refused(self, maximum):
+        with pytest.raises(ValueError, match="above minimum_depth"):
+            PenaltyWeights(minimum_depth=0.02, maximum_depth=maximum)

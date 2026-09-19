@@ -801,12 +801,13 @@ class TestThePenalty:
         finally:
             env.close()
 
-    def test_the_charge_is_made_on_the_depth_the_env_measures(self):
-        """The wiring, not the formula -- the curve from depth to seconds is pinned
-        deterministically in test_penalty.py. With the time term switched off the total is
-        the peak of each excursion, so it can be checked against the depths actually seen
-        without depending on how the car happens to slide."""
-        env = PracticeTrack(penalty_weights=PenaltyWeights(peak_weight=1.0, time_weight=0.0))
+    def test_the_depth_the_env_reports_runs_far_past_the_cap(self):
+        """Why the cap exists, measured rather than assumed. off_track_fraction is metres
+        past the kerb over the car's width and has no upper bound, so a car that spins
+        into the infield reports a depth in the tens. With the time term off, the charge
+        is one capped peak per excursion however deep the car actually went."""
+        weights = PenaltyWeights(peak_weight=1.0, time_weight=0.0)
+        env = PracticeTrack(penalty_weights=weights)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -814,11 +815,11 @@ class TestThePenalty:
             deepest = 0.0
             for _ in range(200):
                 deepest = max(deepest, _step(env, lock).info["off_track_fraction"])
-            assert deepest > 0.0, "full lock at speed never left the circuit"
-            # Equal for a single excursion, more if the car rejoined and went off again.
-            assert env.penalty.total_seconds == pytest.approx(deepest) or (
-                env.penalty.total_seconds > deepest
-            )
+            assert deepest > 10.0, f"expected a deep excursion, got {deepest:.2f}"
+            charged = env.penalty.total_seconds
+            assert charged > 0.0
+            assert charged <= env.penalty.excursions * weights.maximum_depth
+            assert charged < deepest, "the raw depth was charged; the cap is not applied"
         finally:
             env.close()
 
