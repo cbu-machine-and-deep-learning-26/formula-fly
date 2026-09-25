@@ -100,8 +100,8 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 
 - Proposal near-final (due Sep 18).
 - Repo scaffolding, git-flow templates, and CI skeleton merged to `develop`. The issue backlog (#13–#34) covers all ten weeks.
-- **Landed on `develop`:** the hexagonal eye resampler (#13), the frozen flyvis eye as the default visual frontend (#14), and the standalone-stack documentation (#19, `docs/running-the-stacks.md`). The evaluation harness (#18) is in review.
-- **In progress:** the MuJoCo practice track (#16) — track, car, head camera, and the env the eye plugs into.
+- **Landed on `develop`:** the hexagonal eye resampler (#13), the frozen flyvis eye as the default visual frontend (#14), the standalone-stack documentation (#19, `docs/running-the-stacks.md`), the evaluation harness (#18), the MuJoCo practice track (#16), the shared stage contract and drivers (#20), and the tethered flybody (#21).
+- **In review:** the training loop (#17, `docs/training.md`): config-driven PPO with a frozen eye and a small MLP head, per-term rewards to CSV, seeds `[0, 1, 2]` as a config field, W&B off by default. Verified on the dummy track (laps within ~40k steps) and running on the practice track; a completed practice-track lap by the connectome eye is the week-3 milestone (§8), not this issue's criterion.
 - Assetto Corsa purchased.
 - Hardware confirmed: 4× DGX Spark cluster + a Windows machine. **Note:** this file says RTX 4090 in §7, but the Windows box in use reports an RTX 4060 Ti 16 GB — confirm which is correct before sizing any run against it.
 - Immediate working focus: the practice-track env (#16), then the **eye + brain track (E)** on top of it.
@@ -122,7 +122,7 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 9. Implement the three control eyes with matched output dimension: small CNN, fixed random projection, and the degree-matched shuffled-connectome variant of the flyvis network.
 
 ### Phase 2 — first learning
-10. PPO (CleanRL-style or SB3) on the MuJoCo practice track with the frozen flyvis eye + small policy head. Get any completed lap. Then the same for all control eyes, 3 seeds each, on the Sparks.
+10. ~~PPO (CleanRL-style or SB3) on the MuJoCo practice track with the frozen flyvis eye + small policy head.~~ The loop is #17 (`scripts/train.py`, `fly_driver/training/train.py`; CleanRL-style PPO, no SB3/gymnasium dependency). Config = `{eye.type, brain, eye.frozen, seeds}`; per-term rewards and PPO statistics go to CSV; the eval harness runs periodically for learning curves. **Still open:** get any completed lap with the flyvis eye on the practice track, then the same for all control eyes (#15), 3 seeds each, on the Sparks. Fine-tuning the flyvis eye (`eye.frozen: false`) is refused by the loop because the optic lobe is recurrent; it needs a backprop-through-time design and is its own condition.
 11. Produce the first results table + learning curves automatically from logs.
 
 ### Phase 3 — brain (after Phase 2 works)
