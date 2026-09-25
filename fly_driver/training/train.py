@@ -260,7 +260,7 @@ def train_seed(
     env = build_env(config.env)
     try:
         eye = build_eye(config.eye, env)
-        trainable_eye = _trainable_eye(config.eye, eye)
+        trainable_eye = _trainable_eye(config.eye, eye, device)
         if BRAIN_BUILDERS[config.brain] is not None:  # pragma: no cover - none registered yet
             raise NotImplementedError(f"brain {config.brain!r} has a builder but no wiring")
         feature_dim = int(eye.feature_dim)
@@ -286,8 +286,8 @@ def train_seed(
         env.close()
 
 
-def _trainable_eye(config: EyeConfig, eye: Eye) -> DifferentiableEye | None:
-    """The eye to hand the optimiser, or ``None`` when it stays frozen."""
+def _trainable_eye(config: EyeConfig, eye: Eye, device: torch.device) -> DifferentiableEye | None:
+    """The eye to hand the optimiser, on the training device, or ``None`` when it is frozen."""
     if config.frozen:
         freeze = getattr(eye, "requires_grad_", None)
         if callable(freeze):
@@ -303,6 +303,9 @@ def _trainable_eye(config: EyeConfig, eye: Eye) -> DifferentiableEye | None:
         )
     if not any(parameter.requires_grad for parameter in eye.parameters()):
         raise ValueError(f"eye type {config.type!r} has no trainable parameters; set frozen: true")
+    move = getattr(eye, "to", None)
+    if callable(move):
+        move(device)
     return eye
 
 

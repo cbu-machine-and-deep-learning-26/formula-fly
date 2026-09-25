@@ -14,6 +14,9 @@ from fly_driver.eyes import PixelEye  # noqa: E402
 from fly_driver.interface import ControlVector, Policy  # noqa: E402
 from fly_driver.policies.mlp_policy import MlpPolicy, RunningNormalizer  # noqa: E402
 
+#: flyvis may have made CUDA the default device earlier in this process; see tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("cpu_default_device")
+
 DIM = 12
 
 
@@ -92,8 +95,12 @@ class TestTheNormalizer:
         for batch in batches:
             normalizer.update(torch.as_tensor(batch))
         stacked = np.concatenate(batches)
-        np.testing.assert_allclose(normalizer.mean.numpy(), stacked.mean(0), rtol=1e-4, atol=1e-4)
-        np.testing.assert_allclose(normalizer.var.numpy(), stacked.var(0), rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(
+            normalizer.mean.cpu().numpy(), stacked.mean(0), rtol=1e-4, atol=1e-4
+        )
+        np.testing.assert_allclose(
+            normalizer.var.cpu().numpy(), stacked.var(0), rtol=1e-3, atol=1e-3
+        )
         assert float(normalizer.count) == 150.0
 
     def test_normalised_output_is_standardised_and_clipped(self):

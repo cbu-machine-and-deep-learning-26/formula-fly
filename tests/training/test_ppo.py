@@ -13,6 +13,9 @@ from fly_driver.policies.mlp_policy import MlpPolicy  # noqa: E402
 from fly_driver.training.config import PPOConfig  # noqa: E402
 from fly_driver.training.ppo import DifferentiableEye, PPOLearner, RolloutBuffer  # noqa: E402
 
+#: flyvis may have made CUDA the default device earlier in this process; see tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("cpu_default_device")
+
 DIM = 6
 
 
@@ -155,6 +158,16 @@ class TestTheUpdate:
             PPOLearner(policy, config).update(buffer, update_index=1, total_updates=1)
         assert all(torch.equal(a, b) for a, b in zip(before, policy.parameters(), strict=True))
 
+    def test_the_learner_runs_where_the_policy_is(self):
+        """Not on torch's default device, which ``import flyvis`` may have moved to CUDA."""
+        policy = MlpPolicy(DIM)
+        learner = PPOLearner(policy, PPOConfig(rollout_steps=32, minibatches=4))
+        assert learner.device == policy.device
+
+    def test_a_policy_somewhere_else_is_refused(self):
+        with pytest.raises(ValueError, match="policy parameters are on cpu"):
+            PPOLearner(MlpPolicy(DIM), PPOConfig(rollout_steps=32, minibatches=4), device="meta")
+
     def test_a_buffer_of_the_wrong_size_is_refused(self):
         config = PPOConfig(rollout_steps=64, minibatches=4)
         buffer = _filled_buffer(32)
@@ -189,7 +202,8 @@ class LinearEye(nn.Module):
 
     def encode(self, frame):
         with torch.no_grad():
-            return self.encode_batch(torch.as_tensor(frame)[None])[0].numpy().astype(np.float32)
+            batch = torch.as_tensor(frame, device=self.linear.weight.device)[None]
+            return self.encode_batch(batch)[0].cpu().numpy().astype(np.float32)
 
 
 class TestFineTuningAnEye:
@@ -206,6 +220,11 @@ class TestFineTuningAnEye:
             buffer, update_index=1, total_updates=1
         )
         assert not torch.equal(before, eye.linear.weight)
+
+    def test_an_eye_on_another_device_is_refused(self):
+        eye = LinearEye().to("meta")
+        with pytest.raises(ValueError, match="eye parameters are on meta"):
+            PPOLearner(MlpPolicy(DIM), PPOConfig(rollout_steps=32, minibatches=4), eye=eye)
 
     def test_an_eye_without_trainable_parameters_is_refused(self):
         eye = LinearEye()

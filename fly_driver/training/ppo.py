@@ -21,7 +21,7 @@ stepping on it, and the tests pin the advantage recursion to a hand-computed cas
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -41,7 +41,9 @@ class DifferentiableEye(Protocol):
 
     The rollout still uses ``encode`` (numpy, one frame) and the update uses
     :meth:`encode_batch`; the two must agree on the same frame, or the first minibatch's
-    probability ratio is not 1 and the clip has nothing to protect.
+    probability ratio is not 1 and the clip has nothing to protect. ``encode`` takes and
+    returns numpy whichever device the parameters are on; the learner moves nothing itself
+    and refuses an eye whose parameters are not on its device.
     """
 
     def parameters(self) -> Iterator[nn.Parameter]:
@@ -166,10 +168,13 @@ class PPOLearner:
         config: Hyperparameters.
         eye: A :class:`DifferentiableEye` to fine-tune alongside the policy, or ``None`` to
             train the policy on the stored features alone (the frozen-eye default).
-        device: Where the update runs.
+        device: Where the update runs. ``None`` means wherever the policy's parameters
+            are -- never torch's process-wide default device, which ``import flyvis`` sets to
+            CUDA on any GPU machine.
 
     Raises:
-        ValueError: If ``eye`` is given but has no parameters to train.
+        ValueError: If ``eye`` is given but has no parameters to train, or if the policy or
+            the eye has parameters on a device other than ``device``.
     """
 
     def __init__(
@@ -178,17 +183,19 @@ class PPOLearner:
         config: PPOConfig,
         *,
         eye: DifferentiableEye | None = None,
-        device: str | torch.device = "cpu",
+        device: str | torch.device | None = None,
     ) -> None:
         self.policy = policy
         self.config = config
         self.eye = eye
-        self.device = torch.device(device)
+        self.device = policy.device if device is None else torch.device(device)
+        _require_device("policy", policy.parameters(), self.device)
         parameters = list(policy.parameters())
         if eye is not None:
             eye_parameters = [p for p in eye.parameters() if p.requires_grad]
             if not eye_parameters:
                 raise ValueError("eye has no trainable parameters; use frozen: true")
+            _require_device("eye", eye_parameters, self.device)
             parameters.extend(eye_parameters)
         self.optimizer = torch.optim.Adam(parameters, lr=config.learning_rate, eps=1e-5)
 
@@ -323,6 +330,28 @@ class PPOLearner:
             learning_rate=learning_rate,
             epochs_run=epochs_run,
         )
+
+
+def _same_device(left: torch.device, right: torch.device) -> bool:
+    """``cuda`` and ``cuda:0`` are the same device when 0 is the current one."""
+    if left.type != right.type:
+        return False
+    if left.type != "cuda" or left.index == right.index:
+        return True
+    current = torch.cuda.current_device()
+    return (current if left.index is None else left.index) == (
+        current if right.index is None else right.index
+    )
+
+
+def _require_device(name: str, parameters: Iterable[nn.Parameter], device: torch.device) -> None:
+    """Refuse parameters that live somewhere the update will not run."""
+    for parameter in parameters:
+        if not _same_device(parameter.device, device):
+            raise ValueError(
+                f"{name} parameters are on {parameter.device} but the learner runs on "
+                f"{device}; move it with .to({str(device)!r}) first"
+            )
 
 
 def _explained_variance(values: np.ndarray, returns: np.ndarray) -> float:

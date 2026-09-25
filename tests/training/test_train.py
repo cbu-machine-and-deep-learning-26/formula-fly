@@ -43,7 +43,11 @@ from fly_driver.training.train import (  # noqa: E402
     train_seed,
 )
 
+#: flyvis may have made CUDA the default device earlier in this process; see tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("cpu_default_device")
+
 TERM_COLUMNS = ["reward_lap_bonus", "reward_lateral", "reward_off_track", "reward_progress"]
+NEEDS_GPU = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA or ROCm GPU")
 
 
 def _config(tmp_path: Path, **overrides) -> TrainConfig:
@@ -190,10 +194,14 @@ class TestFrozenVersusFineTuned:
         with pytest.raises(ValueError, match="cannot be fine-tuned"):
             train_seed(config, 0)
 
+    @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=NEEDS_GPU)])
     def test_fine_tuning_trains_the_eye_and_frozen_leaves_it_alone(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, device: str
     ):
-        """A feed-forward eye with parameters, registered as the pixels builder for the test."""
+        """A feed-forward eye with parameters, registered as the pixels builder for the test.
+
+        On the GPU the loop has to move the eye there itself: the builder makes it on the CPU.
+        """
         built: list[nn.Module] = []
 
         class LinearEye(nn.Module):
@@ -220,18 +228,19 @@ class TestFrozenVersusFineTuned:
 
             def encode(self, frame):
                 with torch.no_grad():
-                    out = self.encode_batch(torch.as_tensor(frame)[None])[0]
-                return out.numpy().astype(np.float32)
+                    batch = torch.as_tensor(frame, device=self.linear.weight.device)[None]
+                    out = self.encode_batch(batch)[0]
+                return out.cpu().numpy().astype(np.float32)
 
         monkeypatch.setitem(
             train_module.EYE_BUILDERS, "pixels", lambda config, env: LinearEye(env.frame_shape)
         )
 
-        train_seed(_config(tmp_path / "frozen", eye=EyeConfig(type="pixels", frozen=True)), 0)
+        frozen = EyeConfig(type="pixels", frozen=True)
+        train_seed(_config(tmp_path / "frozen", eye=frozen, device=device), 0)
         frozen_eye = built[-1]
-        result = train_seed(
-            _config(tmp_path / "tuned", eye=EyeConfig(type="pixels", frozen=False)), 0
-        )
+        tuned = EyeConfig(type="pixels", frozen=False)
+        result = train_seed(_config(tmp_path / "tuned", eye=tuned, device=device), 0)
         tuned_eye = built[-1]
         # Seed 0 is what the run seeds torch with just before it builds the eye, so this is
         # exactly the eye both runs started from.
@@ -239,8 +248,9 @@ class TestFrozenVersusFineTuned:
         fresh = LinearEye(tuned_eye.frame_shape)
 
         assert not any(p.requires_grad for p in frozen_eye.parameters())
+        assert tuned_eye.linear.weight.device.type == device
         assert torch.equal(fresh.linear.weight, frozen_eye.linear.weight)
-        assert not torch.equal(fresh.linear.weight, tuned_eye.linear.weight)
+        assert not torch.equal(fresh.linear.weight, tuned_eye.linear.weight.cpu())
         assert (result.run_dir / "eye_final.pt").exists()
         assert not (tmp_path / "frozen" / "runs" / "test" / "seed_0" / "eye_final.pt").exists()
 
@@ -271,6 +281,21 @@ class TestTheEnvContract:
         )
         with pytest.raises(ValueError, match="must add up"):
             train_seed(_config(tmp_path), 0)
+
+
+@NEEDS_GPU
+def test_the_loop_trains_on_the_gpu(tmp_path: Path):
+    """Same loop, same files, with the policy and the update on the GPU."""
+    result = train_seed(_config(tmp_path, device="cuda"), 0)
+    updates = _rows(result.run_dir / UPDATES_FILENAME)
+    assert [int(row["env_steps"]) for row in updates] == [64, 128, 192, 256]
+    assert all(np.isfinite(float(row["policy_loss"])) for row in updates)
+    episodes = _rows(result.run_dir / EPISODES_FILENAME)
+    for row in episodes:
+        terms = sum(float(row[column]) for column in TERM_COLUMNS)
+        assert terms == pytest.approx(float(row["total_return"]), abs=1e-6)
+    loaded = MlpPolicy.load(result.checkpoint)
+    assert loaded.device.type == "cpu" and loaded.extra["env_steps"] == 256
 
 
 @pytest.mark.slow
