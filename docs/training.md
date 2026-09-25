@@ -156,17 +156,22 @@ Two lists have to agree, and a test checks that they do:
 
 ## What it does so far
 
-Measured on the Windows dev box (Ryzen 5 7600, CPU-only torch, no flyvis):
+Measured on a Windows box: Ryzen 5 7600, AMD RX 7800 XT through AMD's ROCm build of PyTorch
+(setup in `running-the-stacks.md`).
 
 | Setting | Throughput | Result |
 |---|---|---|
-| dummy track, pixel eye, 64 × 64 frames | ~2 000 steps/s | full laps (return ≈ 300) from ~40k steps, both seeds tried |
-| practice track, pixel eye, 96 × 96 frames | ~120 steps/s | trains and logs; 8k steps is far too few to learn to drive |
+| dummy track, pixel eye, CPU | ~2 000 steps/s | full laps (return ≈ 300) from ~40k steps, both seeds tried |
+| practice track, pixel eye, CPU | ~120 steps/s | trains and logs; 8k steps is far too few to learn to drive |
+| practice track, **flyvis eye on the GPU** (the default condition) | ~55 steps/s | seeds 0, 1 and 2 train, log and evaluate end to end |
 
-The practice-track number is the MuJoCo render plus a CPU policy; the flyvis eye adds its
-own ~8 ms per frame on CPU (see `running-the-stacks.md`). One env feeds one eye, so the
-levers `AGENTS.md` §12 lists -- a GPU for the eye, batched envs -- are the next step once
-the default condition is running on the Sparks.
+With the flyvis eye, one step costs about 7.5 ms of track (render plus physics), 4.9 ms of
+eye and 1.1 ms (CPU) to 3.8 ms (GPU) of policy. The PPO update over 2 048 steps takes 3.3 s
+on the GPU against 10.2 s on the CPU, so the two end up level. 1M steps is about five hours
+per seed here. The track step is the largest share, which is what #63 is about.
+
+The flyvis rows need two fixes that are separate bug branches: the hex resampler on GPU hosts
+and flyvis's cache on Windows.
 
 ## Tests
 
