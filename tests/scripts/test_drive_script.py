@@ -442,3 +442,187 @@ class TestWhatDriveFlyNeedsFromIt:
         assert data.time == 0.0, "reset_to_start no longer puts the car back on the grid"
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car") >= 0
         assert centerline.length > 5000.0, "build no longer loads Silverstone"
+
+
+class TestAgentModeOnTheTrack:
+    """``--agent``'s loop, run without flyvis or a window.
+
+    The real eye needs flyvis and the viewer needs a desktop, so neither the default venv
+    nor CI ever runs this loop, and GH-16 changed three things under it without a single
+    test failing: ``--track-limit``'s default became 0, which the env reads as "never end
+    the episode"; ``lap_time`` started including the penalty; and the drive tool's scene
+    stopped painting the racing line the policy is trained on. The env, the viewer and the
+    agent are stubbed here so the loop itself runs. What reaches the env, and what reaches
+    the record book, is real.
+    """
+
+    _CAR_ONLY = (
+        '<mujoco><worldbody><body name="car"><freejoint/><geom size="0.1"/>'
+        "</body></worldbody></mujoco>"
+    )
+
+    @staticmethod
+    def _info(**overrides: object) -> dict[str, object]:
+        info: dict[str, object] = {
+            "lap_complete": False,
+            "lap_time": None,
+            "lap_time_raw": None,
+            "lap_penalty_s": None,
+            "speed_mps": 10.0,
+            "on_track": True,
+            "lap_fraction": 0.1,
+            "lateral_m": 0.0,
+            "gear": 1,
+            "penalty_s": 0.0,
+            "segment": "S1",
+            "segment_elapsed_s": 1.0,
+        }
+        info.update(overrides)
+        return info
+
+    def _run(self, monkeypatch, argv, infos, *, backspace_at: int | None = None):
+        """Drive ``drive.main(argv)`` for one step per entry in ``infos``.
+
+        Returns the stub env (its constructor kwargs and reset count) and every call that
+        reached the record book. ``backspace_at`` resets the sim clock from inside the
+        viewer on that sync, as MuJoCo's own BACKSPACE does.
+        """
+        import mujoco
+        import mujoco.viewer
+
+        import fly_driver.envs.practice_track as practice_track
+
+        model = mujoco.MjModel.from_xml_string(self._CAR_ONLY)
+
+        class StubTrack:
+            instance: StubTrack | None = None
+
+            def __init__(self, **kwargs: object) -> None:
+                StubTrack.instance = self
+                self.kwargs = kwargs
+                self.model = model
+                self.data = mujoco.MjData(model)
+                self.frame_shape = (96, 96, 3)
+                self.frame_rate_hz = 50.0
+                self.dt = 0.0
+                self.centerline = type("Line", (), {"length": 5891.0})()
+                self.lap_timer = type("Timer", (), {"completed": 0})()
+                self.resets = 0
+                self._infos = iter(infos)
+
+            def reset(self, seed: int | None = None):
+                del seed
+                self.resets += 1
+                mujoco.mj_resetData(self.model, self.data)
+                return np.zeros(self.frame_shape, dtype=np.uint8), self._info_now()
+
+            def _info_now(self) -> dict[str, object]:
+                return TestAgentModeOnTheTrack._info()
+
+            def step(self, control: ControlVector):
+                del control
+                self.data.time += 0.02
+                info = next(self._infos)
+                return np.zeros(self.frame_shape, dtype=np.uint8), 0.0, False, False, info
+
+            def close(self) -> None:
+                pass
+
+        class StubViewer:
+            def __init__(self) -> None:
+                self.syncs = 0
+
+            def __enter__(self) -> StubViewer:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+            def is_running(self) -> bool:
+                return self.syncs < len(infos)
+
+            def sync(self) -> None:
+                self.syncs += 1
+                if backspace_at is not None and self.syncs == backspace_at:
+                    assert StubTrack.instance is not None
+                    mujoco.mj_resetData(StubTrack.instance.model, StubTrack.instance.data)
+
+        class StubAgent:
+            def reset(self) -> None:
+                pass
+
+            def act(self, frame: object) -> ControlVector:
+                del frame
+                return ControlVector(steer=0.0, throttle=0.4, brake=0.0)
+
+        recorded: list[tuple[float, dict[str, object]]] = []
+
+        class StubLapLog:
+            def __init__(self, path: object) -> None:
+                del path
+
+            def record(self, seconds: float, **kwargs: object) -> bool:
+                recorded.append((seconds, kwargs))
+                return False
+
+            def best(self) -> None:
+                return None
+
+        monkeypatch.setattr(practice_track, "PracticeTrack", StubTrack)
+        monkeypatch.setattr(mujoco.viewer, "launch_passive", lambda *a, **k: StubViewer())
+        monkeypatch.setattr(drive, "load_direct_drive_agent", lambda **kwargs: StubAgent())
+        monkeypatch.setattr(drive, "LapLog", StubLapLog)
+
+        assert drive.main(argv) == 0
+        assert StubTrack.instance is not None
+        return StubTrack.instance, recorded
+
+    def test_leaving_the_track_still_ends_the_episode(self, monkeypatch):
+        """The drive tool's ``--track-limit`` (0 by default) must not reach the env, where
+        0 turns the off-track restart off and strands the car in the grass."""
+        env, _ = self._run(monkeypatch, ["--agent", "--no-hud"], [self._info()])
+        assert "track_limit" not in env.kwargs
+        assert "terminate_off_track" not in env.kwargs
+
+    def test_it_sees_the_scene_training_renders(self, monkeypatch):
+        """Racing line on, as in training, although the drive tool leaves it off for a human."""
+        env, _ = self._run(monkeypatch, ["--agent", "--no-hud"], [self._info()])
+        assert env.kwargs["scene"].racing_line is True
+
+    def test_a_cut_lap_is_recorded_as_raw_time_plus_penalty(self, monkeypatch, tmp_path):
+        lap = self._info(lap_complete=True, lap_time=92.5, lap_time_raw=90.0, lap_penalty_s=2.5)
+        _, recorded = self._run(
+            monkeypatch,
+            ["--agent", "--no-hud", "--lap-log", str(tmp_path / "laps.md")],
+            [self._info(), lap],
+        )
+        assert len(recorded) == 1
+        seconds, kwargs = recorded[0]
+        assert seconds == 90.0, "the penalty was counted into the raw time"
+        assert kwargs["penalty_seconds"] == 2.5
+        assert kwargs["driver"] == "direct-drive"
+
+    def test_a_clean_lap_is_recorded_with_no_penalty(self, monkeypatch, tmp_path):
+        lap = self._info(lap_complete=True, lap_time=90.0, lap_time_raw=90.0, lap_penalty_s=None)
+        _, recorded = self._run(
+            monkeypatch,
+            ["--agent", "--no-hud", "--lap-log", str(tmp_path / "laps.md")],
+            [lap],
+        )
+        assert recorded == [(90.0, {"penalty_seconds": 0.0, "driver": "direct-drive"})]
+
+    def test_backspace_in_the_viewer_resets_the_env(self, monkeypatch):
+        """MuJoCo's BACKSPACE zeroes the clock behind the env; the loop must notice."""
+        env, _ = self._run(
+            monkeypatch,
+            ["--agent", "--no-hud"],
+            [self._info(), self._info(), self._info()],
+            backspace_at=1,
+        )
+        assert env.resets == 2, "the start plus one reset for BACKSPACE"
+
+    def test_no_backspace_no_extra_reset(self, monkeypatch):
+        env, _ = self._run(
+            monkeypatch, ["--agent", "--no-hud"], [self._info(), self._info(), self._info()]
+        )
+        assert env.resets == 1
