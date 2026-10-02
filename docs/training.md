@@ -71,7 +71,7 @@ misspelt hyperparameter cannot silently keep its default.
 | `eye.type` | `flyvis` (default) or `pixels`. GH-15 registers `cnn`, `random_projection` and the shuffled connectome |
 | `eye.frozen` | `true` trains only the head. `false` puts the eye's parameters in the optimiser; see below |
 | `eye.params` | Constructor keyword arguments (`readouts`, `checkpoint`, `downsample`...). `frame_shape` and `frame_rate_hz` come from the env and may not be set here |
-| `brain` | `none` (the policy reads the eye directly). GH-23 registers the whole-brain model |
+| `brain` | `none` (the policy reads the eye directly). The sized central-complex module is in the DirectDrive loop; this trainer still only accepts `none` until lap training wires the rollout |
 | `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std` |
 | `env.type` | `practice_track` or `dummy` |
 | `env.max_steps` | Episode truncation in frames. 15 000 = 5 minutes at 50 Hz, room for a slow clean lap |
