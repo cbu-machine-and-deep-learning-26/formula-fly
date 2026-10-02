@@ -171,6 +171,8 @@ not a corner time. As with laps, delete a row and the next car through sets it a
 ```
 --input {auto,keyboard,gamepad}   force an input device (default: auto)
 --raw-steer                       full lock at any speed, as the fly gets
+--agent                           FlyvisEye + DirectDriveAgent, straight throttle
+--throttle 0.4                    constant-policy throttle (with --agent)
 --no-hud                          hide the telemetry panel
 --lap-log PATH                    write laps somewhere other than lap_times.md
 --no-lap-log                      time laps but do not record them
@@ -184,6 +186,27 @@ not a corner time. As with laps, delete a row and the next car through sets it a
 
 The racing line is off by default only in this tool. The environment keeps it on by default,
 because there it is a cue the fly is meant to see.
+
+`--agent` is how you watch the closed loop in the same GLFW window as keyboard driving
+(not Gymnasium `render_mode="human"`). It imports flyvis only on that path, so run it
+from `.venv-flyvis` after `python -m pip install -e .`. On macOS that is still
+`mjpython`, not `python`:
+
+```bash
+source .venv-flyvis/bin/activate
+export FLYVIS_ROOT_DIR="${FLYVIS_ROOT_DIR:-$HOME/.cache/flyvis}"
+mjpython scripts/drive.py --agent
+```
+
+The constant policy ignores eye features and holds throttle 0.4, steer 0. The eye still
+encodes every fly-head frame. The car starts 150 m behind the start line; the lap clock
+stays `0.0` / `OUT` until it crosses. DualSense/gamepad is not used. Close the window to
+quit; 30–60 seconds is enough to see it move.
+
+`--agent` drives the environment's own scene and rules, not this tool's: the racing line is
+on, as in training, and leaving the track sends the car back to the grid whatever
+`--track-limit` says. Its laps go into the record book with the penalty in its own column,
+the same as a human's.
 
 Full list: `scripts/drive.py --help`.
 
@@ -199,11 +222,11 @@ so anything that can drive `DummyTrackEnv` can drive this:
 from fly_driver.envs.practice_track import PracticeTrack
 
 with PracticeTrack(max_steps=5_000) as env:
-    frame, info = env.reset(seed=0)         # (96, 96, 3) uint8, from the fly's head camera
+    frame, info = env.reset(seed=0)  # (96, 96, 3) uint8, from the fly's head camera
     while True:
-        action = (0.0, 1.0, 0.0)            # (steer, throttle, brake)
+        action = (0.0, 1.0, 0.0)  # (steer, throttle, brake)
         frame, reward, terminated, truncated, info = env.step(action)
-        if terminated or truncated:         # one step = 1/50 s of simulated time
+        if terminated or truncated:  # one step = 1/50 s of simulated time
             break
 ```
 
@@ -259,9 +282,9 @@ from fly_driver.eyes import FlyvisEye
 eye = FlyvisEye(frame_shape=env.frame_shape, frame_rate_hz=env.frame_rate_hz)
 
 frame, info = env.reset(seed=0)
-eye.reset()                      # required at every episode start — the optic lobe keeps
-                                 # state between frames
-features = eye.encode(frame)     # (5768,) float32 -> brain -> policy -> action
+eye.reset()  # required at every episode start — the optic lobe keeps
+# state between frames
+features = eye.encode(frame)  # (5768,) float32 -> brain -> policy -> action
 ```
 
 Two constants in `fly_driver/interface.py` hold the agreement:
