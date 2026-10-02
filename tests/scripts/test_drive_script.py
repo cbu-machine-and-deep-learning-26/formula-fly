@@ -288,3 +288,47 @@ class TestTheRacingLineFlag:
         from fly_driver.envs.scene import SceneConfig
 
         assert SceneConfig().racing_line is True
+
+
+class TestWhatDriveFlyNeedsFromIt:
+    """``scripts/drive_fly.py`` (GH-21) imports from this script:
+    ``from scripts.drive import build, reset_to_start``.
+
+    Nothing else tests that, so renaming either function here would break the fly-body
+    driver without a single test failing (#70). These read drive_fly.py itself, so a new
+    import added there later is covered without anyone remembering to come back here.
+    """
+
+    _DRIVE_FLY = Path(__file__).resolve().parents[2] / "scripts" / "drive_fly.py"
+
+    def _imported_from_drive(self) -> set[str]:
+        import ast
+
+        tree = ast.parse(self._DRIVE_FLY.read_text(encoding="utf-8"))
+        return {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "scripts.drive"
+            for alias in node.names
+        }
+
+    def test_every_name_drive_fly_imports_still_exists(self):
+        names = self._imported_from_drive()
+        assert names, "drive_fly.py no longer imports from drive.py; this test can go"
+        missing = sorted(name for name in names if not hasattr(drive, name))
+        assert not missing, f"drive_fly.py imports {missing} from drive.py, which is gone"
+
+    def test_they_still_work_the_way_drive_fly_calls_them(self):
+        """``build(car, scene)`` then ``reset_to_start(model, data)``, as its render phase does."""
+        import mujoco
+
+        from fly_driver.envs.car import CarConfig
+        from fly_driver.envs.scene import SceneConfig
+
+        centerline, model = drive.build(CarConfig(), SceneConfig())
+        data = mujoco.MjData(model)
+        data.time = 12.0
+        drive.reset_to_start(model, data)
+        assert data.time == 0.0, "reset_to_start no longer puts the car back on the grid"
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car") >= 0
+        assert centerline.length > 5000.0, "build no longer loads Silverstone"
