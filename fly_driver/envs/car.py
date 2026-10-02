@@ -288,11 +288,11 @@ class CarConfig:
             step of this size breaks it. The launch is traction-limited, so rear grip buys
             acceleration whether or not that is what was wanted.
 
-            It also keeps undoing the traction-control change made in the same session.
-            Sideslip under full lock and full throttle at 60 km/h went 1.9 degrees before
-            the limiter was loosened, 10.6 after, and is now 8.3. Grip and provokability
-            pull against each other; the limiter is the lever that does not cost lap time,
-            since 0-100 was flat at 2.40 s across its whole range.
+            Grip and provokability pull against each other. With the traction limiter at
+            Assetto Corsa's 0.10, sideslip under full lock and full throttle at 60 km/h is
+            about 2 degrees. If the car needs to slide more, the limiter is the lever that
+            does not cost lap time -- see ``traction_slip_full`` in
+            :mod:`fly_driver.envs.powertrain`.
 
             The rear sits 0.05 above the front rather than the 0.1 it had, moved
             deliberately back towards the spinning end. At the old spread the car could

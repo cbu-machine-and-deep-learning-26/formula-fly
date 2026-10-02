@@ -109,37 +109,22 @@ class PowertrainConfig:
             spin up. Assetto Corsa has this **active** on the SF70H --
             ``SLIP_RATIO_LIMIT=0.10``, ``ACTIVE=1``, above 30 km/h -- and has ABS switched
             off, which is the opposite of what this model had. Without it the car spins on
-            the throttle out of slow corners, which is what Payton hit. It is still on;
-            what changed is how much slip it allows before intervening, which
-            ``traction_slip_full`` covers.
-        traction_slip_full: Wheelspin slip below which the engine gets full torque.
+            the throttle out of slow corners, which is what Payton hit.
+        traction_slip_full: Wheelspin slip below which the engine gets full torque. AC's
+            0.10, matched.
 
-            0.16, which is **looser than Assetto Corsa's 0.10** and a deliberate departure
-            from matching it. At 0.10 the car could not be made to break traction by hand:
-            full lock and full throttle at 60 km/h produced 1.9 degrees of sideslip, which
-            is a rail, not a car. Payton's call, on the grounds that a car that cannot
-            oversteer teaches a driver -- or a policy -- nothing about catching one.
-
-            It went to 0.20 first and came back to 0.16 after driving it, because 0.20
-            span too readily. Measured at 60 km/h with the clumsiest input available:
-            1.9 degrees of sideslip at 0.10, 4.5 at 0.13, 5.5 at 0.16, 8.3 at 0.20, and
-            24.4 with the limiter switched off entirely.
-
-            **This is the lever to reach for when the car slides too much or too little,**
-            because it is the only one that is free. 0-100 km/h is 2.25 s across that
-            whole range and lateral grip at 250 km/h does not move either, where every
-            0.05 of tyre friction costs about 0.07 s of 0-100 against a floor of 2.2.
-
-            Worth knowing when this is revisited: AC's own SF70H really does run
-            ``SLIP_RATIO_LIMIT=0.10, ACTIVE=1`` above 30 km/h, so 0.10 was the faithful
-            value and this is not. If a policy trained here transfers badly because it
-            has learned to catch slides the AC car will not give it, this is the first
-            number to put back.
+            It was loosened by hand for a while -- 0.20 so the rear could be provoked, then
+            0.16 when that span too readily -- and put back to 0.10 on Payton's call, so the
+            car the fly learns on behaves like the one it will drive in Assetto Corsa. The
+            measurements from that are worth keeping, because this is the setting to reach for
+            if the car ever needs to slide more or less. At 60 km/h under full lock and full
+            throttle, sideslip is 2.2 degrees at 0.10, 4.5 at 0.13, 5.5 at 0.16, 8.3 at 0.20,
+            and 24.4 with the limiter off; 0-100 km/h and lateral grip at 250 km/h barely move
+            across that whole range, where every 0.05 of tyre friction costs about 0.07 s of
+            0-100.
         traction_slip_cut: Slip at which drive torque is cut to zero, ramping linearly from
             ``traction_slip_full``. AC cuts on a curve rather than a ramp; this is the same
-            shape the brake limiter already uses, so the two read alike. Widened with
-            ``traction_slip_full`` to keep the ramp's width, so the limiter still eases in
-            rather than becoming a switch.
+            shape the brake limiter already uses, so the two read alike.
         traction_min_speed_mps: Below this the limiter stands down, or it would strangle
             every standing start. AC uses 30 km/h.
         abs_min_speed_mps: Below this ground speed slip is ill-conditioned and the limiter
@@ -168,8 +153,8 @@ class PowertrainConfig:
     abs_slip_release: float = 0.25
     abs_min_speed_mps: float = 2.0
     traction_control_enabled: bool = True
-    traction_slip_full: float = 0.16
-    traction_slip_cut: float = 0.41
+    traction_slip_full: float = 0.10
+    traction_slip_cut: float = 0.25
     traction_min_speed_mps: float = 8.3
 
     def __post_init__(self) -> None:
