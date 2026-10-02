@@ -34,6 +34,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--fruitfly-xml", type=Path, default=DEFAULT_FRUITFLY_XML)
     parser.add_argument("--out", type=Path, default=REPO / "outputs/cockpit/parts")
     parser.add_argument("--preview", type=Path, help="also render the pose with MuJoCo to PNG")
+    parser.add_argument(
+        "--size", type=float, default=1.3, help="times the hips-to-head fit; 1.3 reaches the wheel"
+    )
+    parser.add_argument(
+        "--recline", type=float, default=30.0, help="degrees further back than the driver's line"
+    )
     return parser.parse_args(argv)
 
 
@@ -66,14 +72,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"missing {required}; see docs/fly-driver.md", file=sys.stderr)
             return 2
     rig = read_knh(knh_path)
-    seated = pose_seated_fly(args.fruitfly_xml, world_matrices(rig))
+    seated = pose_seated_fly(
+        args.fruitfly_xml, world_matrices(rig), size=args.size, recline_deg=args.recline
+    )
     parts = body_parts(seated)
     manifest = write_parts(
         parts,
         rig,
         args.out,
         scale=seated.scale,
-        source={"car": args.car, "fruitfly_xml": str(args.fruitfly_xml)},
+        source={
+            "car": args.car,
+            "fruitfly_xml": str(args.fruitfly_xml),
+            "size": args.size,
+            "recline_deg": args.recline,
+        },
     )
     print(f"scale {seated.scale:.3f} m per MuJoCo unit; {len(parts)} parts -> {manifest}")
     for element, miss in seated.target_misses.items():

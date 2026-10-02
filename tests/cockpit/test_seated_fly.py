@@ -33,6 +33,7 @@ needs_flybody = pytest.mark.skipif(not FRUITFLY_XML.is_file(), reason="flybody's
 
 #: A seated driver's joints in Assetto Corsa axes (x left, y up, z front), metres.
 _JOINTS = {
+    "DRIVER:RIG_Hips": (0.0, 0.27, 0.14),
     "DRIVER:RIG_Cest": (0.0, 0.38, -0.03),
     "DRIVER:RIG_Head": (0.0, 0.64, -0.13),
     "DRIVER:RIG_ForeArm_L": (0.17, 0.33, 0.27),
@@ -41,8 +42,8 @@ _JOINTS = {
     "DRIVER:HAND_Middle4": (-0.17, 0.49, 0.31),
     "DRIVER:RIG_Shin_L": (0.08, 0.41, 0.65),
     "DRIVER:RIG_Shin_R": (-0.08, 0.41, 0.65),
-    "DRIVER:RIG_Foot_L": (0.06, 0.47, 1.14),
-    "DRIVER:RIG_Foot_R": (-0.07, 0.47, 1.15),
+    "DRIVER:RIG_Leg_L": (0.09, 0.22, 0.31),
+    "DRIVER:RIG_Leg_R": (-0.09, 0.22, 0.31),
 }
 
 
@@ -124,8 +125,22 @@ class TestThePose:
         assert seated.target_misses["claw_T1_left"] < 0.08
         assert seated.target_misses["claw_T1_right"] < 0.08
 
-    def test_the_fly_is_driver_sized(self, seated):
-        assert 4.0 < seated.scale < 6.0  # metres per MuJoCo unit: a ~1.6 m fly
+    def test_the_fly_fits_in_the_cockpit(self, seated):
+        """Above the road and no taller than a seated driver's helmet.
+
+        The first fit (thorax-to-head = chest-to-head) made a 1.65 m fly whose abdomen and
+        wings went a metre under the car; in the game only its head showed.
+        """
+        heights = np.concatenate(
+            [piece.vertices[:, 1] for part in body_parts(seated) for piece in part.pieces]
+        )
+        assert heights.min() > 0.0
+        assert heights.max() < 0.85
+        assert 1.5 < seated.scale < 3.5  # metres per MuJoCo unit
+
+    def test_the_head_is_where_the_drivers_head_is(self, seated):
+        head = ac_from_mujoco(seated.data.xpos[seated.model.body("head").id]) * seated.scale
+        np.testing.assert_allclose(head, _JOINTS["DRIVER:RIG_Head"], atol=1e-6)
 
     def test_every_body_is_mapped_and_every_mesh_exported(self, seated):
         model = seated.model

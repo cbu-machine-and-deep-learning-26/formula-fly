@@ -26,12 +26,21 @@ head bone. The car's own animations then move the fly, and nothing in the car's 
 The head gets the helmet's name on purpose. Cars hide `DRIVER:HELMET` in the cockpit camera,
 and that keeps the camera from sitting inside the fly's head.
 
-The fly is scaled so its thorax-to-head distance matches the driver's chest-to-head, which
-makes it about 1.65 m long. It is posed in MuJoCo by inverse kinematics against the driver's
-joints (`fly_driver/cockpit/seated_fly.py`). The front claws land within about 3 cm of the
-stock knuckles, so the front legs hold the wheel. The front knees land within about 10 cm of
-the elbows, because a fly's leg is not proportioned like an arm. The other legs point into the
-footwell, and the wings are folded along the back.
+The fly's head goes on the stock driver's head, and its body runs from there along the
+driver's hips-to-head line, leaned 30 degrees further back and 1.3 times as long. An F1
+driver lies almost flat. Seated that way the front legs reach the wheel, with the claws about
+5 cm from the stock knuckles, and the abdomen and folded wings lie inside the tub. In the
+SF70H the whole fly sits between 7 cm and 78 cm off the road. `--size` and `--recline` on the
+pose script change the fit.
+
+The first fit scaled the fly so its thorax-to-head matched the driver's chest-to-head. That
+made it 1.65 m long, with the abdomen and wings hanging a metre through the floor. In the game
+only its head showed.
+
+Every part's shape is stored relative to its bone, with an identity transform. Assetto Corsa
+resets each node named in the car's `.knh`, including `DRIVER:HELMET`, to the transform stored
+there, and a part with its own offset would have it applied twice. That is what floated the
+head above the car in the first build.
 
 ## What you need
 
@@ -65,7 +74,8 @@ blender -b --factory-startup -P scripts/cockpit/build_fly_driver_fbx.py -- --par
 ```
 
 This writes `fly_driver.fbx`, one colour texture per material, `fly_driver.blend` for hand
-edits, and `fly_driver_preview.png`. The meshes are decimated to about 36k vertices; use
+edits, and `fly_driver_preview.png`. It also copies the textures into a `texture` folder,
+because ksEditor ignores the paths inside the FBX and looks there. The meshes are decimated to about 36k vertices; use
 `--decimate` to keep a different fraction of the faces.
 
 **3. Convert to KN5 in ksEditor.** This is the one step with no command line.
@@ -78,19 +88,23 @@ edits, and `fly_driver_preview.png`. The meshes are decimated to about 36k verti
 
 ## Put it in the game
 
-A car's driver model is `[MODEL] NAME` in the car's `data/driver3d.ini`. The SF70H keeps that
-file inside its encrypted `data.acd`, so read the name from Content Manager. Then install:
+A car's driver model is `[MODEL] NAME` in the car's `data/driver3d.ini`, which the SF70H keeps
+inside its encrypted `data.acd`. The game's log (`Documents\Assetto Corsa\logs\log.txt`)
+names it instead: look for `LOADING MODEL content/driver/...`. The SF70H loads `driver` and
+its low-detail copy `driver_B`, so install over both:
 
 ```bash
-python scripts/cockpit/install_fly_driver.py --driver <NAME> --kn5 outputs/cockpit/fly_driver/fly_driver.kn5
+python scripts/cockpit/install_fly_driver.py --driver driver --kn5 outputs/cockpit/fly_driver/fly_driver.kn5
+python scripts/cockpit/install_fly_driver.py --driver driver_B --kn5 outputs/cockpit/fly_driver/fly_driver.kn5
 ```
 
 The original is kept as `content/driver/<NAME>.kn5.stock-backup` the first time, and never
-overwritten after that. Every car that uses the same driver model gets the fly too. To put the
+overwritten after that. `driver` is Assetto Corsa's default driver, so most cars get the fly too. To put the
 stock driver back:
 
 ```bash
-python scripts/cockpit/install_fly_driver.py --driver <NAME> --restore
+python scripts/cockpit/install_fly_driver.py --driver driver --restore
+python scripts/cockpit/install_fly_driver.py --driver driver_B --restore
 ```
 
 Steam's "Verify integrity of game files" also restores it.

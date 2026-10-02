@@ -5,9 +5,10 @@ and writes an FBX that ksEditor can turn into a driver KN5:
 
 - the stock driver's skeleton as nulls, named exactly as in the car's ``driver_base_pos.knh``
   and with its orientations, so the car's own ``steer.ksanim`` moves them;
-- every fly part as a rigid mesh parented to its bone -- the way the stock helmet rides on
-  the head bone (Kunos car pipeline guide, "Skinned mesh": a non-skinned object may be a child
-  of a null);
+- every fly part as a rigid mesh parented to its bone with an identity transform and its
+  shape in the bone's frame -- the way the stock helmet rides on the head bone (Kunos car
+  pipeline guide, "Skinned mesh": a non-skinned object may be a child of a null). The game
+  resets nodes named in the ``.knh`` to their stored transform, so parts must not carry one;
 - decimated to about 36k vertices (the stock driver KN5 is 11 MB), one UV set per mesh and a
   4x4 colour texture per material, because every mesh must have a UV set and ksPerPixel
   takes its colour from a texture.
@@ -84,6 +85,22 @@ def _import_part(obj_path: Path, name: str) -> bpy.types.Object:
     return obj
 
 
+def _bake_into_bone(obj: bpy.types.Object, bone: bpy.types.Object) -> None:
+    """Parent ``obj`` to ``bone`` with an identity local transform, shape in the bone's frame.
+
+    Assetto Corsa resets every node named in the car's ``driver_base_pos.knh`` to the local
+    transform stored there -- including ``DRIVER:HELMET``, which the fly's head is named after.
+    A part that kept its own offset from the bone had it applied on top of the bone's, which
+    floated the head about 0.6 m above the car. With the shape in the bone's frame and an
+    identity transform, a reset changes nothing.
+    """
+    world = obj.matrix_world.copy()
+    obj.data.transform(bone.matrix_world.inverted() @ world)
+    obj.parent = bone
+    obj.matrix_parent_inverse = Matrix.Identity(4)
+    obj.matrix_basis = Matrix.Identity(4)
+
+
 def _decimate(obj: bpy.types.Object, ratio: float) -> None:
     if ratio >= 1.0:
         return
@@ -116,6 +133,12 @@ def _texture_materials(materials: dict[str, bpy.types.Material], out: Path) -> N
         image.filepath_raw = str(out / f"{name}.png")
         image.file_format = "PNG"
         image.save()
+        # ksEditor ignores the FBX's texture paths and looks in a "texture" folder beside it;
+        # without this every material loads with txDiffuse = NULL and the KN5 export fails.
+        (out / "texture").mkdir(exist_ok=True)
+        image.filepath_raw = str(out / "texture" / f"{name}.png")
+        image.save()
+        image.filepath_raw = str(out / f"{name}.png")
         texture = material.node_tree.nodes.new("ShaderNodeTexImage")
         texture.image = image
         material.node_tree.links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
@@ -162,10 +185,7 @@ def main() -> None:
         if not obj.data.uv_layers:
             obj.data.uv_layers.new(name="UVMap")
         _share_materials(obj, materials)
-        world = obj.matrix_world.copy()
-        obj.parent = empties[part["bone"]]
-        obj.matrix_parent_inverse = Matrix.Identity(4)
-        obj.matrix_world = world
+        _bake_into_bone(obj, empties[part["bone"]])
         vertices += len(obj.data.vertices)
     bpy.context.view_layer.update()
     _texture_materials(materials, args.out)

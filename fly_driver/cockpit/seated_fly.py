@@ -1,14 +1,18 @@
 """Pose flybody's fly as a seated Formula 1 driver and cut it into bone-sized parts (GH-25).
 
-The fly is the model that produces the controls (flybody, Vaxenburg et al. 2025), scaled up
-until its thorax-to-head distance equals the stock driver's chest-to-head. It is then posed by
-inverse kinematics against the stock driver's joints, read from the car's
-``driver_base_pos.knh`` (:data:`IK_TARGETS` says how hard each one pulls):
+The fly is the model that produces the controls (flybody, Vaxenburg et al. 2025). Its head
+goes on the stock driver's head and its body axis (abdomen tip to head) along the driver's
+hips-to-head line, leaned 30 degrees further back and 1.3 times as long: an F1 driver lies
+almost flat, and that is what lets the front legs reach the wheel while the abdomen and
+folded wings stay inside the tub. Measured in the SF70H: the whole fly sits between 7 cm and
+78 cm off the road, inside the bodywork, with the front claws about 5 cm from the knuckles.
+It is then posed by inverse kinematics against the stock driver's joints, read from the
+car's ``driver_base_pos.knh`` (:data:`IK_TARGETS` says how hard each one pulls):
 
 - front legs (T1) are arms: claws on the knuckles, knees drawn towards the elbows, so the
   front legs hold the wheel;
-- middle legs (T2) are legs: knee towards the knee, claw on the foot;
-- hind legs (T3) fold under, claws towards the driver's knees.
+- middle legs (T2) reach towards the driver's knees;
+- hind legs (T3) tuck towards the hip joints.
 
 Every fly body is then assigned to the driver bone it should ride on
 (:func:`driver_bone_for`). Assetto Corsa moves those bones with the car's own steering and
@@ -92,9 +96,8 @@ IK_TARGETS: tuple[tuple[str, str, str, float], ...] = tuple(
     for item in (
         (f"claw_T1_{side}", "site", _KNUCKLES[s], 1.0),
         (f"tibia_T1_{side}", "body", f"DRIVER:RIG_ForeArm_{s}", 0.1),
-        (f"tibia_T2_{side}", "body", f"DRIVER:RIG_Shin_{s}", 0.2),
-        (f"claw_T2_{side}", "site", f"DRIVER:RIG_Foot_{s}", 0.2),
-        (f"claw_T3_{side}", "site", f"DRIVER:RIG_Shin_{s}", 0.2),
+        (f"claw_T2_{side}", "site", f"DRIVER:RIG_Shin_{s}", 0.2),
+        (f"claw_T3_{side}", "site", f"DRIVER:RIG_Leg_{s}", 0.2),
     )
 )
 
@@ -185,6 +188,8 @@ def pose_seated_fly(
     driver_rig: Mapping[str, npt.ArrayLike],
     *,
     iterations: int = 800,
+    size: float = 1.3,
+    recline_deg: float = 30.0,
 ) -> SeatedFly:
     """Scale, place and pose the fly on the stock driver's skeleton.
 
@@ -193,6 +198,10 @@ def pose_seated_fly(
         driver_rig: World matrices of the driver's nodes, from
             :func:`~fly_driver.cockpit.knh.world_matrices` (translation in row 3).
         iterations: Damped least-squares steps. Joint limits are enforced after each one.
+        size: Multiplies the fitted scale. ``1.0`` makes abdomen-tip-to-head equal the
+            driver's hips-to-head; larger reaches the wheel more easily but sits lower.
+        recline_deg: Leans the fly further back than the driver's hips-to-head line, about
+            its head, so a larger fly's abdomen goes back under the seat instead of down.
 
     Raises:
         KeyError: If the rig lacks a bone the pose needs.
@@ -204,19 +213,25 @@ def pose_seated_fly(
     def joint_position(bone: str) -> Vector:
         return mujoco_from_ac(np.asarray(driver_rig[bone])[3, :3])
 
-    chest, head = joint_position("DRIVER:RIG_Cest"), joint_position("DRIVER:RIG_Head")
-    fly_head = data.xpos[model.body("head").id] - data.xpos[model.body("thorax").id]
-    scale = float(np.linalg.norm(head - chest) / np.linalg.norm(fly_head))
-
-    # Thorax on the chest; head axis along chest->head; back to the seat; left to the left.
-    forward = (head - chest) / np.linalg.norm(head - chest)
-    dorsal = np.array([-forward[2], 0.0, forward[0]])
-    dorsal /= np.linalg.norm(dorsal)
-    left = np.cross(dorsal, forward)
+    # The fly's body axis -- abdomen tip to head -- goes where the driver's body is: hips to
+    # head, reclined along the seat. Matching that length sets the scale. Matching
+    # thorax-to-head to chest-to-head instead made a 1.65 m fly whose abdomen and folded
+    # wings hung through the floor of the car and whose thorax filled the cockpit camera.
+    hips, head = joint_position("DRIVER:RIG_Hips"), joint_position("DRIVER:RIG_Head")
+    fly_head = data.xpos[model.body("head").id].copy()
+    fly_tail = _abdomen_tip(model, data)
+    scale = size * float(np.linalg.norm(head - hips) / np.linalg.norm(fly_head - fly_tail))
+    lean = np.radians(recline_deg)  # about the driver's left (+y): head stays, tail swings back
+    tilt = np.array(
+        [[np.cos(lean), 0.0, -np.sin(lean)], [0.0, 1.0, 0.0], [np.sin(lean), 0.0, np.cos(lean)]]
+    )
+    rotation = tilt @ _frame(head - hips) @ _frame(fly_head - fly_tail).T
     quaternion = np.zeros(4)
-    mujoco.mju_mat2Quat(quaternion, np.column_stack([forward, left, dorsal]).flatten())
+    mujoco.mju_mat2Quat(quaternion, rotation.flatten())
     root = model.jnt_qposadr[model.joint("free").id]
-    data.qpos[root : root + 3] = chest / scale
+    thorax = data.xpos[model.body("thorax").id].copy()
+    # Put the fly's head on the driver's head; the root (thorax) follows from the rotation.
+    data.qpos[root : root + 3] = head / scale - rotation @ (fly_head - thorax)
     data.qpos[root + 3 : root + 7] = quaternion
 
     # Wings folded along the back: their spring reference is flybody's resting pose.
@@ -322,6 +337,36 @@ def body_parts(seated: SeatedFly) -> list[BodyPart]:
             )
         )
     return parts
+
+
+def _frame(axis: Vector) -> npt.NDArray[np.float64]:
+    """Right-handed frame whose first column is ``axis`` and second the world's +y (left).
+
+    Built for both the fly (axis abdomen tip -> head, at rest) and the driver (hips -> head),
+    so the rotation between them keeps the fly's left on the driver's left and its back
+    towards the seat.
+    """
+    forward = axis / np.linalg.norm(axis)
+    left = np.array([0.0, 1.0, 0.0]) - forward * forward[1]
+    left /= np.linalg.norm(left)
+    return np.column_stack([forward, left, np.cross(forward, left)])
+
+
+def _abdomen_tip(model: mujoco.MjModel, data: mujoco.MjData) -> Vector:
+    """The point of the last abdominal segment's mesh furthest from the head."""
+    body = model.body("abdomen_7").id
+    head = data.xpos[model.body("head").id]
+    points = []
+    for geom in range(model.ngeom):
+        if model.geom_bodyid[geom] == body and model.geom_type[geom] == mujoco.mjtGeom.mjGEOM_MESH:
+            mesh = model.geom_dataid[geom]
+            first, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+            local = model.mesh_vert[first : first + count].astype(np.float64)
+            points.append(local @ data.geom_xmat[geom].reshape(3, 3).T + data.geom_xpos[geom])
+    if not points:
+        return data.xpos[body].copy()
+    stacked = np.concatenate(points)
+    return stacked[np.argmax(np.linalg.norm(stacked - head, axis=1))]
 
 
 def _weld(
