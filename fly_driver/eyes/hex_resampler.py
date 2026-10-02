@@ -8,6 +8,14 @@ slowest, exactly like :func:`flyvis.utils.hex_utils.get_hex_coords`.
 
 This implementation reproduces ``flyvis.datasets.rendering.BoxEye`` without
 importing flyvis, so geometry tests can run in the base project environment.
+One deliberate difference: the mean filter is padded by replicating the edge
+pixels, not with zeros. The receptor lattice is scaled so the outer centers
+sit on the border of the 391 px field, and a zero pad lets that 13 px window
+average in black. A uniform grey frame then grows a dark rim. That rim is not
+in the image, and a policy will learn it. Replicate padding keeps the frame
+flat across all 721 columns. Columns whose window never leaves the field
+still match ``BoxEye``. Upscaling past 391 px would also hide the rim, but it
+would move every receptor's sample point, not just the border.
 """
 
 from __future__ import annotations
@@ -112,6 +120,9 @@ def hex_receptor_centers(
 class HexResampler:
     """Reproduce flyvis ``BoxEye`` mean filtering and hexagonal sampling.
 
+    The box filter uses replicate padding. See the module docstring for why
+    that replaces ``BoxEye``'s zero pad.
+
     Args:
         extent: Hexagonal lattice radius in receptors.
         kernel_size: Mean-filter size and receptor spacing in pixels.
@@ -192,7 +203,9 @@ class HexResampler:
             ).reshape(batch_size, frame_count, *target)
             height, width = gray_sequence.shape[2:]
 
-        padded = F.pad(gray_sequence, self._padding)
+        # Replicate, not zeros: outer receptors sit on the field border, and a
+        # zero pad darkens that ring on a flat frame.
+        padded = F.pad(gray_sequence, self._padding, mode="replicate")
         kernel = self._kernel.to(padded)
         filtered = torch.cat(
             [F.conv2d(sample.unsqueeze(1), kernel) for sample in torch.unbind(padded, dim=0)],
