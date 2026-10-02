@@ -17,6 +17,7 @@ turning" and until now that lived in a docstring and had never been measured.
 from __future__ import annotations
 
 from collections import namedtuple
+from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -1053,3 +1054,72 @@ class TestTheClockSurvivesRunningWide:
                     )
         finally:
             env.close()
+
+
+def _built_like_gh17(env_config) -> PracticeTrack:
+    """The practice track exactly as ``fly_driver.training.train._build_practice_track`` builds
+    it from a training config.
+
+    Restated here because that module imports torch at the top, and CI deliberately installs
+    no torch -- so every test that imports it is skipped on CI, which is how a change to this
+    env's defaults once broke the training config with nothing failing.
+    ``tests/training/test_practice_track_config.py`` checks this copy against the real builder
+    wherever torch is installed, so the two cannot drift apart unnoticed.
+    """
+    params = dict(env_config.params)
+    scene_kwargs = dict(params.pop("scene", {}) or {})
+    if "racing_line" in params:
+        scene_kwargs["racing_line"] = bool(params.pop("racing_line"))
+    scene = SceneConfig(**scene_kwargs) if scene_kwargs else None
+    return PracticeTrack(scene=scene, max_steps=env_config.max_steps, **params)
+
+
+@pytest.mark.render
+class TestTheCheckedInTrainingConfig:
+    """GH-17 trains on this env through ``fly_driver/configs/train_default.yaml``, and every one
+    of GH-17's own tests uses the dummy track. This is the join, run where CI can see it.
+
+    The failure it guards is silent. With termination off, a crude policy sits in the grass
+    until ``max_steps`` while the off-track reward is charged every step: measured on the
+    flat-throttle policy below, +19 per episode became -35,548. Nothing raised; the learning
+    curves would simply have looked like PPO failing.
+    """
+
+    @pytest.fixture(scope="class")
+    def env_config(self):
+        pytest.importorskip("yaml")
+        from fly_driver.training.config import TrainConfig
+
+        path = Path(__file__).parents[2] / "fly_driver" / "configs" / "train_default.yaml"
+        return TrainConfig.from_yaml(path).env
+
+    def _run(self, env_config, limit: int = 1000):
+        env = _built_like_gh17(env_config)
+        total, steps, terminated = 0.0, 0, False
+        try:
+            env.reset(seed=0)
+            while steps < limit:
+                _, reward, terminated, truncated, _ = env.step(FLAT_OUT)
+                steps += 1
+                total += reward
+                if terminated or truncated:
+                    break
+        finally:
+            env.close()
+        return total, steps, terminated
+
+    def test_it_is_still_the_practice_track(self, env_config):
+        assert env_config.type == "practice_track"
+
+    def test_leaving_the_circuit_ends_the_episode(self, env_config):
+        """The grid sits in T10, so flat throttle with no steering leaves the circuit within
+        a couple of seconds. The training config's track_limit has to end it there."""
+        _, steps, terminated = self._run(env_config)
+        assert terminated, "the car left the circuit and the episode kept going"
+        assert steps < 500, f"ended only after {steps} steps"
+
+    def test_a_failed_attempt_costs_a_sane_amount(self, env_config):
+        """Tens, not tens of thousands. A reward dominated by time spent in the grass drowns
+        out the progress signal the policy is meant to learn from."""
+        total, _, _ = self._run(env_config)
+        assert -100.0 < total < 100.0, f"one failed attempt returned {total:.1f}"
