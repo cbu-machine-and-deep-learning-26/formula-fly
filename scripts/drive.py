@@ -467,10 +467,12 @@ def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> i
         print("mujoco.viewer is unavailable; this needs a desktop with OpenGL.", file=sys.stderr)
         return 1
 
+    # No ``track_limit`` from the command line: ``--track-limit`` defaults to 0, which for
+    # a human means "penalty instead of restart" but for the env means "never end the
+    # episode". The env's own default keeps the off-track restart this loop relies on.
     env = PracticeTrack(
         car=car,
         scene=scene,
-        track_limit=args.track_limit,
         frame_shape=FRAME_SHAPE,
         frame_rate_hz=FRAME_RATE_HZ,
         max_steps=None,
@@ -543,14 +545,23 @@ def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> i
                     viewer.sync()
                     continue
 
-                if info["lap_complete"] and info["lap_time"] is not None:
-                    completed = float(info["lap_time"])
+                if info["lap_complete"] and info["lap_time_raw"] is not None:
+                    # ``lap_time`` already has the penalty in it; recording it as the raw
+                    # time would file a cut lap as a clean one.
+                    completed = float(info["lap_time_raw"])
+                    owed = float(info["lap_penalty_s"] or 0.0)
                     note = ""
-                    if lap_log is not None and lap_log.record(completed, driver=driver_name):
+                    if lap_log is not None and lap_log.record(
+                        completed, penalty_seconds=owed, driver=driver_name
+                    ):
                         note = "  NEW BEST"
+                    cost = (
+                        "" if owed == 0.0 else f"  (raw {format_lap_time(completed)} +{owed:.3f})"
+                    )
                     print()
                     print(
-                        f"lap {env.lap_timer.completed}: {format_lap_time(completed)}{note}",
+                        f"lap {env.lap_timer.completed}: "
+                        f"{format_lap_time(completed + owed)}{cost}{note}",
                         flush=True,
                     )
 
