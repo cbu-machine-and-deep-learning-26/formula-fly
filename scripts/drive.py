@@ -587,6 +587,9 @@ def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> i
                             lap_best=None if lap_log is None else lap_log.best(),
                             lap_count=env.lap_timer.completed,
                             on_out_lap=not env.lap_timer.timing,
+                            penalty_s=float(info["penalty_s"]),
+                            segment=info["segment"],
+                            segment_elapsed=float(info["segment_elapsed_s"]),
                         )
                     )
 
@@ -630,7 +633,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.agent:
-        return run_agent(args, car, scene)
+        # The env's default scene, racing line on, because that is what training renders.
+        # --racing-line's default of off is for a human, and a trained policy watched on a
+        # different picture than it learned on would be judged on the wrong scene.
+        return run_agent(args, car, SceneConfig(include_walls=args.walls))
 
     centerline, model = build(car, scene)
 

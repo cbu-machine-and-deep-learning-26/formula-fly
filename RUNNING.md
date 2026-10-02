@@ -203,6 +203,11 @@ encodes every fly-head frame. The car starts 150 m behind the start line; the la
 stays `0.0` / `OUT` until it crosses. DualSense/gamepad is not used. Close the window to
 quit; 30–60 seconds is enough to see it move.
 
+`--agent` drives the environment's own scene and rules, not this tool's: the racing line is
+on, as in training, and leaving the track sends the car back to the grid whatever
+`--track-limit` says. Its laps go into the record book with the penalty in its own column,
+the same as a human's.
+
 Full list: `scripts/drive.py --help`.
 
 ---
