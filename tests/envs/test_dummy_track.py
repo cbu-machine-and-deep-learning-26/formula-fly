@@ -142,3 +142,23 @@ def test_frames_change_with_progress_and_lateral_offset() -> None:
     env._lateral = 2.0
     shifted = env._render_state()
     assert not np.array_equal(moving, shifted)
+
+
+def test_reward_terms_add_up_and_match_the_practice_tracks_names() -> None:
+    """Per-term rewards are published like ``ProgressReward``'s, so the logs line up."""
+    env = DummyTrackEnv()
+    _, info = env.reset(seed=0)
+    assert info["reward_terms"] == {}
+    for _ in range(30):
+        _, reward, terminated, truncated, info = env.step(np.array([0.0, 1.0, 0.0]))
+        terms = info["reward_terms"]
+        assert set(terms) == {"progress", "lateral", "lap_bonus", "off_track"}
+        assert sum(terms.values()) == pytest.approx(reward)
+        assert terms["progress"] > 0.0 and terms["lateral"] <= 0.0
+        if terminated or truncated:
+            break
+    while not (terminated or truncated):
+        _, reward, terminated, truncated, info = env.step(np.array([0.0, 1.0, 0.0]))
+    assert info["off_track"] is True
+    assert info["reward_terms"]["off_track"] == env.off_track_penalty
+    assert info["reward_terms"]["lap_bonus"] == 0.0

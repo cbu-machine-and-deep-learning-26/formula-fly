@@ -123,17 +123,46 @@ a gamepad, can ask for 50% throttle), but a key is either down or up.
 | `[` / `]` | Cycle cameras — press `]` to sit in the fly's head camera |
 | `Esc` | Back to the free camera (orbit with the mouse) |
 | `Space` | Pause / resume |
-| `Backspace` | Reset to the start |
+| `Backspace` | Reset to the start, and clear the lap clock, segment times and penalty |
 | `F1` | MuJoCo's full shortcut list |
 
 ---
 
 ## Lap times
 
-Every completed lap is appended to [`lap_times.md`](lap_times.md) with the date, the time
-and who drove it. The `BEST` shown on the panel is simply the fastest row in that file,
-re-read whenever the file changes — so you can delete your own laps and the record updates
-immediately, even while the simulator is running.
+Every completed lap is appended to [`lap_times.md`](lap_times.md) with the date, who drove
+it, and three times:
+
+| Column | Meaning |
+|---|---|
+| `Lap` | The time that counts: `Raw` plus `Penalty` |
+| `Penalty` | Seconds earned by leaving the circuit (0 for a clean lap) |
+| `Raw` | The stopwatch time |
+
+The `BEST` shown on the panel is simply the fastest `Lap` in that file, re-read whenever the
+file changes — so you can delete your own laps and the record updates immediately, even while
+the simulator is running. A lap only counts when you cross the line **on the circuit**; drift
+over it through the grass and the lap is held until you rejoin.
+
+### Leaving the circuit costs time, not the lap
+
+Running wide no longer sends you back to the grid. You pay seconds instead, scaled by how far
+off the car went (capped at one car width) and how long it stayed out: a kerb brush is about
+0.57 s, a fully cut corner about 7.1 s. The penalty shows in red beside `LAP` while you are
+still earning it, and is added to the lap at the line. The grass also grips at about half the
+road's level, per wheel, so dropping two wheels off at speed can spin the car.
+`--track-limit` brings the old restart back.
+
+### Segment times
+
+The lap is cut into 21 segments — corners and straights, found from the circuit's curvature —
+marked by grey pillars at each boundary (the checkered pair is the start/finish line). Crossing
+one prints the time you just set and how it compares with your best, e.g.
+`T4  0:06.221  -0.184  NEW BEST`, and the panel shows the same delta in green or red.
+
+The best clean time through each segment is kept in a "Best segments" table in
+`lap_times.md`. A segment you went off in is timed but **never** sets a best — a corner cut is
+not a corner time. As with laps, delete a row and the next car through sets it again.
 
 ---
 
@@ -148,9 +177,15 @@ immediately, even while the simulator is running.
 --lap-log PATH                    write laps somewhere other than lap_times.md
 --no-lap-log                      time laps but do not record them
 --walls                           add collidable walls at the track edges
+--racing-line                     paint the racing line on the road (off by default here)
+--track-limit FRACTION            restart when this fraction of the car's width is on the
+                                  grass; 0 (the default) charges a time penalty instead
 --fovy DEGREES                    camera field of view
 --export model.xml                write the MJCF instead of driving
 ```
+
+The racing line is off by default only in this tool. The environment keeps it on by default,
+because there it is a cue the fly is meant to see.
 
 `--agent` is how you watch the closed loop in the same GLFW window as keyboard driving
 (not Gymnasium `render_mode="human"`). It imports flyvis only on that path, so run it
@@ -199,6 +234,19 @@ policy output on purpose.
 time, `None` otherwise) and `lap_elapsed_s` (the running clock). Every component of the
 reward is published separately in `info["reward_terms"]`.
 
+`lap_time` is the time that counts: the stopwatch **plus** any off-track penalty, so a lap that
+cut a corner cannot out-rank a clean one. The stopwatch alone is `lap_time_raw`, and that lap's
+penalty is `lap_penalty_s`. While driving, `penalty_s` is what the current lap owes so far and
+`excursions` how many times it has gone off. Segment timing is in `segment` (the one being
+driven), `segment_elapsed_s` and `segment_dirty`, and on the step a segment finishes,
+`segment_complete`, `segment_time` and `segment_clean`.
+
+The episode **ends** when the car goes past `track_limit` (15% of its width onto the grass) —
+training, the evaluation harness and the viewer all rely on that. Pass
+`terminate_off_track=False` to keep driving and pay the time penalty instead, but only with a
+reward built for it: the default reward charges its off-track term on every step the car is
+off, so a long excursion would swamp everything else.
+
 The default reward is distance covered, less a small penalty for running wide, plus a bonus
 for a completed lap; its constants match `DummyTrackEnv`'s so scores on the two are
 comparable. Pass your own with `PracticeTrack(reward=...)` — it takes `(info, dt)` and
@@ -244,6 +292,25 @@ Two constants in `fly_driver/interface.py` hold the agreement:
 Measured on this machine: the env runs about **400 steps/s** with rendering (≈2.5 ms/step,
 of which ≈1.5 ms is the render), against the eye's 7.9 ms per frame. So the optic lobe is
 the bottleneck, not the track, and one environment comfortably feeds one eye in real time.
+
+---
+
+## Training
+
+Reinforcement learning on the practice track is `scripts/train.py`, driven by a YAML
+condition file (`fly_driver/configs/train_default.yaml`: frozen flyvis eye, no brain,
+seeds 0, 1 and 2). It needs torch, which the base `.venv` deliberately does not have, so run
+it from the flyvis virtualenv, or from a `.venv-train` with CPU torch when flyvis cannot be
+installed (Python 3.13 machines) -- the pixel smoke eye exercises the whole loop:
+
+```bash
+python scripts/train.py --seed 0                  # in .venv-flyvis: the default condition
+python scripts/train.py --eye pixels --seed 0     # any venv with torch: the smoke eye
+```
+
+Every run writes `episodes.csv` (reward split by term), `updates.csv`, a policy checkpoint
+and periodic evaluations under `runs/<name>/seed_<k>/`. Config reference, outputs and the
+frozen-versus-fine-tuned rules: [`docs/training.md`](docs/training.md).
 
 ---
 

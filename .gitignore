@@ -17,6 +17,9 @@ htmlcov/
 .venv/
 venv/
 env/
+# The per-stack virtualenvs docs/running-the-stacks.md has you create outside the base
+# install: .venv-flyvis, .venv-flybody, .venv-brain, and whatever comes next.
+.venv-*/
 
 # Editors / OS
 .idea/
@@ -45,6 +48,9 @@ wandb_api_key
 
 # MuJoCo writes this wherever it is run from; it is a warning log, not source.
 MUJOCO_LOG.TXT
+
+# scripts/drive_fly_live.py's runtime hand-off between its two processes, not source.
+scripts/.drive_fly_live_control*.npy
 
 # Assetto Corsa car data. Paid DLC, Kunos copyright: extract what you need locally,
 # never commit it. See RUNNING.md.

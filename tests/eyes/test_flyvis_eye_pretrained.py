@@ -69,6 +69,10 @@ def test_weights_are_frozen(eye: FlyvisEye) -> None:
     assert not eye.network.training
     assert all(not parameter.requires_grad for parameter in eye.network.parameters())
 
+    eye.encode_sequence(grey_frames(2))
+
+    assert all(parameter.grad is None for parameter in eye.network.parameters())
+
 
 def test_satisfies_the_eye_protocol(eye: FlyvisEye) -> None:
     """The frozen optic lobe is an ``Eye`` as the shared contract (GH-20) defines one."""
@@ -77,10 +81,6 @@ def test_satisfies_the_eye_protocol(eye: FlyvisEye) -> None:
     eye.reset()
     features = eye.encode(grey_frames(1)[0])
     assert validate_features(features, eye.feature_dim) is features
-
-    eye.encode_sequence(grey_frames(2))
-
-    assert all(parameter.grad is None for parameter in eye.network.parameters())
 
 
 def test_feature_layout(eye: FlyvisEye) -> None:

@@ -317,7 +317,14 @@ class TestTractionFactor:
         assert P.traction_control_enabled
 
     def test_the_slip_limit_matches_the_data(self):
+        """AC's SF70H runs SLIP_RATIO_LIMIT=0.10. It was loosened by hand for a while and
+        put back so the car the fly learns on behaves like the one it drives in AC."""
         assert P.traction_slip_full == pytest.approx(0.10)
+
+    def test_the_limiter_still_eases_in_rather_than_switching(self):
+        """The ramp has to keep its width or the aid becomes a switch, which shows up as
+        the car snapping between full torque and none."""
+        assert P.traction_slip_cut - P.traction_slip_full >= 0.15
 
     def test_rejects_inverted_thresholds(self):
         from dataclasses import replace

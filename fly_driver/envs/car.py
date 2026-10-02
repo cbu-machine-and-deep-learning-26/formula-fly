@@ -31,6 +31,7 @@ looks like.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import mujoco
 import numpy as np
@@ -50,6 +51,12 @@ from fly_driver.envs.powertrain import (
 )
 from fly_driver.envs.scene import SceneConfig, build_scene_xml
 from fly_driver.interface import ControlVector
+
+if TYPE_CHECKING:
+    # surface.py imports this module for CarConfig, so a real import here would be a
+    # cycle. The annotation is a string under `from __future__ import annotations`, and
+    # nothing at runtime needs the class -- CarDynamics only calls .apply() on it.
+    from fly_driver.envs.surface import SurfaceGrip
 
 __all__ = [
     "ACTUATOR_NAMES",
@@ -267,6 +274,35 @@ class CarConfig:
             car reached 100 km/h in 2.17 s against a real 2.6, and only came back into
             range at 1.9. Equal grip on both axles, which is what AC literally states,
             spins the car. Both are the same missing curve seen from different ends.
+
+            Both axles have been raised twice, 0.05 each time, on Payton's asking for
+            more grip on the road. The first step landed the pair on Assetto Corsa's
+            number -- 1.85 and 1.9 average to 1.875 against AC's stated ``DY_REF`` of
+            1.88. The second passes it: 1.9 and 1.95 average to 1.925, about 2.4% above
+            AC. That is worth knowing rather than hiding, because everything else about
+            this car is fitted to AC.
+
+            The cost is measured and it accumulates in one direction. 0-100 km/h has gone
+            2.40 -> 2.32 -> 2.25 s across the two steps, further below the real car's 2.6
+            each time rather than closer to it, and the sanity bound is 2.2 -- so one more
+            step of this size breaks it. The launch is traction-limited, so rear grip buys
+            acceleration whether or not that is what was wanted.
+
+            Grip and provokability pull against each other. With the traction limiter at
+            Assetto Corsa's 0.10, sideslip under full lock and full throttle at 60 km/h is
+            about 2 degrees. If the car needs to slide more, the limiter is the lever that
+            does not cost lap time -- see ``traction_slip_full`` in
+            :mod:`fly_driver.envs.powertrain`.
+
+            The rear sits 0.05 above the front rather than the 0.1 it had, moved
+            deliberately back towards the spinning end. At the old spread the car could
+            not be made to break traction by hand, and
+            a car that cannot oversteer is a poor thing to learn to drive in before
+            Assetto Corsa, where it can. Note what this does *not* fix: the dominant
+            reason the rear stays planted on the throttle is the traction control in
+            :mod:`fly_driver.envs.powertrain`, which a real 2017 car does not have at all.
+            Tyre grip is the lever that governs the rear letting go in a corner; the
+            limiter is the one that governs it letting go under power.
         fly_mount_x_m:
         fly_mount_x_m: Longitudinal position of the ``fly_mount`` site in the body frame:
             the cockpit floor, where GH-21 attaches the tethered flybody. Slightly ahead
@@ -321,8 +357,8 @@ class CarConfig:
     anti_roll_stiffness_front_n_m: float = 108_000.0
     anti_roll_stiffness_rear_n_m: float = 0.0
     max_actuator_torque_nm: float = 20_000.0
-    wheel_friction: tuple[float, float, float] = (1.8, 0.02, 0.001)
-    wheel_friction_rear: tuple[float, float, float] = (1.9, 0.02, 0.001)
+    wheel_friction: tuple[float, float, float] = (1.9, 0.02, 0.001)
+    wheel_friction_rear: tuple[float, float, float] = (1.95, 0.02, 0.001)
     fly_mount_x_m: float = 0.10
     fly_mount_z_m: float = 0.17
     camera_height_above_mount_m: float = 0.45
@@ -733,6 +769,10 @@ class CarDynamics:
         aero: Aerodynamic coefficients. Defaults to :data:`~fly_driver.envs.aero.SF70H_AERO`.
         powertrain: Engine, gearbox and brakes. Defaults to
             :data:`~fly_driver.envs.powertrain.SF70H_POWERTRAIN`.
+        surface: Per-wheel grip by surface, from
+            :class:`~fly_driver.envs.surface.SurfaceGrip`. ``None`` gives the car asphalt
+            grip everywhere, including on the grass -- which is what it had before this
+            existed, and is still what a bare model with no centerline can offer.
 
     Raises:
         ValueError: If the model lacks the car body, a wheel joint, or any expected actuator.
@@ -744,11 +784,13 @@ class CarDynamics:
         car: CarConfig | None = None,
         aero: AeroConfig | None = None,
         powertrain: PowertrainConfig | None = None,
+        surface: SurfaceGrip | None = None,
     ) -> None:
         self._model = model
         self.car = car or CarConfig()
         self.aero = aero or SF70H_AERO
         self.powertrain = powertrain or SF70H_POWERTRAIN
+        self.surface = surface
 
         self._body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car")
         if self._body < 0:
@@ -909,6 +951,11 @@ class CarDynamics:
         """
         if n_substeps < 1:
             raise ValueError(f"n_substeps must be at least 1, got {n_substeps}")
+        # Once per control step rather than per substep: four centerline projections cost
+        # about 190 us here against 1.9 ms inside the loop, and the grip transition cannot
+        # be reacted to faster than the 50 Hz the policy runs at. See surface.py.
+        if self.surface is not None:
+            self.surface.apply(data)
         for _ in range(n_substeps):
             for name, value in self.actuator_commands(control, data).items():
                 data.ctrl[self._actuator[name]] = value
