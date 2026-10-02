@@ -84,6 +84,10 @@ script into stepped inputs and decay constants that were wrong in both direction
 reports both edges, so a held key can mean what it says. It listens globally, whichever
 window has focus; fine for a dev tool, worth knowing.
 
+``--racing-line`` paints the racing line on the road. It is off by default here, and only
+here: :class:`~fly_driver.envs.scene.SceneConfig` still defaults it on, because in the env it
+is a cue the fly is meant to see, where a human learning the circuit would rather not be led.
+
 ``--export model.xml`` writes the generated MJCF instead of launching, so you can open it
 with ``python -m mujoco.viewer --mjcf=model.xml`` and drag the raw actuator sliders.
 """
@@ -322,6 +326,14 @@ def main(argv: list[str] | None = None) -> int:
         help="keyboard: literal full lock at any speed, as the fly would get for steer=1",
     )
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
+    parser.add_argument(
+        "--racing-line",
+        action="store_true",
+        help=(
+            "paint the racing line on the road. Off by default for a human driver; the env "
+            "keeps it on by default, because there it is something the fly is meant to see"
+        ),
+    )
     parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
     parser.add_argument(
         "--track-limit",
@@ -345,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     car = CarConfig(camera_fovy_deg=args.fovy) if args.fovy else CarConfig()
-    scene = SceneConfig(include_walls=args.walls)
+    scene = SceneConfig(include_walls=args.walls, racing_line=args.racing_line)
     centerline, model = build(car, scene)
 
     if args.export:

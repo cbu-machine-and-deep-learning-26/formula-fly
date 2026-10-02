@@ -263,3 +263,28 @@ class TestTheViewerResetIsDetectable:
         mujoco.mj_forward(model, data)
         assert float(data.time) == 0.0
         assert float(data.time) < ran_to, "a reset is no longer detectable from the clock"
+
+
+class TestTheRacingLineFlag:
+    """Off by default for a human driver, on with ``--racing-line``.
+
+    Only here. SceneConfig still defaults the line on, because in the env it is a cue the
+    fly is meant to see -- so the test checks both, or flipping the env's default to match
+    the drive tool would pass unnoticed and take the cue away from the fly.
+    """
+
+    def _exported(self, tmp_path, *flags: str) -> str:
+        path = tmp_path / "model.xml"
+        assert drive.main(["--export", str(path), *flags]) == 0
+        return path.read_text(encoding="utf-8")
+
+    def test_the_drive_tool_leaves_it_off_by_default(self, tmp_path):
+        assert "racing_line_geom" not in self._exported(tmp_path)
+
+    def test_the_flag_paints_it(self, tmp_path):
+        assert "racing_line_geom" in self._exported(tmp_path, "--racing-line")
+
+    def test_the_env_still_shows_it_to_the_fly_by_default(self):
+        from fly_driver.envs.scene import SceneConfig
+
+        assert SceneConfig().racing_line is True
