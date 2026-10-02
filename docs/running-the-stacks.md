@@ -171,6 +171,48 @@ when flyvis, the checkpoint, or (for the webcam) OpenCV is missing, so base CI
 does not need any of them. The hex map drawing is shared with
 `scripts/flyvis_eye_demo.py` via `fly_driver.analysis.hex_plots`.
 
+## Central complex (PyTorch, closed loop)
+
+`fly_driver.brains.central_complex.CentralComplexBrain` sits between the eye and the
+policy inside `DirectDriveAgent`. It is the live path for GH-23: one Euler step per
+frame of a leaky rate neuron, PyTorch, no flyvis import. Brian2 is named as the
+offline simulator (`fly_driver.brains.OFFLINE_SIMULATOR`) and is not imported; the
+lesion map and sim-to-biology stay offline.
+
+Wiring is synthetic until Codex cell-type names are in the repo. Three compartments
+share `neuron_count`: a compass ring (local excitation, opposite-cell inhibition), a
+sparse steering population, and descending neurons whose bounded activation is the
+policy's feature vector. Trainable parameters are the synapse strengths on that fixed
+mask, a bias, and a log time-constant. `compare_parameters()` reports that count next
+to a dense blank net of the same width (`BlankWidthNet`), which uses the same neuron
+and a sliced readout so the gap is the wiring.
+
+```python
+from fly_driver.brains.central_complex import CentralComplexBrain
+from fly_driver.drivers import DirectDriveAgent
+from fly_driver.eyes.pixel_eye import PixelEye
+
+eye = PixelEye()  # no flyvis; swap for FlyvisEye when that stack is installed
+brain = CentralComplexBrain(eye.feature_dim, neuron_count=256, output_dim=32, seed=0)
+policy = ...  # feature_dim=brain.output_dim
+driver = DirectDriveAgent(eye, policy, brain=brain)
+```
+
+`python scripts/brain_frame_time.py` times `step` across neuron counts and writes a
+CSV. The budget column is 20 ms (50 Hz). A width whose median step already exceeds
+that cannot be the live size, because the frame still has to render and run the eye.
+The default counts run from the constructor default (256) through sizes past the
+budget. The script prints `SKIP` and exits 0 when torch is absent, so base CI does
+not need it. Torch stays out of the default install; the brain tests skip without it.
+
+Degree-16 wiring is cheap. On this VM's CPU (not a Spark and not the Windows box),
+brain-only median step time was about 0.09 ms at 256 neurons, 8.6 ms at 131072, and
+19 ms at 262144, and 393216 missed the 20 ms budget. 131072 already spends a large
+share of the frame, and the eye and the renderer still have to run, so the
+constructor default stays 256. Re-time on the target box before treating any larger
+width as live. The blank net's parameter count is reported beside each point and is
+not allocated; at these widths a dense map does not fit in memory.
+
 ## flybody (MuJoCo body)
 
 Use a separate Linux environment. Upstream recommends Python 3.10; this x86_64

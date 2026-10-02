@@ -5,10 +5,11 @@ practice track (GH-16), the Assetto Corsa bridge (GH-24), and the tethered fly b
 (GH-21) all speak it, so a policy trained against one runs against another unchanged.
 
 Two layers. The *types* -- :class:`ControlVector`, :data:`Frame`, :data:`Features` and
-their validators -- are what an env needs. The *stages* -- :class:`Eye`, :class:`Policy`,
-:class:`Body` and :class:`Driver` -- are the seams between the tracks, as
+their validators -- are what an env needs. The *stages* -- :class:`Eye`, :class:`Brain`,
+:class:`Policy`, :class:`Body` and :class:`Driver` -- are the seams between the tracks, as
 :class:`typing.Protocol` so a stage is whatever has the right methods, with no base class to
-inherit and no torch to import. :mod:`fly_driver.drivers` composes them.
+inherit and no torch to import. :mod:`fly_driver.drivers` composes them. The brain is
+optional: direct drive without one still reads the eye from the policy.
 
 numpy-only, so importing this never drags in mujoco, torch, or flyvis.
 
@@ -36,6 +37,7 @@ __all__ = [
     "FRAME_RATE_HZ",
     "FRAME_SHAPE",
     "Body",
+    "Brain",
     "ControlVector",
     "Driver",
     "Eye",
@@ -275,8 +277,36 @@ class Eye(Protocol):
 
 
 @runtime_checkable
+class Brain(Protocol):
+    """The central complex between the eye and the policy: features in, features out.
+
+    ``input_dim`` is the eye's feature count and ``output_dim`` is what the policy reads.
+    A driver checks both when it is constructed, the same way it checks an eye against a
+    policy when no brain is in the loop. ``reset`` clears the membrane state at the start
+    of an episode; ``step`` is one frame of dynamics, at the env's frame rate.
+
+    The live module is PyTorch (:mod:`fly_driver.brains.central_complex`). This protocol
+    stays numpy-only so a stand-in can fill the seam without importing torch.
+    """
+
+    @property
+    def input_dim(self) -> int:
+        """Length of the vector :meth:`step` expects, matching the eye."""
+
+    @property
+    def output_dim(self) -> int:
+        """Length of the vector :meth:`step` returns, matching the policy."""
+
+    def reset(self) -> None:
+        """Start an episode from the resting membrane state."""
+
+    def step(self, features: Features) -> Features:
+        """Advance one frame and return ``(output_dim,)`` float32 features."""
+
+
+@runtime_checkable
 class Policy(Protocol):
-    """Stage 2: features in, control out -- the brain, or the readout on top of it."""
+    """Features in, control out -- the readout on top of the eye, or on top of the brain."""
 
     @property
     def feature_dim(self) -> int:

@@ -17,6 +17,7 @@ from fly_driver.interface import (
     FEATURE_DTYPE,
     FRAME_SHAPE,
     Body,
+    Brain,
     ControlVector,
     Driver,
     Eye,
@@ -251,6 +252,72 @@ class FakeTrack:
         self.received.append(control)
         kind = "left" if len(self.received) % 2 else "right"
         return _frame(kind), 0.0, False, len(self.received) >= 10, {}
+
+
+class HalfFeaturesBrain:
+    """Keeps the first half of the eye vector. A brain with no dynamics and no torch."""
+
+    def __init__(self, input_dim: int):
+        self.input_dim = input_dim
+        self.output_dim = input_dim // 2
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.resets += 1
+
+    def step(self, features: np.ndarray) -> np.ndarray:
+        return (features[: self.output_dim] * np.float32(0.5)).astype(FEATURE_DTYPE)
+
+
+class MeanFeaturePolicy:
+    """Steer from the mean feature. Does not assume a square spatial layout."""
+
+    def __init__(self, feature_dim: int):
+        self.feature_dim = feature_dim
+        self.seen: list[np.ndarray] = []
+        self.seeds: list[int | None] = []
+
+    def reset(self, seed: int | None = None) -> None:
+        self.seeds.append(seed)
+
+    def act(self, features: np.ndarray) -> ControlVector:
+        self.seen.append(features.copy())
+        steer = float(np.clip(float(features.mean()) * 4.0, -1.0, 1.0))
+        return ControlVector(steer=steer, throttle=0.4, brake=0.0)
+
+
+class TestDirectDriveWithABrain:
+    def test_a_stand_in_brain_is_the_seam_the_policy_reads(self):
+        eye = PooledLuminanceEye()
+        brain = HalfFeaturesBrain(eye.feature_dim)
+        policy = MeanFeaturePolicy(brain.output_dim)
+        driver = DirectDriveAgent(eye, policy, brain=brain)
+        assert isinstance(brain, Brain)
+        assert driver.feature_dim == brain.output_dim
+        driver.reset(seed=3)
+        control = driver.act(_frame("right"))
+        assert isinstance(control, ControlVector)
+        assert brain.resets == 1
+        assert policy.seeds == [3]
+        assert policy.seen[0].shape == (brain.output_dim,)
+        full = eye.encode(_frame("right"))
+        assert np.allclose(policy.seen[0], full[: brain.output_dim] * 0.5)
+
+    def test_mismatched_brain_widths_fail_at_construction(self):
+        eye = PooledLuminanceEye()
+        brain = HalfFeaturesBrain(eye.feature_dim)
+        with pytest.raises(ValueError, match="brain expects"):
+            DirectDriveAgent(eye, MeanFeaturePolicy(brain.output_dim), brain=HalfFeaturesBrain(3))
+        with pytest.raises(ValueError, match="policy expects"):
+            DirectDriveAgent(eye, MeanFeaturePolicy(brain.output_dim + 1), brain=brain)
+
+    def test_a_misbehaving_brain_is_caught_at_the_seam(self):
+        eye = PooledLuminanceEye()
+        brain = HalfFeaturesBrain(eye.feature_dim)
+        brain.step = lambda features: np.full(brain.output_dim, np.nan, dtype=FEATURE_DTYPE)  # type: ignore[method-assign]
+        driver = DirectDriveAgent(eye, MeanFeaturePolicy(brain.output_dim), brain=brain)
+        with pytest.raises(ValueError, match="finite"):
+            driver.act(_frame())
 
 
 class TestSmokeTheLoop:
