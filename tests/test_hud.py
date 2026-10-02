@@ -536,3 +536,53 @@ class TestTheSegmentDisplay:
         plain = draw()
         x0, y0, x1, y1 = MAP_RECT
         assert np.array_equal(busy[y0:y1, x0:x1], plain[y0:y1, x0:x1])
+
+
+class TestOverlaysShareOneCall:
+    """GH-75: the panel and the fly's-eye view are both on screen at once.
+
+    ``set_images`` replaces the viewer's whole list, so two panels that each called it
+    would take turns being invisible. ``overlay()`` hands the panel back undrawn and
+    ``show_overlays`` draws everything in one call.
+    """
+
+    def test_overlay_returns_the_panel_without_drawing_it(self):
+        viewer = _FakeViewer(1280, 720)
+        panel = ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT, margin_px=12)
+        rect, image = panel.overlay(frame(speed_mps=30.0))
+        assert not viewer.images and not viewer.texts
+        assert (rect.left, rect.width, rect.height) == (12, WIDTH, HEIGHT)
+        assert image.shape == (HEIGHT, WIDTH, 3)
+
+    def test_overlay_is_none_while_the_window_is_too_small(self):
+        viewer = _FakeViewer(WIDTH, HEIGHT)
+        panel = ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT)
+        assert panel.overlay(frame()) is None
+
+    def test_update_still_draws_exactly_what_overlay_returns(self):
+        viewer = _FakeViewer(1280, 720)
+        panel = ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT)
+        rect, image = panel.overlay(frame(speed_mps=12.0))
+        panel.update(frame(speed_mps=12.0))
+        [(drawn_rect, drawn_image)] = viewer.images[-1]
+        assert (drawn_rect.left, drawn_rect.bottom) == (rect.left, rect.bottom)
+        assert np.array_equal(drawn_image, image)
+
+    def test_everything_goes_to_the_viewer_in_one_call(self):
+        viewer = _FakeViewer(1280, 720)
+        first = (mujoco.MjrRect(0, 0, 4, 2), np.zeros((2, 4, 3), dtype=np.uint8))
+        second = (mujoco.MjrRect(10, 0, 3, 3), np.ones((3, 3, 3), dtype=np.uint8))
+        hud.show_overlays(viewer, [first, second])
+        assert len(viewer.images) == 1
+        assert [image.shape for _, image in viewer.images[0]] == [(2, 4, 3), (3, 3, 3)]
+
+    def test_it_still_sets_the_load_bearing_text_overlay(self):
+        viewer = _FakeViewer(1280, 720)
+        hud.show_overlays(viewer, [])
+        assert viewer.texts, "no text overlay set; the images will not be drawn"
+
+    def test_an_empty_list_clears_the_screen(self):
+        """How turning the eye view off with the HUD hidden removes its last frame."""
+        viewer = _FakeViewer(1280, 720)
+        hud.show_overlays(viewer, [])
+        assert viewer.images == [[]]

@@ -146,6 +146,9 @@ class EyePicture:
 
     def clear(self) -> None:
         """Forget the last frame: black motion, black retina, brightness scale from scratch."""
+        #: Mean per-column motion-vector length of the last frame, before any brightness
+        #: scaling: how much the eye saw move, comparable across frames.
+        self.motion_strength = 0.0
         self.retina = np.zeros(HEX_COLUMN_COUNT, dtype=np.float32)
         self.motion_rgb = np.zeros((HEX_COLUMN_COUNT, 3), dtype=np.float32)
         self._peak = RunningPeak()
@@ -163,7 +166,9 @@ class EyePicture:
         readouts = split_readout_maps(np.asarray(features, dtype=np.float32), self.readout_names)
         channels = direction_channels(readouts, self._resting)
         _, vectors = compute_motion_percept(channels, self._peak.value)
-        self._peak.update(float(np.quantile(np.hypot(*vectors.T), PEAK_QUANTILE)))
+        magnitudes = np.hypot(*vectors.T)
+        self.motion_strength = float(np.mean(magnitudes))
+        self._peak.update(float(np.quantile(magnitudes, PEAK_QUANTILE)))
         self.motion_rgb, _ = compute_motion_percept(channels, self._peak.value)
         self.retina = np.clip(retina, 0.0, 1.0)
 
