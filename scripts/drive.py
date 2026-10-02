@@ -520,8 +520,21 @@ def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> i
                     ),
                 )
             last_report = 0.0
+            last_sim_time = float(env.data.time)
             while viewer.is_running():
                 step_start = time.perf_counter()
+
+                # BACKSPACE is the viewer's own binding: it calls mj_resetData on the env's
+                # data behind the env's back, so the lap clock, penalty and grip would carry
+                # on from before. The clock going backwards is the one signal that reaches
+                # us; a full env reset puts everything back on the grid together.
+                if float(env.data.time) < last_sim_time:
+                    frame, info = env.reset()
+                    agent.reset()
+                    print()
+                    print("reset to the grid -- lap, segments and penalty cleared", flush=True)
+                last_sim_time = float(env.data.time)
+
                 control = agent.act(frame)
                 frame, _reward, terminated, truncated, info = env.step(control)
 
@@ -542,6 +555,7 @@ def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> i
                         )
                     frame, info = env.reset()
                     agent.reset()
+                    last_sim_time = float(env.data.time)
                     viewer.sync()
                     continue
 
