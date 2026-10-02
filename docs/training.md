@@ -68,7 +68,7 @@ misspelt hyperparameter cannot silently keep its default.
 | `seeds` | The seeds this condition runs, each a complete independent run. Default `[0, 1, 2]` |
 | `total_env_steps` | Env steps per seed, rounded down to whole rollouts |
 | `device` | `auto` (CUDA if available), `cpu`, or a torch device string |
-| `eye.type` | `flyvis` (default) or `pixels`. GH-15 registers `cnn`, `random_projection` and the shuffled connectome |
+| `eye.type` | `flyvis` (default), `cnn`, `random_projection`, `shuffled`, or `pixels` (the GH-17 smoke eye, not an RQ1 control) |
 | `eye.frozen` | `true` trains only the head. `false` puts the eye's parameters in the optimiser; see below |
 | `eye.params` | Constructor keyword arguments (`readouts`, `checkpoint`, `downsample`...). `frame_shape` and `frame_rate_hz` come from the env and may not be set here |
 | `brain` | `none` (the policy reads the eye directly). GH-23 registers the whole-brain model |
@@ -140,9 +140,16 @@ will, and a test eye does.
 The flyvis eye is not feed-forward: it keeps the optic lobe's state between frames, so
 training through it is backpropagation through the episode. That is the separate
 frozen-versus-fine-tuned experimental condition `AGENTS.md` §6 names, and this loop does
-not build it; asking for `frozen: false` with `flyvis` is refused with that explanation
-rather than quietly training the head alone. `pixels` has no parameters and is refused
-too.
+not build it; asking for `frozen: false` with `flyvis` or `shuffled` is refused with that
+explanation rather than quietly training the head alone. `pixels` and `random_projection`
+have no parameters and are refused too. `cnn` exposes `encode_batch`, so `frozen: false`
+fine-tunes the convolutions and the linear map.
+
+The three GH-15 controls emit the same 5768 features as frozen flyvis T4/T5. `cnn` is a
+small conv net. `random_projection` is a frozen Gaussian matrix from grey pixels (`seed`
+fixes it; default 0). `shuffled` is the pretrained flyvis eye with a degree-preserving
+rewiring of its edges (`seed` and `swap_attempts` in `eye.params`). None of them is
+`pixels`.
 
 ## Adding an eye, a brain, an env
 

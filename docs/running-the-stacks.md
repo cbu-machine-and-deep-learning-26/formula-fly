@@ -114,6 +114,34 @@ settling, T4/T5 direction selectivity through the eye, and 10 s of noise
 staying finite and below 20 a.u. The synthetic gratings and moving edges live
 in `fly_driver.eyes.stimuli`.
 
+### Same-size control eyes (GH-15)
+
+RQ1 compares the frozen flyvis readout with three eyes that emit the same
+5768 features (`8 × 721` T4/T5 columns):
+
+| `eye.type` | Class | Needs |
+|---|---|---|
+| `cnn` | `CnnEye` | torch (optional; base CI does not install it) |
+| `random_projection` | `RandomProjectionEye` | numpy only |
+| `shuffled` | `ShuffledConnectomeEye` | flyvis, same as `FlyvisEye` |
+
+`RandomProjectionEye` multiplies BT.601 luminance by a frozen Gaussian matrix
+(`N(0, 1/n_pixels)`, row-major). `CnnEye` is three stride-2 convolutions
+(8, 16, 16 channels), a 2×2 pool, and a linear map to 5768; `encode` and
+`encode_batch` agree, so the training loop can fine-tune it. `seed` on either
+fixes the draw and does not follow the run's global RNG; the default is 0.
+
+`ShuffledConnectomeEye` loads the same checkpoint as `FlyvisEye`, then
+rewires edges with a directed double-edge swap that keeps every neuron's
+in-degree and out-degree and the synapse strengths on each edge. The swap is
+`fly_driver.eyes.degree_shuffle.degree_matched_shuffle` and is tested without
+flyvis. `seed` fixes the rewiring (default 0). `swap_attempts` defaults to
+10 per edge.
+
+`import fly_driver.eyes` does not import torch or flyvis. Constructing
+`CnnEye` without torch raises `TorchNotInstalledError`. Constructing
+`ShuffledConnectomeEye` without flyvis raises `FlyvisNotInstalledError`.
+
 ### Live demo (webcam → eye)
 
 `scripts/flyvis_eye_live.py` is a viewer, not a training component. Its panels
