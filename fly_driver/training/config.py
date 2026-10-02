@@ -46,11 +46,18 @@ __all__ = [
 #: The seeds a condition runs unless told otherwise. `AGENTS.md` §6: minimum three.
 DEFAULT_SEEDS: tuple[int, ...] = (0, 1, 2)
 
-#: Eyes the loop knows how to build. ``flyvis`` is the default (`AGENTS.md` §6); ``pixels``
-#: is block-averaged grey pixels, the smoke-test eye that runs anywhere. The RQ1 controls --
-#: CNN, random projection, degree-matched shuffled connectome -- are GH-15's and register
-#: here when they land. Builders: ``fly_driver.training.train.EYE_BUILDERS``.
-KNOWN_EYE_TYPES: tuple[str, ...] = ("flyvis", "pixels")
+#: Eyes the loop knows how to build. ``flyvis`` is the default (`AGENTS.md` §6).
+#: ``cnn``, ``random_projection`` and ``shuffled`` are the same-width RQ1 controls
+#: (GH-15). ``pixels`` is block-averaged grey pixels, the smoke-test eye that runs
+#: anywhere (GH-17), not one of those controls. Builders:
+#: ``fly_driver.training.train.EYE_BUILDERS``.
+KNOWN_EYE_TYPES: tuple[str, ...] = (
+    "flyvis",
+    "cnn",
+    "random_projection",
+    "shuffled",
+    "pixels",
+)
 
 #: Brains between the eye and the policy. ``none`` reads the eye directly (the RQ1 rung);
 #: the central-complex / whole-brain model (GH-23) registers here.
@@ -105,8 +112,10 @@ class EyeConfig:
             which needs an eye that exposes a differentiable batch encoder; the loop refuses
             eyes that do not rather than quietly training the head alone.
         params: Keyword arguments for the eye's constructor, e.g. ``readouts`` or
-            ``checkpoint`` for flyvis, ``downsample`` for pixels. ``frame_shape`` and
-            ``frame_rate_hz`` are supplied from the env and must not be repeated here.
+            ``checkpoint`` for flyvis and the shuffled connectome, ``downsample`` for
+            pixels, ``seed`` for the CNN, the random projection and the shuffle.
+            ``frame_shape`` and ``frame_rate_hz`` are supplied from the env and must
+            not be repeated here.
     """
 
     type: str = "flyvis"

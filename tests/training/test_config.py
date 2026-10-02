@@ -72,7 +72,7 @@ class TestTheConditionFields:
             TrainConfig.from_dict(data)
 
     def test_the_known_names_are_what_the_default_yaml_documents(self):
-        assert "flyvis" in KNOWN_EYE_TYPES and "pixels" in KNOWN_EYE_TYPES
+        assert KNOWN_EYE_TYPES == ("flyvis", "cnn", "random_projection", "shuffled", "pixels")
         assert KNOWN_BRAINS == ("none",)
         assert set(KNOWN_ENV_TYPES) == {"practice_track", "dummy"}
 
