@@ -224,3 +224,111 @@ class TestBothPathsSatisfyTheContract:
             axes = [rng.uniform(-1.0, 1.0) for _ in range(6)]
             control = drive.gamepad_axes_to_control(axes)
             ControlVector(steer=control.steer, throttle=control.throttle, brake=control.brake)
+
+
+class TestTheViewerResetIsDetectable:
+    """BACKSPACE is MuJoCo's own binding, not ours.
+
+    It calls ``mj_resetData`` behind the driving loop, which never sees the key. The only
+    signal that reaches us is the simulation clock going backwards, and everything the lap
+    has accumulated -- the clocks, the penalty, the per-wheel grip -- is cleared off the
+    back of it. If MuJoCo ever stopped zeroing the clock there, nothing would raise: the
+    car would jump to the grid still owing whatever penalty it had built up, and the next
+    lap would silently start dirty. So the assumption is pinned here rather than trusted.
+    """
+
+    def test_resetting_puts_the_clock_back_to_zero(self):
+        import mujoco
+
+        from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
+        from fly_driver.envs.centerline import Centerline
+        from fly_driver.envs.scene import SceneConfig
+
+        square = Centerline(
+            points=[(0.0, 0.0), (200.0, 0.0), (200.0, 200.0), (0.0, 200.0)],
+            half_width_right=[6.0] * 4,
+            half_width_left=[6.0] * 4,
+        )
+        model = mujoco.MjModel.from_xml_string(
+            assemble_model_xml(square, SceneConfig(mesh_spacing_m=100.0), CarConfig())
+        )
+        data = mujoco.MjData(model)
+        dynamics = CarDynamics(model)
+        dynamics.step(ControlVector(steer=0.0, throttle=1.0, brake=0.0), data, 50)
+
+        ran_to = float(data.time)
+        assert ran_to > 0.0, "the clock never advanced, so the check proves nothing"
+
+        mujoco.mj_resetData(model, data)
+        mujoco.mj_forward(model, data)
+        assert float(data.time) == 0.0
+        assert float(data.time) < ran_to, "a reset is no longer detectable from the clock"
+
+
+class TestTheRacingLineFlag:
+    """Off by default for a human driver, on with ``--racing-line``.
+
+    Only here. SceneConfig still defaults the line on, because in the env it is a cue the
+    fly is meant to see -- so the test checks both, or flipping the env's default to match
+    the drive tool would pass unnoticed and take the cue away from the fly.
+    """
+
+    def _exported(self, tmp_path, *flags: str) -> str:
+        path = tmp_path / "model.xml"
+        assert drive.main(["--export", str(path), *flags]) == 0
+        return path.read_text(encoding="utf-8")
+
+    def test_the_drive_tool_leaves_it_off_by_default(self, tmp_path):
+        assert "racing_line_geom" not in self._exported(tmp_path)
+
+    def test_the_flag_paints_it(self, tmp_path):
+        assert "racing_line_geom" in self._exported(tmp_path, "--racing-line")
+
+    def test_the_env_still_shows_it_to_the_fly_by_default(self):
+        from fly_driver.envs.scene import SceneConfig
+
+        assert SceneConfig().racing_line is True
+
+
+class TestWhatDriveFlyNeedsFromIt:
+    """``scripts/drive_fly.py`` (GH-21) imports from this script:
+    ``from scripts.drive import build, reset_to_start``.
+
+    Nothing else tests that, so renaming either function here would break the fly-body
+    driver without a single test failing (#70). These read drive_fly.py itself, so a new
+    import added there later is covered without anyone remembering to come back here.
+    """
+
+    _DRIVE_FLY = Path(__file__).resolve().parents[2] / "scripts" / "drive_fly.py"
+
+    def _imported_from_drive(self) -> set[str]:
+        import ast
+
+        tree = ast.parse(self._DRIVE_FLY.read_text(encoding="utf-8"))
+        return {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "scripts.drive"
+            for alias in node.names
+        }
+
+    def test_every_name_drive_fly_imports_still_exists(self):
+        names = self._imported_from_drive()
+        assert names, "drive_fly.py no longer imports from drive.py; this test can go"
+        missing = sorted(name for name in names if not hasattr(drive, name))
+        assert not missing, f"drive_fly.py imports {missing} from drive.py, which is gone"
+
+    def test_they_still_work_the_way_drive_fly_calls_them(self):
+        """``build(car, scene)`` then ``reset_to_start(model, data)``, as its render phase does."""
+        import mujoco
+
+        from fly_driver.envs.car import CarConfig
+        from fly_driver.envs.scene import SceneConfig
+
+        centerline, model = drive.build(CarConfig(), SceneConfig())
+        data = mujoco.MjData(model)
+        data.time = 12.0
+        drive.reset_to_start(model, data)
+        assert data.time == 0.0, "reset_to_start no longer puts the car back on the grid"
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car") >= 0
+        assert centerline.length > 5000.0, "build no longer loads Silverstone"

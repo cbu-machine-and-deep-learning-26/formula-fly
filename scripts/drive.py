@@ -45,17 +45,28 @@ and brake as bars, steering as a bar running -1 to +1 as the ControlVector does,
 of each coilover, lap times, and a map of the circuit with a fly marking where you are.
 ``--no-hud`` suppresses it.
 
-Run wide and the lap is thrown away: once 15% of the car's width is past the kerb and onto
-the grass the car goes back to the grid and the clock resets, the same way a real timed lap
-is lost. ``--track-limit`` changes the fraction, and 0 turns the rule off.
+Run wide and it costs you seconds rather than the lap. The penalty scales with how far off
+the car went and how long it stayed there, so brushing a kerb is worth a few tenths and
+cutting a corner outright is worth several seconds; it is added to the stopwatch at the
+line, and that total is the real lap time. The panel shows it climbing while you are still
+off, and the terminal prints the raw time and the penalty separately afterwards so one
+number cannot hide a cut. ``--track-limit`` brings back the old rule -- back to the grid,
+clock reset -- at whatever fraction of the car's width you give it; it is off by default.
+
+The lap is also cut into segments, corner by corner and straight by straight, and each is
+timed. Crossing into the next one prints the time just set and how it compares with the
+best on record: ``T4  0:06.221  -0.184  NEW BEST``, or a ``+`` and no fanfare when it was
+slower. The panel shows the same delta in green or red beside the lap times. A segment you
+went off in is timed but can never set a record, so a corner cut is not a corner time.
 
 The car starts behind the start line, and the clock only begins when it first crosses:
 the panel shows ``OUT`` until then, so the run-up is not charged to lap one.
 
 Every completed lap is appended to the lap-time document (``lap_times.md`` by default,
-``--lap-log`` to point elsewhere, ``--no-lap-log`` to time laps without writing them down).
-The best time on the panel is read back out of that document rather than remembered here,
-so deleting a row from it changes the record straight away -- even mid-session.
+``--lap-log`` to point elsewhere, ``--no-lap-log`` to time laps and segments without
+writing either down), along with a table of the best time through each segment. Both are
+read back out of that document rather than remembered here, so deleting a row changes the
+record straight away -- even mid-session.
 
 Everything else is MuJoCo's own viewer binding, and those take precedence:
 
@@ -72,6 +83,10 @@ Why a separate keyboard listener: the viewer's own ``key_callback`` reports *pre
 script into stepped inputs and decay constants that were wrong in both directions. pynput
 reports both edges, so a held key can mean what it says. It listens globally, whichever
 window has focus; fine for a dev tool, worth knowing.
+
+``--racing-line`` paints the racing line on the road. It is off by default here, and only
+here: :class:`~fly_driver.envs.scene.SceneConfig` still defaults it on, because in the env it
+is a cue the fly is meant to see, where a human learning the circuit would rather not be led.
 
 ``--export model.xml`` writes the generated MJCF instead of launching, so you can open it
 with ``python -m mujoco.viewer --mjcf=model.xml`` and drag the raw actuator sliders.
@@ -91,7 +106,11 @@ import numpy as np
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline, off_track_fraction
 from fly_driver.envs.lap import DEFAULT_LAP_LOG_PATH, LapLog, LapTimer, format_lap_time
+from fly_driver.envs.penalty import OffTrackPenalty
 from fly_driver.envs.scene import SceneConfig
+from fly_driver.envs.segment_log import SegmentLog
+from fly_driver.envs.segments import SegmentTimer, find_segments
+from fly_driver.envs.surface import SurfaceGrip
 from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD
 from fly_driver.interface import ControlVector
 
@@ -307,14 +326,23 @@ def main(argv: list[str] | None = None) -> int:
         help="keyboard: literal full lock at any speed, as the fly would get for steer=1",
     )
     parser.add_argument("--walls", action="store_true", help="add collidable walls at the edges")
+    parser.add_argument(
+        "--racing-line",
+        action="store_true",
+        help=(
+            "paint the racing line on the road. Off by default for a human driver; the env "
+            "keeps it on by default, because there it is something the fly is meant to see"
+        ),
+    )
     parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
     parser.add_argument(
         "--track-limit",
         type=float,
-        default=0.15,
+        default=0.0,
         help=(
             "restart when this fraction of the car's width is past the kerb and onto the "
-            "grass; 0 disables the rule"
+            "grass. 0 (the default) disables the restart: going off costs a time penalty "
+            "added to the lap instead, which is kinder to drive and says how bad it was"
         ),
     )
     parser.add_argument(
@@ -329,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     car = CarConfig(camera_fovy_deg=args.fovy) if args.fovy else CarConfig()
-    scene = SceneConfig(include_walls=args.walls)
+    scene = SceneConfig(include_walls=args.walls, racing_line=args.racing_line)
     centerline, model = build(car, scene)
 
     if args.export:
@@ -349,8 +377,26 @@ def main(argv: list[str] | None = None) -> int:
     source = choose_input(args.input, raw_steer=args.raw_steer)
 
     lap_timer = LapTimer(centerline)
+    segment_timer = SegmentTimer(find_segments(centerline))
+    penalty = OffTrackPenalty()
     lap_log = None if args.no_lap_log else LapLog(args.lap_log)
+    segment_log = None if args.no_lap_log else SegmentLog(args.lap_log)
     excursions = 0
+    last_delta: float | None = None
+    last_was_best = False
+
+    def reanchor() -> None:
+        """Point everything that accumulates at the car's current pose and clock.
+
+        Shared by the track-limits restart and by the viewer's own BACKSPACE, so the two
+        cannot drift apart in what they remember to clear.
+        """
+        dynamics.reset()
+        penalty.reset()
+        surface.reset()
+        grid = centerline.project(float(data.xpos[car_body][0]), float(data.xpos[car_body][1]))
+        lap_timer.reset(grid.arclength, float(data.time))
+        segment_timer.reset(grid.arclength, float(data.time))
 
     data = mujoco.MjData(model)
     reset_to_start(model, data)
@@ -358,9 +404,19 @@ def main(argv: list[str] | None = None) -> int:
     # Everything goes through CarDynamics, which is the only path that applies
     # aerodynamics. Setting data.ctrl directly here would let you hand-drive a car with no
     # downforce while the trained policy drove a different one.
-    dynamics = CarDynamics(model, car)
+    surface = SurfaceGrip(
+        model,
+        centerline,
+        car=car,
+        kerb_width_m=scene.kerb_width_m,
+        grass_friction_scale=scene.grass_friction_scale,
+    )
+    dynamics = CarDynamics(model, car, surface=surface)
     car_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car")
     substeps = max(1, int(round((1.0 / CONTROL_HZ) / model.opt.timestep)))
+    # Simulated seconds per loop iteration, not wall clock: the penalty is charged in
+    # the same time base the lap is timed in, so a slow frame cannot make a lap dearer.
+    control_dt = substeps * float(model.opt.timestep)
 
     print(__doc__)
     print(f"input: {source.name}")
@@ -383,8 +439,21 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
             last_report = 0.0
+            last_sim_time = float(data.time)
             while viewer.is_running():
                 step_start = time.perf_counter()
+
+                # BACKSPACE is the viewer's own binding and it calls mj_resetData behind
+                # this loop's back, putting the simulation clock to zero without saying
+                # so. A clock that has gone backwards is the one signal that reaches us.
+                # Everything that accumulates has to come back with it, or the restarted
+                # lap opens owing seconds of penalty it never earned.
+                if float(data.time) < last_sim_time:
+                    reanchor()
+                    last_delta, last_was_best = None, False
+                    print()
+                    print("reset to the grid -- lap, segments and penalty cleared", flush=True)
+                last_sim_time = float(data.time)
 
                 speed = dynamics.speed_mps(data)
                 control = source.control(speed)
@@ -394,37 +463,68 @@ def main(argv: list[str] | None = None) -> int:
                 projection = centerline.project(float(position[0]), float(position[1]))
 
                 # Track limits. Measured from the car's outer edge, so the kerb is fair
-                # game and the grass is not; a lap that leaves the circuit is not a lap.
-                if args.track_limit > 0.0:
-                    beyond = off_track_fraction(
-                        projection,
-                        car_width_m=car.overall_width_m,
-                        kerb_width_m=scene.kerb_width_m,
-                    )
-                    if beyond > args.track_limit:
-                        excursions += 1
-                        reset_to_start(model, data)
-                        dynamics.reset()
-                        grid = centerline.project(
-                            float(data.xpos[car_body][0]), float(data.xpos[car_body][1])
-                        )
-                        lap_timer.reset(grid.arclength, float(data.time))
-                        print()
-                        print(
-                            f"off track: {beyond * 100:.0f}% of the car past the kerb "
-                            f"-- back to the grid (excursion {excursions})",
-                            flush=True,
-                        )
-                        continue
+                # game and the grass is not.
+                beyond = off_track_fraction(
+                    projection,
+                    car_width_m=car.overall_width_m,
+                    kerb_width_m=scene.kerb_width_m,
+                )
+                penalty.update(beyond, control_dt)
 
-                completed = lap_timer.update(projection.arclength, float(data.time))
-                if completed is not None:
-                    note = ""
-                    if lap_log is not None and lap_log.record(completed, driver=source.name):
-                        note = "  NEW BEST"
+                segment_done = segment_timer.update(
+                    projection.arclength,
+                    float(data.time),
+                    off_track=beyond > penalty.weights.minimum_depth,
+                )
+                if segment_done is not None:
+                    last_delta, last_was_best = None, False
+                    if segment_log is not None:
+                        outcome = segment_log.record(
+                            segment_done.segment.name,
+                            segment_done.seconds,
+                            is_clean=segment_done.is_clean,
+                            driver=source.name,
+                        )
+                        last_delta, last_was_best = outcome.delta, outcome.is_best
+                        print()
+                        print(outcome.describe(), flush=True)
+
+                # Opt-in now, and off by default. Everything timed has to be re-anchored
+                # with it: a car put back on the grid did not drive the stretch in between.
+                if args.track_limit > 0.0 and beyond > args.track_limit:
+                    excursions += 1
+                    reset_to_start(model, data)
+                    reanchor()
+                    last_sim_time = float(data.time)
                     print()
                     print(
-                        f"lap {lap_timer.completed}: {format_lap_time(completed)}{note}",
+                        f"off track: {beyond * 100:.0f}% of the car past the kerb "
+                        f"-- back to the grid (excursion {excursions})",
+                        flush=True,
+                    )
+                    continue
+
+                completed = lap_timer.update(
+                    projection.arclength,
+                    float(data.time),
+                    on_track=beyond <= penalty.weights.minimum_depth,
+                )
+                if completed is not None:
+                    owed = penalty.finish_lap()
+                    penalty.reset()
+                    note = ""
+                    if lap_log is not None and lap_log.record(
+                        completed, penalty_seconds=owed, driver=source.name
+                    ):
+                        note = "  NEW BEST"
+                    # Raw and penalty separately, because one number would hide a cut.
+                    cost = (
+                        "" if owed == 0.0 else f"  (raw {format_lap_time(completed)} +{owed:.3f})"
+                    )
+                    print()
+                    print(
+                        f"lap {lap_timer.completed}: "
+                        f"{format_lap_time(completed + owed)}{cost}{note}",
                         flush=True,
                     )
 
@@ -450,6 +550,13 @@ def main(argv: list[str] | None = None) -> int:
                             lap_best=None if lap_log is None else lap_log.best(),
                             lap_count=lap_timer.completed,
                             on_out_lap=not lap_timer.timing,
+                            penalty_s=penalty.total_seconds,
+                            segment=None
+                            if segment_timer.current is None
+                            else segment_timer.current.name,
+                            segment_elapsed=segment_timer.elapsed(float(data.time)),
+                            segment_delta=last_delta,
+                            segment_is_best=last_was_best,
                         )
                     )
 

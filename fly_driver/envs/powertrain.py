@@ -112,6 +112,16 @@ class PowertrainConfig:
             the throttle out of slow corners, which is what Payton hit.
         traction_slip_full: Wheelspin slip below which the engine gets full torque. AC's
             0.10, matched.
+
+            It was loosened by hand for a while -- 0.20 so the rear could be provoked, then
+            0.16 when that span too readily -- and put back to 0.10 on Payton's call, so the
+            car the fly learns on behaves like the one it will drive in Assetto Corsa. The
+            measurements from that are worth keeping, because this is the setting to reach for
+            if the car ever needs to slide more or less. At 60 km/h under full lock and full
+            throttle, sideslip is 2.2 degrees at 0.10, 4.5 at 0.13, 5.5 at 0.16, 8.3 at 0.20,
+            and 24.4 with the limiter off; 0-100 km/h and lateral grip at 250 km/h barely move
+            across that whole range, where every 0.05 of tyre friction costs about 0.07 s of
+            0-100.
         traction_slip_cut: Slip at which drive torque is cut to zero, ramping linearly from
             ``traction_slip_full``. AC cuts on a curve rather than a ramp; this is the same
             shape the brake limiter already uses, so the two read alike.

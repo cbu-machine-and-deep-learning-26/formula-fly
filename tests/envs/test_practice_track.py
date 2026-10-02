@@ -17,13 +17,16 @@ turning" and until now that lived in a docstring and had never been measured.
 from __future__ import annotations
 
 from collections import namedtuple
+from pathlib import Path
 
 import mujoco
 import numpy as np
 import pytest
 
+from fly_driver.envs.penalty import PenaltyWeights
 from fly_driver.envs.practice_track import PracticeTrack, ProgressReward
 from fly_driver.envs.scene import SceneConfig
+from fly_driver.envs.segment_log import SegmentLog
 from fly_driver.interface import FRAME_DTYPE, FRAME_RATE_HZ, FRAME_SHAPE, ControlVector
 
 Step = namedtuple("Step", "frame reward terminated truncated info")
@@ -52,6 +55,50 @@ def _drive(env: PracticeTrack, control, steps: int) -> Step:
         result = _step(env, control)
     assert result is not None
     return result
+
+
+#: Steps in the shared flat-out recording, and the split of the spin-off one.
+_FLAT_OUT_STEPS = 900
+_RUN_UP_STEPS = 120
+_FULL_LOCK_STEPS = 200
+_FULL_LOCK = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
+
+
+@pytest.fixture(scope="module")
+def flat_out_from_the_grid() -> tuple[dict, ...]:
+    """``info`` from 900 flat-out steps off the grid, with termination off.
+
+    Recorded once and shared. Eight tests used to drive exactly this run each -- the same
+    seed and the same actions, so the same physics -- and CI renders in software, where those
+    steps were most of the render job (#70). The tests read only ``info``, which depends on
+    the physics and not on the pixels, so one recording serves all of them.
+
+    The grid sits in T10, so the car leaves the circuit within a couple of seconds: this is a
+    run that goes off, crosses segment boundaries and keeps going.
+    """
+    env = PracticeTrack(terminate_off_track=False)
+    try:
+        _started(env)
+        return tuple(_step(env, FLAT_OUT).info for _ in range(_FLAT_OUT_STEPS))
+    finally:
+        env.close()
+
+
+@pytest.fixture(scope="module")
+def spun_off_the_circuit() -> tuple[dict, ...]:
+    """``info`` from a 120-step run-up then 200 steps of full lock, termination off.
+
+    Full lock at speed spins the car well into the grass, which is the excursion the
+    penalty and segment tests need. Shared for the same reason as the flat-out recording.
+    """
+    env = PracticeTrack(terminate_off_track=False)
+    try:
+        _started(env)
+        run_up = [_step(env, FLAT_OUT).info for _ in range(_RUN_UP_STEPS)]
+        spin = [_step(env, _FULL_LOCK).info for _ in range(_FULL_LOCK_STEPS)]
+        return tuple(run_up + spin)
+    finally:
+        env.close()
 
 
 def _speed_mph(env: PracticeTrack) -> float:
@@ -486,8 +533,10 @@ class TestOpticFlow:
 
 @pytest.mark.render
 class TestEpisodeBoundaries:
-    def test_leaving_the_circuit_ends_the_episode(self):
-        env = PracticeTrack()
+    def test_leaving_the_circuit_ends_the_episode_when_asked(self):
+        """Opt-in now. It used to be the default, and turning it off is the behaviour
+        change in this branch -- see test_leaving_the_circuit_no_longer_ends_the_episode."""
+        env = PracticeTrack(terminate_off_track=True)
         try:
             _started(env)
             assert not _drive(env, FLAT_OUT, 120).terminated, "straight ahead is not off track"
@@ -501,8 +550,24 @@ class TestEpisodeBoundaries:
         finally:
             env.close()
 
+    def test_with_termination_off_leaving_the_circuit_costs_seconds_instead(self):
+        """The default changed. A terminated episode says something ended and nothing
+        about how badly, so going off costs seconds instead -- and an episode that keeps
+        running is the one that can be recovered from and learned from."""
+        env = PracticeTrack(terminate_off_track=False)
+        try:
+            _started(env)
+            lock = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
+            _drive(env, FLAT_OUT, 120)
+            result = _drive(env, lock, 200)
+            assert not result.terminated
+            assert result.info["off_track_fraction"] > 0.15, "the car did leave the circuit"
+            assert result.info["penalty_s"] > 0.0, "and it was charged for it"
+        finally:
+            env.close()
+
     def test_the_rule_can_be_turned_off(self):
-        env = PracticeTrack(track_limit=0.0)
+        env = PracticeTrack(track_limit=0.0, terminate_off_track=True)
         try:
             _started(env)
             lock = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
@@ -656,9 +721,10 @@ class TestInfo:
             env.close()
 
     def test_the_clock_starts_when_the_car_crosses_the_line(self):
-        # Track limits off: flat out from the grid runs wide at the first corner, and this
-        # test is about the lap clock, not about how well a held throttle drives.
-        env = PracticeTrack(track_limit=0.0)
+        # Track limits off and the grass gripping like asphalt: flat out from the grid runs
+        # wide at the first corner, and this test is about the lap clock, not about how well
+        # a held throttle drives or how much grip there is once it has run out of road.
+        env = PracticeTrack(track_limit=0.0, scene=SceneConfig(grass_friction_scale=1.0))
         try:
             _started(env)
             for _ in range(600):
@@ -749,3 +815,329 @@ class TestClose:
             env.step(FLAT_OUT)
         with pytest.raises(RuntimeError, match="closed"):
             env.step(FLAT_OUT)
+
+
+@pytest.mark.render
+class TestThePenalty:
+    """Seconds owed for leaving the circuit, published every step."""
+
+    def test_a_clean_run_owes_nothing(self):
+        env = PracticeTrack(terminate_off_track=False)
+        try:
+            _started(env)
+            result = _drive(env, FLAT_OUT, 120)
+            assert result.info["penalty_s"] == 0.0
+            assert result.info["excursions"] == 0
+        finally:
+            env.close()
+
+    def test_the_penalty_grows_while_the_car_is_off(self, spun_off_the_circuit):
+        """Visible as it is earned rather than appearing at the line, so a driver can see
+        what a mistake is costing them while they are still making it."""
+        owed = [info["penalty_s"] for info in spun_off_the_circuit[_RUN_UP_STEPS:]]
+        assert max(owed) > 0.0, "full lock at speed never left the circuit"
+        assert owed == sorted(owed), "a penalty already earned cannot be given back"
+
+    def test_the_depth_the_env_reports_runs_far_past_the_cap(self):
+        """Why the cap exists, measured rather than assumed. off_track_fraction is metres
+        past the kerb over the car's width and has no upper bound, so a car that spins
+        into the infield reports a depth in the tens. With the time term off, the charge
+        is one capped peak per excursion however deep the car actually went."""
+        weights = PenaltyWeights(peak_weight=1.0, time_weight=0.0)
+        env = PracticeTrack(terminate_off_track=False, penalty_weights=weights)
+        try:
+            _started(env)
+            _drive(env, FLAT_OUT, 120)
+            lock = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
+            deepest = 0.0
+            for _ in range(200):
+                deepest = max(deepest, _step(env, lock).info["off_track_fraction"])
+            # Was 10 when the grass gripped at 0.35 and the car kept sliding once it
+            # left the circuit. At 0.55 it slides less far, which is the point of the
+            # change; what this test is about is that the depth runs far past the cap of
+            # 1.0, and 5 makes that point without re-pinning how slippery the grass is.
+            assert deepest > 5.0, f"expected a deep excursion, got {deepest:.2f}"
+            charged = env.penalty.total_seconds
+            assert charged > 0.0
+            assert charged <= env.penalty.excursions * weights.maximum_depth
+            assert charged < deepest, "the raw depth was charged; the cap is not applied"
+        finally:
+            env.close()
+
+    def test_weights_are_configurable(self):
+        env = PracticeTrack(
+            terminate_off_track=False,
+            penalty_weights=PenaltyWeights(peak_weight=0.0, time_weight=0.0),
+        )
+        try:
+            _started(env)
+            _drive(env, FLAT_OUT, _RUN_UP_STEPS)
+            # Stop once the car is well off rather than finishing the full spin: the point
+            # is that being off costs nothing under these weights, not how far it slides.
+            for _ in range(_FULL_LOCK_STEPS):
+                info = _step(env, _FULL_LOCK).info
+                if info["off_track_fraction"] > 0.5:
+                    break
+            assert info["off_track_fraction"] > 0.5, "the car did go off"
+            assert info["penalty_s"] == 0.0, "but these weights charge nothing"
+        finally:
+            env.close()
+
+    def test_reset_clears_what_was_owed(self):
+        env = PracticeTrack(terminate_off_track=False)
+        try:
+            _started(env)
+            _drive(env, FLAT_OUT, _RUN_UP_STEPS)
+            # Only as far as owing something -- that is all a reset has to clear.
+            for _ in range(_FULL_LOCK_STEPS):
+                if _step(env, _FULL_LOCK).info["penalty_s"] > 0.0:
+                    break
+            assert env.penalty.total_seconds > 0.0
+            _, info = env.reset()
+            assert info["penalty_s"] == 0.0
+            assert info["excursions"] == 0
+        finally:
+            env.close()
+
+
+@pytest.mark.render
+class TestSegmentTiming:
+    """Which part of the circuit the car is on, and how long it spent there."""
+
+    def test_the_car_starts_in_a_segment(self):
+        env = PracticeTrack(terminate_off_track=False)
+        try:
+            _, info = _started(env)
+            assert info["segment"] is not None
+            assert info["segment"] in {s.name for s in env.segment_timer.segments}
+        finally:
+            env.close()
+
+    def test_the_segment_clock_runs(self):
+        env = PracticeTrack(terminate_off_track=False)
+        try:
+            _started(env)
+            first = _drive(env, FLAT_OUT, 5).info["segment_elapsed_s"]
+            later = _drive(env, FLAT_OUT, 5).info["segment_elapsed_s"]
+            assert later > first
+        finally:
+            env.close()
+
+    def test_driving_on_completes_a_segment_and_reports_its_time(self, flat_out_from_the_grid):
+        """The signal GH-17's reward shaping and the delta display both read. A segment
+        that never completes looks exactly like a car that never moved."""
+        completed = [
+            info for info in flat_out_from_the_grid[:600] if info["segment_complete"] is not None
+        ]
+        assert completed, "600 steps flat out and no segment boundary was crossed"
+        assert all(info["segment_time"] > 0.0 for info in completed)
+        assert all(isinstance(info["segment_clean"], bool) for info in completed)
+
+    def test_a_segment_is_clean_exactly_when_no_step_inside_it_went_off(
+        self, flat_out_from_the_grid
+    ):
+        """Sticky and accurate. A corner cut at its entry must not come back clean by the
+        exit, and a segment driven entirely on the circuit must not be marked dirty by the
+        previous one's mistake -- both would quietly decide which times set records."""
+        threshold = PenaltyWeights().minimum_depth  # the recording uses the default weights
+        saw_off = False
+        checked = 0
+        for info in flat_out_from_the_grid:
+            saw_off = saw_off or info["off_track_fraction"] > threshold
+            if info["segment_complete"] is not None:
+                assert info["segment_clean"] is not saw_off
+                checked += 1
+                # The completing step is on the boundary, so its state carries into the
+                # segment that just started.
+                saw_off = info["off_track_fraction"] > threshold
+        assert checked, "no segment completed, so nothing was actually checked"
+
+    def test_the_segment_clock_restarts_at_a_boundary(self, flat_out_from_the_grid):
+        for info in flat_out_from_the_grid[:600]:
+            if info["segment_complete"] is not None:
+                assert info["segment_elapsed_s"] < info["segment_time"]
+                return
+        pytest.fail("no segment boundary was crossed")
+
+    def test_going_off_marks_the_segment_dirty(self, spun_off_the_circuit):
+        last = spun_off_the_circuit[-1]
+        assert last["off_track_fraction"] > 0.0
+        assert last["segment_dirty"] is True
+
+    def test_reset_puts_the_car_back_in_the_first_segment(self):
+        env = PracticeTrack(terminate_off_track=False)
+        try:
+            _started(env)
+            # Far enough to have left the circuit -- the grid is in T10, so ~130 steps of
+            # flat throttle does it -- so there is something for the reset to clear.
+            before = _drive(env, FLAT_OUT, 150).info
+            assert before["segment_dirty"] is True, "nothing to reset; the test proves nothing"
+            _, info = env.reset()
+            assert info["segment_elapsed_s"] == 0.0
+            assert info["segment_dirty"] is False
+        finally:
+            env.close()
+
+
+@pytest.mark.render
+class TestTheRecordBookEndToEnd:
+    """The env publishes segment times, the document stores them. Each half is tested on
+    its own; this is the join, which is where a renamed key or a changed type would show.
+
+    Note what the car actually does here: the grid sits in T10, the last corner before the
+    line, so a car with no steering leaves the circuit within a couple of seconds and every
+    segment it completes is dirty. That makes this a good test of the refusal path and a
+    poor one for the writing path, so the writing path is driven from the same env values
+    with the flag flipped rather than from a lap nothing can drive yet.
+    """
+
+    @staticmethod
+    def _record(infos, log: SegmentLog, is_clean: bool | None = None) -> list:
+        """Feed every completed segment in a recording into the document, as drive.py does."""
+        return [
+            log.record(
+                info["segment_complete"],
+                info["segment_time"],
+                is_clean=info["segment_clean"] if is_clean is None else is_clean,
+                driver="test",
+            )
+            for info in infos
+            if info["segment_complete"] is not None
+        ]
+
+    def test_the_env_and_the_document_agree_on_names_and_types(
+        self, tmp_path, flat_out_from_the_grid
+    ):
+        log = SegmentLog(tmp_path / "lap_times.md")
+        outcomes = self._record(flat_out_from_the_grid, log)
+        assert outcomes, "no segment completed, so nothing was actually joined up"
+        assert all(outcome.seconds > 0.0 for outcome in outcomes)
+        assert all(outcome.name for outcome in outcomes)
+
+    def test_a_lap_the_car_cannot_keep_on_the_track_sets_no_records(
+        self, tmp_path, flat_out_from_the_grid
+    ):
+        """Driving straight out of the last corner is not a lap, and must not fill the
+        record book with times for corners that were cut."""
+        log = SegmentLog(tmp_path / "lap_times.md")
+        outcomes = self._record(flat_out_from_the_grid, log)
+        assert not any(outcome.is_clean for outcome in outcomes), "expected an untidy run"
+        assert log.records() == {}
+
+    def test_the_same_values_are_written_when_the_run_is_clean(
+        self, tmp_path, flat_out_from_the_grid
+    ):
+        """Same names and times straight out of info, only the flag differs -- so this
+        isolates the refusal above from a plumbing fault that would look identical."""
+        log = SegmentLog(tmp_path / "lap_times.md")
+        outcomes = self._record(flat_out_from_the_grid, log, is_clean=True)
+        assert outcomes
+        assert list(log.records()) == [outcome.name for outcome in outcomes]
+        assert all(log.best(outcome.name) > 0.0 for outcome in outcomes)
+        assert "## Best segments" in log.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.render
+class TestTheClockSurvivesRunningWide:
+    """Payton's symptom, on the real circuit rather than a synthetic square.
+
+    Driving flat out from the grid leaves the circuit within a couple of seconds, which is
+    exactly the case that used to restart the lap clock: a car in the grass projects onto
+    the centerline unreliably, the jump trips max_step_m, and the guard used to zero the
+    clock. To a driver that reads as the lap having ended.
+    """
+
+    def test_the_lap_clock_never_goes_backwards(self, flat_out_from_the_grid):
+        elapsed: list[float] = []
+        went_off = False
+        for info in flat_out_from_the_grid:
+            went_off = went_off or info["off_track_fraction"] > 1.0
+            if info["on_out_lap"] or info["lap_complete"]:
+                elapsed.clear()  # a completed lap legitimately restarts the clock
+                continue
+            elapsed.append(info["lap_elapsed_s"])
+        assert went_off, "the car never left the circuit, so nothing was tested"
+        assert elapsed, "the clock never started"
+        assert elapsed == sorted(elapsed), "the lap clock restarted under the driver"
+
+    def test_no_lap_is_awarded_while_off_the_circuit(self, flat_out_from_the_grid):
+        threshold = PenaltyWeights().minimum_depth  # the recording uses the default weights
+        for info in flat_out_from_the_grid:
+            if info["lap_complete"]:
+                assert info["off_track_fraction"] <= threshold, (
+                    "a lap ended with the car off the circuit"
+                )
+
+
+def _built_like_gh17(env_config) -> PracticeTrack:
+    """The practice track exactly as ``fly_driver.training.train._build_practice_track`` builds
+    it from a training config.
+
+    Restated here because that module imports torch at the top, and CI deliberately installs
+    no torch -- so every test that imports it is skipped on CI, which is how a change to this
+    env's defaults once broke the training config with nothing failing.
+    ``tests/training/test_practice_track_config.py`` checks this copy against the real builder
+    wherever torch is installed, so the two cannot drift apart unnoticed.
+    """
+    params = dict(env_config.params)
+    scene_kwargs = dict(params.pop("scene", {}) or {})
+    if "racing_line" in params:
+        scene_kwargs["racing_line"] = bool(params.pop("racing_line"))
+    scene = SceneConfig(**scene_kwargs) if scene_kwargs else None
+    return PracticeTrack(scene=scene, max_steps=env_config.max_steps, **params)
+
+
+@pytest.mark.render
+class TestTheCheckedInTrainingConfig:
+    """GH-17 trains on this env through ``fly_driver/configs/train_default.yaml``, and every one
+    of GH-17's own tests uses the dummy track. This is the join, run where CI can see it.
+
+    The failure it guards is silent. With termination off, a crude policy sits in the grass
+    until ``max_steps`` while the off-track reward is charged every step: measured on the
+    flat-throttle policy below, +19 per episode became -35,548. Nothing raised; the learning
+    curves would simply have looked like PPO failing.
+    """
+
+    @pytest.fixture(scope="class")
+    def env_config(self):
+        pytest.importorskip("yaml")
+        from fly_driver.training.config import TrainConfig
+
+        path = Path(__file__).parents[2] / "fly_driver" / "configs" / "train_default.yaml"
+        return TrainConfig.from_yaml(path).env
+
+    @pytest.fixture(scope="class")
+    def attempt(self, env_config):
+        """One flat-throttle attempt on the training config's track: (return, steps, ended).
+
+        Shared by the tests below, which used to drive it once each.
+        """
+        env = _built_like_gh17(env_config)
+        total, steps, terminated = 0.0, 0, False
+        try:
+            env.reset(seed=0)
+            while steps < 1000:
+                _, reward, terminated, truncated, _ = env.step(FLAT_OUT)
+                steps += 1
+                total += reward
+                if terminated or truncated:
+                    break
+        finally:
+            env.close()
+        return total, steps, terminated
+
+    def test_it_is_still_the_practice_track(self, env_config):
+        assert env_config.type == "practice_track"
+
+    def test_leaving_the_circuit_ends_the_episode(self, attempt):
+        """The grid sits in T10, so flat throttle with no steering leaves the circuit within
+        a couple of seconds. The training config's track_limit has to end it there."""
+        _, steps, terminated = attempt
+        assert terminated, "the car left the circuit and the episode kept going"
+        assert steps < 500, f"ended only after {steps} steps"
+
+    def test_a_failed_attempt_costs_a_sane_amount(self, attempt):
+        """Tens, not tens of thousands. A reward dominated by time spent in the grass drowns
+        out the progress signal the policy is meant to learn from."""
+        total, _, _ = attempt
+        assert -100.0 < total < 100.0, f"one failed attempt returned {total:.1f}"

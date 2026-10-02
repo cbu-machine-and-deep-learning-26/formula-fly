@@ -20,6 +20,8 @@ from fly_driver.hud import (
     TrackMap,
     ViewerHUD,
     bar_fill,
+    delta_colour,
+    delta_text,
     leds_lit,
     render,
     rpm_fraction,
@@ -472,3 +474,65 @@ class TestViewerHUD:
         viewer = _FakeViewer(300, 100)
         ViewerHUD(viewer, limiter_rpm=LIMITER, shift_rpm=SHIFT).update(frame())
         assert viewer.images == []
+
+
+class TestTheSegmentDisplay:
+    """Green for a gain, red for a loss, amber for a record.
+
+    The colour is the whole message -- Payton asked for "New best XX:XX, -XX seconds" in
+    green or "+XX seconds slower" in red -- so a sign convention that slipped would show a
+    driver the opposite of what they did and nothing would raise.
+    """
+
+    def test_faster_is_green_and_slower_is_red(self):
+        faster, slower = delta_colour(-0.184), delta_colour(0.373)
+        assert faster[1] > faster[0], "a gain should read green, not red"
+        assert slower[0] > slower[1], "a loss should read red, not green"
+
+    def test_a_new_best_is_distinct_from_an_ordinary_gain(self):
+        """It matches the BEST row, which is the thing it just changed."""
+        assert delta_colour(-0.184, is_best=True) != delta_colour(-0.184)
+
+    def test_nothing_to_compare_against_is_not_an_improvement(self):
+        """A first run through a segment must not be painted green: there is no gain, and
+        showing one would make every fresh record book look like a flawless session."""
+        neutral = delta_colour(None)
+        assert neutral == delta_colour(None, is_best=False)
+        assert neutral not in {delta_colour(-1.0), delta_colour(1.0)}, "expected no verdict"
+
+    def test_a_delta_always_carries_its_sign(self):
+        assert delta_text(-0.184) == "-0.184"
+        assert delta_text(0.373) == "+0.373"
+        assert delta_text(None) == "--"
+
+    def test_the_segment_name_and_clock_are_drawn(self):
+        assert not np.array_equal(draw(), draw(segment="T4", segment_elapsed=6.2))
+
+    def test_the_delta_is_drawn_in_the_colour_it_means(self):
+        for delta in (-0.184, 0.373):
+            img = draw(segment="T4", segment_delta=delta)
+            wanted = delta_colour(delta)
+            painted = np.all(img.reshape(-1, 3) == np.array(wanted, dtype=np.uint8), axis=1)
+            assert painted.any(), f"no pixel of the delta colour for {delta:+}"
+
+    def test_a_penalty_shows_while_it_is_being_earned(self):
+        """Not held back until the line: the point is to see the cost during the mistake."""
+        assert not np.array_equal(draw(), draw(penalty_s=5.31))
+
+    def test_no_penalty_draws_nothing_extra(self):
+        """Zero is the common case, and a permanent "+0.00" would be noise on every lap."""
+        assert np.array_equal(draw(), draw(penalty_s=0.0))
+
+    def test_the_segment_block_stays_clear_of_the_map(self):
+        """It shares the lap block's rows in the gap beside them, so it has a hard right
+        edge. Running past it would draw over the track map."""
+        busy = draw(
+            segment="Straight 11",
+            segment_elapsed=88.8,
+            segment_delta=-12.345,
+            segment_is_best=True,
+            penalty_s=88.88,
+        )
+        plain = draw()
+        x0, y0, x1, y1 = MAP_RECT
+        assert np.array_equal(busy[y0:y1, x0:x1], plain[y0:y1, x0:x1])
