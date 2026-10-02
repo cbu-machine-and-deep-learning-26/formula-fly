@@ -50,6 +50,9 @@ or an object with `to_array()`) and an optional `reset(seed=...)`, and an
 - **Sample efficiency**: set `env_steps` on each periodic evaluation during
   training, then `fly_driver.analysis.learning_curve(reports)` and
   `steps_to_threshold(env_steps, values, threshold)` give steps-to-threshold.
+  The training loop does this for you: `eval.every_updates` in a training config
+  runs this protocol on the current policy and writes it under
+  `runs/<name>/seed_<k>/eval/step_<n>/` (see [`training.md`](training.md)).
 - Actions are validated (shape `(3,)`, finite) and never clipped by the
   harness; range checks belong to the env (`DummyTrackEnv` raises).
 

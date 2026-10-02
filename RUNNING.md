@@ -229,6 +229,25 @@ the bottleneck, not the track, and one environment comfortably feeds one eye in 
 
 ---
 
+## Training
+
+Reinforcement learning on the practice track is `scripts/train.py`, driven by a YAML
+condition file (`fly_driver/configs/train_default.yaml`: frozen flyvis eye, no brain,
+seeds 0, 1 and 2). It needs torch, which the base `.venv` deliberately does not have, so run
+it from the flyvis virtualenv, or from a `.venv-train` with CPU torch when flyvis cannot be
+installed (Python 3.13 machines) -- the pixel smoke eye exercises the whole loop:
+
+```bash
+python scripts/train.py --seed 0                  # in .venv-flyvis: the default condition
+python scripts/train.py --eye pixels --seed 0     # any venv with torch: the smoke eye
+```
+
+Every run writes `episodes.csv` (reward split by term), `updates.csv`, a policy checkpoint
+and periodic evaluations under `runs/<name>/seed_<k>/`. Config reference, outputs and the
+frozen-versus-fine-tuned rules: [`docs/training.md`](docs/training.md).
+
+---
+
 ## Running the tests
 
 ```bash

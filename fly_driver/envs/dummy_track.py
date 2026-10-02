@@ -14,7 +14,9 @@ completion and a penalty for leaving the track, so standing still never earns
 reward (``AGENTS.md`` §11).
 
 ``info`` carries the lap contract the harness reads: ``lap_complete`` and
-``lap_time`` (seconds, ``None`` until a lap completes).
+``lap_time`` (seconds, ``None`` until a lap completes), plus ``reward_terms``, the
+reward split into the same named terms as the practice track's ``ProgressReward``, which
+is what the training loop logs per episode.
 """
 
 from __future__ import annotations
@@ -154,11 +156,16 @@ class DummyTrackEnv:
 
         lap_complete = bool(self._progress >= self.track_length)
         off_track = bool(abs(self._lateral) > self.half_width)
-        reward = progress_delta - self.lateral_penalty * abs(self._lateral) * self.dt
-        if lap_complete:
-            reward += self.lap_bonus
-        elif off_track:
-            reward += self.off_track_penalty
+        # The same terms, names and constants as the practice track's ProgressReward, and
+        # published the same way, so per-term logs from the two envs line up column for
+        # column. A lap that completes is not also punished for the wheel over the edge.
+        terms = {
+            "progress": float(progress_delta),
+            "lateral": float(-self.lateral_penalty * abs(self._lateral) * self.dt),
+            "lap_bonus": float(self.lap_bonus) if lap_complete else 0.0,
+            "off_track": float(self.off_track_penalty) if off_track and not lap_complete else 0.0,
+        }
+        reward = sum(terms.values())
         terminated = lap_complete or off_track
         truncated = not terminated and self._steps >= self.max_steps
         self._done = terminated or truncated
@@ -168,7 +175,7 @@ class DummyTrackEnv:
             float(reward),
             terminated,
             truncated,
-            self._info(lap_complete=lap_complete, off_track=off_track),
+            self._info(lap_complete=lap_complete, off_track=off_track, terms=terms),
         )
 
     def render(self) -> Frame:
@@ -193,7 +200,9 @@ class DummyTrackEnv:
                 )
         return float(values[0]), float(values[1]), float(values[2])
 
-    def _info(self, *, lap_complete: bool, off_track: bool) -> dict[str, Any]:
+    def _info(
+        self, *, lap_complete: bool, off_track: bool, terms: dict[str, float] | None = None
+    ) -> dict[str, Any]:
         return {
             "progress": self._progress,
             "lateral": self._lateral,
@@ -201,6 +210,8 @@ class DummyTrackEnv:
             "lap_complete": lap_complete,
             "off_track": off_track,
             "lap_time": self._steps * self.dt if lap_complete else None,
+            # Empty on reset, one entry per term after every step; they sum to the reward.
+            "reward_terms": {} if terms is None else terms,
         }
 
     def _render_state(self) -> Frame:
