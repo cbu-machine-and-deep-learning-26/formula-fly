@@ -533,10 +533,12 @@ def run_agent(args: argparse.Namespace, car: CarConfig, scene: SceneConfig) -> i
                     agent.reset()
                     print()
                     print("reset to the grid -- lap, segments and penalty cleared", flush=True)
-                last_sim_time = float(env.data.time)
 
                 control = agent.act(frame)
                 frame, _reward, terminated, truncated, info = env.step(control)
+                # Taken after the step, so a reset during the very next sync -- even on the
+                # first frame -- lands below it.
+                last_sim_time = float(env.data.time)
 
                 if terminated or truncated:
                     excursions += 1
