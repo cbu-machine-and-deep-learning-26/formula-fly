@@ -505,11 +505,11 @@ class TestEpisodeBoundaries:
         finally:
             env.close()
 
-    def test_leaving_the_circuit_no_longer_ends_the_episode(self):
+    def test_with_termination_off_leaving_the_circuit_costs_seconds_instead(self):
         """The default changed. A terminated episode says something ended and nothing
         about how badly, so going off costs seconds instead -- and an episode that keeps
         running is the one that can be recovered from and learned from."""
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             lock = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
@@ -777,7 +777,7 @@ class TestThePenalty:
     """Seconds owed for leaving the circuit, published every step."""
 
     def test_a_clean_run_owes_nothing(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             result = _drive(env, FLAT_OUT, 120)
@@ -789,7 +789,7 @@ class TestThePenalty:
     def test_the_penalty_grows_while_the_car_is_off(self):
         """Visible as it is earned rather than appearing at the line, so a driver can see
         what a mistake is costing them while they are still making it."""
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -808,7 +808,7 @@ class TestThePenalty:
         into the infield reports a depth in the tens. With the time term off, the charge
         is one capped peak per excursion however deep the car actually went."""
         weights = PenaltyWeights(peak_weight=1.0, time_weight=0.0)
-        env = PracticeTrack(penalty_weights=weights)
+        env = PracticeTrack(terminate_off_track=False, penalty_weights=weights)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -829,7 +829,10 @@ class TestThePenalty:
             env.close()
 
     def test_weights_are_configurable(self):
-        env = PracticeTrack(penalty_weights=PenaltyWeights(peak_weight=0.0, time_weight=0.0))
+        env = PracticeTrack(
+            terminate_off_track=False,
+            penalty_weights=PenaltyWeights(peak_weight=0.0, time_weight=0.0),
+        )
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -841,7 +844,7 @@ class TestThePenalty:
             env.close()
 
     def test_reset_clears_what_was_owed(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -859,7 +862,7 @@ class TestSegmentTiming:
     """Which part of the circuit the car is on, and how long it spent there."""
 
     def test_the_car_starts_in_a_segment(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _, info = _started(env)
             assert info["segment"] is not None
@@ -868,7 +871,7 @@ class TestSegmentTiming:
             env.close()
 
     def test_the_segment_clock_runs(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             first = _drive(env, FLAT_OUT, 5).info["segment_elapsed_s"]
@@ -880,7 +883,7 @@ class TestSegmentTiming:
     def test_driving_on_completes_a_segment_and_reports_its_time(self):
         """The signal GH-17's reward shaping and the delta display both read. A segment
         that never completes looks exactly like a car that never moved."""
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             completed = [_step(env, FLAT_OUT).info for _ in range(600)]
@@ -895,7 +898,7 @@ class TestSegmentTiming:
         """Sticky and accurate. A corner cut at its entry must not come back clean by the
         exit, and a segment driven entirely on the circuit must not be marked dirty by the
         previous one's mistake -- both would quietly decide which times set records."""
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             threshold = env.penalty.weights.minimum_depth
@@ -915,7 +918,7 @@ class TestSegmentTiming:
             env.close()
 
     def test_the_segment_clock_restarts_at_a_boundary(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             for _ in range(600):
@@ -928,7 +931,7 @@ class TestSegmentTiming:
             env.close()
 
     def test_going_off_marks_the_segment_dirty(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -939,7 +942,7 @@ class TestSegmentTiming:
             env.close()
 
     def test_reset_puts_the_car_back_in_the_first_segment(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 300)
@@ -963,7 +966,7 @@ class TestTheRecordBookEndToEnd:
     """
 
     def _run(self, log: SegmentLog, is_clean: bool | None = None) -> list:
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         outcomes = []
         try:
             _started(env)
@@ -1020,7 +1023,7 @@ class TestTheClockSurvivesRunningWide:
     """
 
     def test_the_lap_clock_never_goes_backwards(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             elapsed: list[float] = []
@@ -1039,7 +1042,7 @@ class TestTheClockSurvivesRunningWide:
             env.close()
 
     def test_no_lap_is_awarded_while_off_the_circuit(self):
-        env = PracticeTrack()
+        env = PracticeTrack(terminate_off_track=False)
         try:
             _started(env)
             for _ in range(900):

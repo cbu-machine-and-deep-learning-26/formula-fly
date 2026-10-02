@@ -186,13 +186,14 @@ class PracticeTrack:
         track_limit: Fraction of the car's width past the kerb that counts as leaving
             the circuit, for termination when ``terminate_off_track`` is on. ``0`` turns
             the rule off entirely and lets the car drive across the infield.
-        terminate_off_track: End the episode on leaving the circuit. **Off by default**,
-            which is a change: the env used to throw the lap away the moment the car put a
-            wheel past the kerb. Going off now costs seconds instead (see
-            :mod:`fly_driver.envs.penalty`), because a terminated episode teaches a
-            learning agent that something ended and nothing about how badly, and because
-            it is unforgiving to drive by hand. Turn it back on for a curriculum that
-            wants the hard rule.
+        terminate_off_track: End the episode on leaving the circuit. **On by default**,
+            because GH-17's training, GH-18's evaluation harness and GH-58's viewer all rely
+            on it: their configs pass ``track_limit`` expecting the episode to end. Off, the
+            car can sit in the grass until ``max_steps`` while :class:`ProgressReward`'s
+            off-track term is charged every step -- measured, a flat-throttle episode went
+            from +19 to -35,548. The time penalty is published in ``info`` either way; turn
+            this off only alongside a reward built for it. ``scripts/drive.py`` runs its own
+            loop and never used it.
         penalty_weights: What an excursion costs in seconds. Defaults to
             :data:`~fly_driver.envs.penalty.DEFAULT_PENALTY_WEIGHTS`.
         camera: Name of the MJCF camera to render from.
@@ -214,7 +215,7 @@ class PracticeTrack:
         frame_shape: tuple[int, int, int] = FRAME_SHAPE,
         frame_rate_hz: float = FRAME_RATE_HZ,
         track_limit: float = DEFAULT_TRACK_LIMIT,
-        terminate_off_track: bool = False,
+        terminate_off_track: bool = True,
         penalty_weights: PenaltyWeights | None = None,
         camera: str = DEFAULT_CAMERA,
         reward: RewardFunction | None = None,
