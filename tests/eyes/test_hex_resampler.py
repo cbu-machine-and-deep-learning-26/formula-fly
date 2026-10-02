@@ -124,8 +124,29 @@ def test_batch_and_time_axes_are_independent() -> None:
     assert torch.allclose(output[1, 2], single_output[0, 0])
 
 
-def test_matches_real_flyvis_box_eye() -> None:
-    """Match flyvis BoxEye numerically when the optional package is installed."""
+@pytest.mark.parametrize("grey_level", [0, 128, 255])
+def test_uniform_grey_frame_is_flat_across_columns(grey_level: int) -> None:
+    """Keep a constant camera frame constant on every hex column.
+
+    The 13 px mean filter hangs off the 391 px field. Zero padding used to
+    darken that outer ring. Replicate padding must leave max minus min under
+    a tight tolerance, at the frame's own luminance.
+    """
+    frame = np.full(DEFAULT_FRAME_SHAPE, grey_level, dtype=np.uint8)
+    output = HexResampler().frame(frame)[0, 0, 0]
+    expected = float(frame_to_gray(frame)[0, 0])
+
+    assert output.shape == (HEX_COLUMN_COUNT,)
+    assert float(output.max() - output.min()) < 1e-5
+    assert torch.allclose(output, torch.full_like(output, expected), atol=1e-5)
+
+
+def test_matches_real_flyvis_box_eye_on_fully_supported_columns() -> None:
+    """Match flyvis BoxEye where the mean filter sits fully on the image.
+
+    BoxEye zero-pads, so its outer ring is darker. Those columns are covered
+    by the uniform-frame regression, not by this parity check.
+    """
     flyvis_rendering = pytest.importorskip("flyvis.datasets.rendering")
     box_eye = flyvis_rendering.BoxEye(extent=HEX_EXTENT, kernel_size=HEX_KERNEL_SIZE)
     frames = np.stack([frame_to_gray(_random_frame(seed)) for seed in range(4)])
@@ -133,7 +154,12 @@ def test_matches_real_flyvis_box_eye() -> None:
 
     ours = HexResampler()(sequence)
     theirs = box_eye(sequence.clone(), ftype="mean", hex_sample=True)
+    centers = hex_receptor_centers()
+    support_margin = HEX_KERNEL_SIZE // 2
+    lattice_radius = HEX_EXTENT * HEX_KERNEL_SIZE
+    interior = (centers.abs() <= lattice_radius - support_margin).all(dim=1)
 
     assert box_eye.hexals == HEX_COLUMN_COUNT
     assert ours.shape == theirs.shape
-    assert torch.allclose(ours, theirs, atol=1e-5)
+    assert int(interior.sum()) < HEX_COLUMN_COUNT
+    assert torch.allclose(ours[..., interior], theirs[..., interior], atol=1e-5)

@@ -50,9 +50,12 @@ down and right; this fixes chirality as well as orientation.
 
 The declared camera frame is deliberately projected to flyvis's 391-pixel
 sampling field, mean-filtered with a 13-pixel kernel, and sampled at receptor
-centers. Undeclared frame sizes error instead of being silently resized. The
-tests prove ordering, orientation, chirality, output parity with `BoxEye`, and
-pretrained T4/T5 direction selectivity:
+centers. The kernel is replicate-padded, not zero-padded: the outer receptors
+sit on the border of that field, and a zero pad darkens them on a uniform
+frame. Interior columns, whose window never leaves the field, still match
+`BoxEye`. Undeclared frame sizes error instead of being silently resized. The
+tests prove ordering, orientation, chirality, interior parity with `BoxEye`,
+a flat uniform frame, and pretrained T4/T5 direction selectivity:
 
 ```bash
 pytest -q tests/eyes
