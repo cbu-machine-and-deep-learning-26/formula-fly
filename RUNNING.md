@@ -200,13 +200,20 @@ $env:CUDA_VISIBLE_DEVICES = "-1"     # see below
 .\.venv-flyvis\Scripts\python.exe scripts\drive.py --eye-view
 ```
 
-**F10** cycles three views:
+**F10** cycles four views:
 
 | View | What it shows |
 |---|---|
 | corner (the start) | Under the telemetry panel: the fly's **retina** on the left (721 hexagonal columns of brightness, which is all the resolution a fly has), and its **motion percept** on the right. |
 | big | Beside the panel: the two fused, with the retina dimmed and the motion coloured over it. This is the track as the fly's motion cells see it. |
+| fly | **The whole window is the fly's retina.** Each of the 721 facets is one flat grey level, with dark lines between them like a compound eye's ommatidia. This is the closest thing here to what the fly is looking at, so the telemetry panel is hidden. |
 | off | Nothing drawn. The eye keeps running, so it's the same eye when you bring it back. |
+
+How close is the fly view to a real fly?
+- **It's exactly what our model fly receives:** the camera frame after the hex resampler, which is the input flyvis is given.
+- **The real fly would differ in two ways.** It sees almost all the way around (about 330°, at about 5° per facet). Ours sees the camera's 75° at about 2.4° per facet: narrower, but sharper.
+- **It's grey because flyvis takes only brightness.** Real flies do see colour, including ultraviolet.
+- **The darker ring of facets around the edge is a real bug:** that's #45, the resampler darkening its outer columns.
 
 The motion colours are the webcam demo's, from the T4/T5 motion detectors. **Hue is the
 direction** things are moving across the eye: right red, up yellow-green, left cyan, down

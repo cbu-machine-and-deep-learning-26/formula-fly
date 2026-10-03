@@ -25,8 +25,10 @@ from fly_driver.eye_view import (
     EYE_VIEW_KEY,
     PANEL_GAP_PX,
     PANEL_PX,
+    VISIBLE_FRACTION,
     EyePicture,
     EyeViewMode,
+    FacetLayout,
     FlyEyeView,
     big_view_side,
     place_overlay,
@@ -59,10 +61,10 @@ def _column_pixels(image: np.ndarray, column: int = COLUMN) -> np.ndarray:
 
 
 class TestModes:
-    def test_the_key_cycles_corner_big_off_and_round_again(self):
+    def test_the_key_cycles_corner_big_fly_off_and_round_again(self):
         mode = EyeViewMode.CORNER
-        seen = [mode := mode.next() for _ in range(3)]
-        assert seen == [EyeViewMode.BIG, EyeViewMode.OFF, EyeViewMode.CORNER]
+        seen = [mode := mode.next() for _ in range(4)]
+        assert seen == [EyeViewMode.BIG, EyeViewMode.FLY, EyeViewMode.OFF, EyeViewMode.CORNER]
 
     def test_the_key_is_f10(self):
         """GLFW_KEY_F1 is 290. MuJoCo's viewer binds F1-F6, F8, F9 and acts on them as well
@@ -137,6 +139,77 @@ class TestEyePicture:
         picture.clear()
         assert picture.motion_strength == 0.0
         assert not picture.motion_rgb.any() and not picture.retina.any()
+
+
+class TestTheFlyView:
+    """The whole window as the fly's retina: grey facets, dark lines between them.
+
+    Laid out from a small lattice here (64 px); the view itself uses a finer one, and the
+    layout maths does not care which.
+    """
+
+    RASTER = HexRaster(64)
+
+    def _layout(self, width: int = 400, height: int = 300) -> FacetLayout:
+        return FacetLayout(width, height, self.RASTER)
+
+    def test_the_image_is_exactly_the_window(self):
+        """set_images raises unless the image is exactly the rect's size."""
+        image = self._layout(400, 300).paint(np.full(HEX_COLUMN_COUNT, 0.5))
+        assert image.shape == (300, 400, 3) and image.dtype == np.uint8
+
+    def test_the_eye_is_centred_in_the_part_assumed_visible(self):
+        layout = self._layout(1000, 500)
+        visible_width, visible_height = 1000 * VISIBLE_FRACTION, 500 * VISIBLE_FRACTION
+        assert layout.side == int(visible_height)
+        assert layout.left + layout.side / 2 == pytest.approx(visible_width / 2, abs=1)
+        assert layout.top == 0
+
+    def test_each_facet_is_one_flat_grey_level(self):
+        retina = np.linspace(0.0, 1.0, HEX_COLUMN_COUNT)
+        layout = self._layout()
+        image = layout.paint(retina)
+        square = image[
+            layout.top : layout.top + layout.side, layout.left : layout.left + layout.side
+        ]
+        facet = square[layout.square_index == COLUMN]
+        assert len(facet), "the column paints no pixels"
+        assert (facet == facet[0]).all(), "a facet is not one flat colour"
+        assert facet[0][0] == round(retina[COLUMN] * 255)
+        assert (facet[0] == facet[0][0]).all(), "not grey"
+
+    def test_facets_are_separated_by_dark_lines(self):
+        layout = self._layout()
+        image = layout.paint(np.ones(HEX_COLUMN_COUNT))
+        square = image[
+            layout.top : layout.top + layout.side, layout.left : layout.left + layout.side
+        ]
+        lines = layout.square_index == FacetLayout.DARK
+        inside = np.zeros_like(lines)
+        inside[layout.side // 4 : 3 * layout.side // 4, layout.side // 4 : 3 * layout.side // 4] = (
+            True
+        )
+        assert (lines & inside).any(), "no lines between facets in the middle of the eye"
+        assert not square[lines].any(), "the lines are not black"
+
+    def test_outside_the_eye_is_black(self):
+        image = self._layout().paint(np.ones(HEX_COLUMN_COUNT))
+        assert not image[:, -1].any() and not image[-1, :].any()
+
+    def test_a_new_frame_repaints_the_same_buffer(self):
+        layout = self._layout()
+        first = layout.paint(np.zeros(HEX_COLUMN_COUNT))
+        second = layout.paint(np.ones(HEX_COLUMN_COUNT))
+        assert first is second and second.any()
+
+    def test_a_window_with_no_area_is_refused(self):
+        with pytest.raises(ValueError):
+            FacetLayout(0, 300, self.RASTER)
+
+    def test_the_picture_relays_out_when_the_window_changes_size(self):
+        picture = _picture()
+        assert picture.fly_image(400, 300).shape == (300, 400, 3)
+        assert picture.fly_image(640, 480).shape == (480, 640, 3)
 
 
 class TestPlacement:
@@ -307,6 +380,26 @@ class TestFlyEyeView:
             assert view.overlay(_Viewport(200, 150)) is None
             view.mode = EyeViewMode.OFF
             assert view.overlay(_Viewport(1706, 960)) is None
+        finally:
+            view.close()
+
+    def test_the_fly_view_fills_the_whole_viewport(self):
+        view, _, data = self._view(mode=EyeViewMode.FLY, below_px=HUD_HEIGHT, beside_px=HUD_WIDTH)
+        try:
+            view.step(data)
+            rect, image = view.overlay(_Viewport(640, 360))
+            assert (rect.left, rect.bottom, rect.width, rect.height) == (0, 0, 640, 360)
+            assert image.shape == (360, 640, 3)
+            assert view.covers_window
+        finally:
+            view.close()
+
+    def test_only_the_fly_view_covers_the_window(self):
+        view, _, _ = self._view()
+        try:
+            for mode in EyeViewMode:
+                view.mode = mode
+                assert view.covers_window is (mode is EyeViewMode.FLY)
         finally:
             view.close()
 

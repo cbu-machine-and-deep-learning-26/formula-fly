@@ -16,13 +16,20 @@ What is drawn, in the encoding the webcam demo (GH-46) already uses
   so a parked car is black. Driving should light it up and turning sweep it sideways --
   the egocentric optic flow AGENTS.md section 6 chose a first-person track for.
 * **filter** (the big view) -- both at once: the retina dimmed, the motion coloured over it.
+* **fly** (the whole window) -- the retina alone, in grey, one flat facet per column with a
+  dark line between neighbours: the closest thing here to what the fly is looking at. Its
+  field is the ``fly_head`` camera's 75 degrees across about 31 columns, so about 2.4
+  degrees a facet; a real fly's eye spans nearly 360 degrees at about 5 degrees a facet.
+  Greyscale because flyvis takes luminance alone, not because flies are colour-blind.
 
-``F10`` cycles corner -> big -> off; MuJoCo's viewer binds F1-F6, F8, F9, letters and
-digits, and handles them as well as passing them on, so F10 is the free key.
+``F10`` cycles corner -> big -> fly -> off; MuJoCo's viewer binds F1-F6, F8, F9, letters
+and digits, and handles them as well as passing them on, so F10 is the free key.
 
 **Placement trusts only the top and left edges.** ``viewer.viewport`` over-reports the
 drawable area (see :class:`~fly_driver.hud.ViewerHUD`), so nothing is anchored right or
-bottom: the corner panel sits under the telemetry panel and the big view beside it.
+bottom: the corner panel sits under the telemetry panel and the big view beside it. The fly
+view covers the whole reported viewport -- what is off screen is simply clipped -- and
+centres the eye in the part assumed visible (:data:`VISIBLE_FRACTION`).
 
 **The eye is stepped every control step, whatever is showing.** It is a dynamical system
 integrated at 50 Hz (``FlyvisEye``); skipping frames while the view is hidden would make the
@@ -34,6 +41,7 @@ Nothing here imports flyvis or torch. The eye is handed in already built, so the
 
 from __future__ import annotations
 
+import functools
 import time
 from enum import Enum
 from typing import Any, Protocol
@@ -57,7 +65,9 @@ __all__ = [
     "EYE_VIEW_KEY_NAME",
     "EyePicture",
     "EyeViewMode",
+    "FacetLayout",
     "FlyEyeView",
+    "facet_raster",
     "big_view_side",
     "place_overlay",
 ]
@@ -79,6 +89,14 @@ BIG_VIEW_FRACTION = 0.7
 RETINA_DIM = 0.45
 #: Painted outside the hexagonal field.
 BACKGROUND = 0.06
+#: The fly view's lattice is rasterised once at this size and scaled up by nearest
+#: neighbour: fine enough that the staircase on the facet edges is a pixel or two, cheap
+#: enough (about half a second, once) that switching to the view does not stall the car.
+FLY_VIEW_BASE_PX = 384
+#: The fraction of the reported viewport assumed to be on screen, for centring the fly
+#: view. ``viewport`` over-reports by up to 25% (see :class:`~fly_driver.hud.ViewerHUD`);
+#: on a window that does not, the eye just sits a little up and to the left of centre.
+VISIBLE_FRACTION = 0.8
 #: The quantile of per-column motion the brightness is normalised to, as in the webcam demo.
 PEAK_QUANTILE = 0.99
 #: How long the eye is shown a still view to settle on it, as its resting baseline. The
@@ -107,6 +125,7 @@ class EyeViewMode(Enum):
 
     CORNER = "corner"
     BIG = "big"
+    FLY = "fly"
     OFF = "off"
 
     def next(self) -> EyeViewMode:
@@ -135,6 +154,7 @@ class EyePicture:
         self.readout_names = tuple(readout_names)
         self.resolution = int(resolution)
         self._raster = HexRaster(self.resolution)
+        self._layout: FacetLayout | None = None
         self.set_resting(resting_features)
         self.clear()
 
@@ -191,6 +211,15 @@ class EyePicture:
         gap = np.full((self.resolution, PANEL_GAP_PX, 3), BACKGROUND, dtype=np.float32)
         return _to_uint8(np.concatenate([self.retina_image(), gap, self.motion_image()], axis=1))
 
+    def fly_image(self, width: int, height: int) -> npt.NDArray[np.uint8]:
+        """The retina alone, in grey, filling a ``(height, width, 3)`` uint8 window.
+
+        The returned array is reused by the next call; the viewer copies it on the way in.
+        """
+        if self._layout is None or self._layout.shape != (height, width):
+            self._layout = FacetLayout(width, height, facet_raster())
+        return self._layout.paint(self.retina)
+
     def big_image(self, side: int) -> npt.NDArray[np.uint8]:
         """The filter view scaled (nearest neighbour) to ``(side, side, 3)`` uint8.
 
@@ -201,6 +230,79 @@ class EyePicture:
             raise ValueError(f"side must be positive, got {side}")
         index = (np.arange(side) * self.resolution) // side
         return _to_uint8(self.filter_image()[index][:, index])
+
+
+@functools.cache
+def facet_raster() -> HexRaster:
+    """The lattice the fly view is scaled from, built once per process.
+
+    About two and a half seconds to build, so :class:`FlyEyeView` asks for it at start-up,
+    while the eye loads, rather than on the first press of F10 with the car moving.
+    """
+    return HexRaster(FLY_VIEW_BASE_PX)
+
+
+class FacetLayout:
+    """Which retina column paints each pixel of a full-window fly view.
+
+    Worked out once per window size. A frame is then one table lookup over the square the
+    eye sits in -- everything outside it is always black, so it is painted once and left --
+    which measured 2.5 ms for a 768-pixel eye in a 1706x960 window, against 10.7 ms for a
+    naive lookup over every pixel.
+
+    Args:
+        width: Window width in pixels.
+        height: Window height in pixels.
+        raster: The lattice at some resolution; scaled to the view by nearest neighbour.
+
+    Raises:
+        ValueError: If the window has no area.
+    """
+
+    #: Index of the black entry: outside the eye, and the lines between facets.
+    DARK = HEX_COLUMN_COUNT
+
+    def __init__(self, width: int, height: int, raster: HexRaster) -> None:
+        if width < 1 or height < 1:
+            raise ValueError(f"the window must have an area, got {width}x{height}")
+        self.shape = (int(height), int(width))
+        visible_width = max(1, int(width * VISIBLE_FRACTION))
+        visible_height = max(1, int(height * VISIBLE_FRACTION))
+        side = min(visible_width, visible_height)
+        self.left = (visible_width - side) // 2
+        self.top = (visible_height - side) // 2
+        self.side = side
+
+        resolution = raster.index.shape[0]
+        scale = (np.arange(side) * resolution) // side
+        square = raster.index[scale][:, scale].astype(np.intp)
+        square[square < 0] = self.DARK
+        # One-pixel lines wherever a pixel's facet differs from its left or upper
+        # neighbour's: the facets read as facets, and the eye's rim as an edge.
+        edge = np.zeros(square.shape, dtype=bool)
+        edge[:, 1:] |= square[:, 1:] != square[:, :-1]
+        edge[1:, :] |= square[1:, :] != square[:-1, :]
+        square[edge] = self.DARK
+        self.square_index = square
+
+        # Native-size indices and three-byte rows: one gather per pixel, not per channel,
+        # and no index conversion on every frame.
+        self._square_flat = np.ascontiguousarray(square).ravel()
+        self._table = np.zeros((HEX_COLUMN_COUNT + 1, 3), dtype=np.uint8)
+        self._rows = self._table.view("V3").ravel()
+        self._square = np.empty(self._square_flat.size, dtype="V3")
+        self._window = np.zeros((*self.shape, 3), dtype=np.uint8)
+
+    def paint(self, retina: FloatArray) -> npt.NDArray[np.uint8]:
+        """The window, each facet the grey level of its column. The array is reused."""
+        grey = np.clip(np.asarray(retina, dtype=np.float32), 0.0, 1.0) * 255.0 + 0.5
+        self._table[:HEX_COLUMN_COUNT] = grey.astype(np.uint8)[:, None]
+        np.take(self._rows, self._square_flat, out=self._square)
+        top, left, side = self.top, self.left, self.side
+        self._window[top : top + side, left : left + side] = self._square.view(np.uint8).reshape(
+            side, side, 3
+        )
+        return self._window
 
 
 def _to_uint8(image: FloatArray) -> npt.NDArray[np.uint8]:
@@ -272,6 +374,7 @@ class FlyEyeView:
         # soon as the car is on the grid.
         grey = np.full(eye.frame_shape, GREY_LEVEL, dtype=np.uint8)
         self.picture = EyePicture(eye.readout_names, self._settle(grey))
+        facet_raster()  # now, while the eye loads, not on the first F10 mid-drive
 
     def _settle(self, frame: Frame) -> FloatArray:
         """Hold ``frame`` still in front of the eye until it settles; return its features.
@@ -300,6 +403,11 @@ class FlyEyeView:
         self.picture.set_resting(self._settle(self.render_frame(data)))
         self.picture.clear()
 
+    @property
+    def covers_window(self) -> bool:
+        """Whether the view hides everything else, so drawing anything under it is waste."""
+        return self.mode is EyeViewMode.FLY
+
     def cycle_mode(self) -> EyeViewMode:
         """Step to the next mode; returns it. Safe to call from the viewer's key thread."""
         self.mode = self.mode.next()
@@ -322,6 +430,14 @@ class FlyEyeView:
         """This frame's image and where it goes; ``None`` when off or it does not fit."""
         if viewport is None or self.mode is EyeViewMode.OFF:
             return None
+        if self.mode is EyeViewMode.FLY:
+            if viewport.width < 1 or viewport.height < 1:
+                return None
+            image = self.picture.fly_image(viewport.width, viewport.height)
+            rect = place_overlay(
+                viewport.height, left_px=0, top_px=0, width=viewport.width, height=viewport.height
+            )
+            return rect, image
         if self.mode is EyeViewMode.CORNER:
             image = self.picture.corner_image()
             top = self.margin_px + (self.below_px + self.margin_px if self.below_px else 0)

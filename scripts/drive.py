@@ -19,8 +19,10 @@ gives the keyboard literal full lock at any speed -- what the fly gets for ``ste
 step the ``fly_head`` camera goes through the flyvis optic lobe, and what it made of the
 frame is drawn in this window -- the 721-column retina and the T4/T5 motion percept, hue
 for direction and brightness for strength (:mod:`fly_driver.eye_view`). **F10** cycles
-corner -> big -> off. It needs the flyvis virtualenv, and flyvis is imported only on this
-path, so the default ``.venv`` and CI never need it.
+corner -> big -> fly -> off; ``fly`` fills the window with the retina alone, in grey, one
+facet per column -- the nearest thing here to what the fly sees. It needs the flyvis
+virtualenv, and flyvis is imported only on this path, so the default ``.venv`` and CI never
+need it.
 
 The car always receives a :class:`~fly_driver.interface.ControlVector`, and that vector is
 **analog** -- steer in [-1, 1], throttle and brake in [0, 1]. Whoever drives decides how
@@ -385,7 +387,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "show the track through the fly's eye (flyvis retina and T4/T5 motion) in the "
-            "window; F10 cycles corner, big and off. Needs the flyvis virtualenv"
+            "window; F10 cycles corner, big, fly (full window, what the fly sees) and off. "
+            "Needs the flyvis virtualenv"
         ),
     )
     parser.add_argument(
@@ -604,7 +607,8 @@ def main(argv: list[str] | None = None) -> int:
                 # Everything on screen goes to the viewer in one call: set_images replaces
                 # the whole list, so the HUD and the eye view drawn separately would flicker.
                 overlays = []
-                if hud is not None:
+                # The fly view covers the whole window, so a panel under it is never seen.
+                if hud is not None and not (eye_view is not None and eye_view.covers_window):
                     travel = dynamics.suspension_travel(data)
                     panel = hud.overlay(
                         Telemetry(
