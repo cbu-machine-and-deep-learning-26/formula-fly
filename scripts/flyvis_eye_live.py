@@ -82,6 +82,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from fly_driver.analysis.hex_plots import HexRaster, split_readout_maps  # noqa: E402
+from fly_driver.analysis.motion_percept import (  # noqa: E402
+    METER_DIRECTIONS,
+    PEAK_FLOOR,
+    SUBTYPE_DIRECTIONS,
+    T4_READOUTS,
+    T5_READOUTS,
+    RunningPeak,
+    compute_motion_percept,
+    hue_wheel_image,
+    summarise_motion,
+)
 from fly_driver.eyes.hex_resampler import (  # noqa: E402
     DEFAULT_FRAME_SHAPE,
     HEX_COLUMN_COUNT,
@@ -96,14 +107,8 @@ from fly_driver.eyes.stimuli import (  # noqa: E402
 Frame = npt.NDArray[np.uint8]
 FloatArray = npt.NDArray[np.floating[Any]]
 
-T4_READOUTS = ("T4a", "T4b", "T4c", "T4d")
-T5_READOUTS = ("T5a", "T5b", "T5c", "T5d")
 PHOTORECEPTOR_TYPES = ("R1", "R2", "R3", "R4", "R5", "R6")
 MAPS_PER_ROW = 4
-METER_DIRECTIONS = ("left", "right", "up", "down")
-# Image-coordinate preferred direction of each T4/T5 subtype, the mapping the
-# direction-selectivity gate in tests/eyes asserts against the pretrained eye.
-SUBTYPE_DIRECTIONS = {"a": "left", "b": "right", "c": "up", "d": "down"}
 METER_STATISTICS = ("q95", "mean")
 SYNTHETIC_SECONDS_PER_DIRECTION = 2.0
 SYNTHETIC_PAUSE_SECONDS = 0.2
@@ -112,8 +117,6 @@ DEFAULT_FPS_CAP = FRAME_RATE_HZ
 # |activity| peaks near 2.3 a.u. for the synthetic bar; 1.5 keeps the maps readable.
 DEFAULT_COLOR_LIMIT = 1.5
 EMA_WEIGHT = 0.1
-PEAK_DECAY = 0.995
-PEAK_FLOOR = 0.05
 # Layout: sizes are in inches at the reference width; fonts scale with width.
 REFERENCE_WIDTH_IN = 12.5
 DEFAULT_SCREEN_LOGICAL_PX = (1440, 900)
@@ -517,83 +520,6 @@ def motion_channels(
         )
         for direction, indices in channels.items()
     }
-
-
-def hsv_to_rgb(hue: FloatArray, saturation: FloatArray, value: FloatArray) -> FloatArray:
-    """Convert HSV arrays in ``[0, 1]`` to an RGB array with a trailing axis of 3."""
-    hue6 = (np.asarray(hue) % 1.0) * 6.0
-    sector = np.floor(hue6).astype(int) % 6
-    fraction = hue6 - np.floor(hue6)
-    low = value * (1 - saturation)
-    falling = value * (1 - fraction * saturation)
-    rising = value * (1 - (1 - fraction) * saturation)
-    red = np.choose(sector, [value, falling, low, low, rising, value])
-    green = np.choose(sector, [rising, value, value, falling, low, low])
-    blue = np.choose(sector, [low, low, rising, value, value, falling])
-    return np.stack([red, green, blue], axis=-1).astype(np.float32)
-
-
-def compute_motion_percept(
-    channels: dict[str, FloatArray], peak: float
-) -> tuple[FloatArray, FloatArray]:
-    """Fuse four direction channels into per-column motion vectors and colours.
-
-    Per column ``x = right - left`` and ``y = up - down``; hue encodes the
-    vector angle (right = red, up = yellow-green, left = cyan, down = violet)
-    and brightness the magnitude relative to ``peak``, so still columns are
-    black.
-
-    Args:
-        channels: ``{"left" | "right" | "up" | "down": (721,) non-negative}``.
-        peak: Magnitude drawn at full brightness.
-
-    Returns:
-        ``(rgb, vectors)``: ``(721, 3)`` colours in ``[0, 1]`` and ``(721, 2)``
-        ``(x, y)`` motion vectors.
-    """
-    x = np.asarray(channels["right"]) - np.asarray(channels["left"])
-    y = np.asarray(channels["up"]) - np.asarray(channels["down"])
-    magnitude = np.hypot(x, y)
-    hue = (np.arctan2(y, x) / (2 * np.pi)) % 1.0
-    value = np.clip(magnitude / max(peak, 1e-6), 0.0, 1.0)
-    rgb = hsv_to_rgb(hue, np.ones_like(hue), value)
-    return rgb, np.stack([x, y], axis=-1)
-
-
-def summarise_motion(vectors: FloatArray) -> tuple[float, float]:
-    """Return the mean motion vector as ``(angle_degrees, magnitude)``.
-
-    Angles follow the hue wheel: 0 = right, 90 = up, 180 = left, 270 = down.
-    """
-    mean_x, mean_y = np.mean(vectors, axis=0)
-    angle = float(np.degrees(np.arctan2(mean_y, mean_x)) % 360.0)
-    return angle, float(np.hypot(mean_x, mean_y))
-
-
-def hue_wheel_image(size: int = 64) -> FloatArray:
-    """Return an ``(size, size, 4)`` RGBA hue wheel legend (transparent outside)."""
-    coordinates = (np.arange(size) + 0.5) / size * 2 - 1
-    x, y = np.meshgrid(coordinates, -coordinates)
-    radius = np.hypot(x, y)
-    hue = (np.arctan2(y, x) / (2 * np.pi)) % 1.0
-    saturation = np.clip(radius, 0.0, 1.0)
-    rgb = hsv_to_rgb(hue, saturation, np.ones_like(hue))
-    alpha = (radius <= 1.0).astype(np.float32)
-    return np.concatenate([rgb, alpha[..., None]], axis=-1)
-
-
-class RunningPeak:
-    """Slowly decaying maximum used to normalise panels to their recent range."""
-
-    def __init__(self, floor: float = PEAK_FLOOR, decay: float = PEAK_DECAY) -> None:
-        self.value = floor
-        self._floor = floor
-        self._decay = decay
-
-    def update(self, sample: float) -> float:
-        """Fold one sample in and return the current peak."""
-        self.value = max(self.value * self._decay, float(sample), self._floor)
-        return self.value
 
 
 # --------------------------------------------------------------------------

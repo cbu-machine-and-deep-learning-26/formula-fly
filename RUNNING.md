@@ -180,12 +180,55 @@ not a corner time. As with laps, delete a row and the next car through sets it a
                                   grass; 0 (the default) charges a time penalty instead
 --fovy DEGREES                    camera field of view
 --export model.xml                write the MJCF instead of driving
+--eye-view                        show the track through the fly's eye (needs .venv-flyvis)
 ```
 
 The racing line is off by default only in this tool. The environment keeps it on by default,
 because there it is a cue the fly is meant to see.
 
 Full list: `scripts/drive.py --help`.
+
+### Seeing the track through the fly's eye
+
+`--eye-view` runs the flyvis optic lobe on the fly's head camera while you drive, and draws
+what it made of each frame in the same window. It needs the flyvis virtualenv (see
+[Connecting the fly's eye](#connecting-the-flys-eye)):
+
+```powershell
+$env:FLYVIS_ROOT_DIR = "$HOME\.cache\flyvis"
+$env:CUDA_VISIBLE_DEVICES = "-1"     # see below
+.\.venv-flyvis\Scripts\python.exe scripts\drive.py --eye-view
+```
+
+**F10** cycles four views:
+
+| View | What it shows |
+|---|---|
+| corner (the start) | Under the telemetry panel: the fly's **retina** on the left (721 hexagonal columns of brightness, which is all the resolution a fly has), and its **motion percept** on the right. |
+| big | Beside the panel: the two fused, with the retina dimmed and the motion coloured over it. This is the track as the fly's motion cells see it. |
+| fly | **The whole window is the fly's retina.** Each of the 721 facets is one flat grey level, with dark lines between them like a compound eye's ommatidia. This is the closest thing here to what the fly is looking at, so the telemetry panel is hidden. |
+| off | Nothing drawn. The eye keeps running, so it's the same eye when you bring it back. |
+
+How close is the fly view to a real fly?
+- **It's exactly what our model fly receives:** the camera frame after the hex resampler, which is the input flyvis is given.
+- **The real fly would differ in two ways.** It sees almost all the way around (about 330°, at about 5° per facet). Ours sees the camera's 75° at about 2.4° per facet: narrower, but sharper.
+- **It's grey because flyvis takes only brightness.** Real flies do see colour, including ultraviolet.
+- **The darker ring of facets around the edge is a real bug:** that's #45, the resampler darkening its outer columns.
+
+The motion colours are the webcam demo's, from the T4/T5 motion detectors. **Hue is the
+direction** things are moving across the eye: right red, up yellow-green, left cyan, down
+violet. **Brightness is how strongly.** "Still" means the eye left to settle on the view in
+front of it, so a parked car is black and the colours are motion, not scenery. Drive and
+watch the field light up; turn and watch it change colour. The view settles again whenever
+you go back to the grid, so the jump there doesn't show as a burst of motion.
+
+The terminal's status line adds the eye's cost per frame: about 9–12 ms on CPU. That fits in
+the 20 ms frame here, though on a slow machine the sim drops below real time.
+
+`CUDA_VISIBLE_DEVICES=-1` is needed on any machine with an NVIDIA GPU, for now. `import
+flyvis` makes CUDA torch's default device, and the hex resampler then crashes on CPU frames.
+That's a separate bug. Use `-1`, not an empty value: on Windows an empty value leaves torch
+reporting CUDA with no devices.
 
 ---
 

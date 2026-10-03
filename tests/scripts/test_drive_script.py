@@ -332,3 +332,49 @@ class TestWhatDriveFlyNeedsFromIt:
         assert data.time == 0.0, "reset_to_start no longer puts the car back on the grid"
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "car") >= 0
         assert centerline.length > 5000.0, "build no longer loads Silverstone"
+
+
+class TestTheEyeViewFlag:
+    """``--eye-view`` (GH-75) needs flyvis and torch; nothing else in the drive tool may.
+
+    CI installs neither, so the flag has to cost the default path nothing: no import, no
+    eye built, and a clear message rather than a traceback where the eye is missing.
+    """
+
+    def test_the_flag_is_accepted(self, tmp_path):
+        """``--export`` returns before anything is built, so this needs no eye."""
+        assert drive.main(["--eye-view", "--export", str(tmp_path / "model.xml")]) == 0
+
+    def test_the_help_names_the_flag_and_its_key(self, capsys):
+        with pytest.raises(SystemExit):
+            drive.main(["--help"])
+        out = capsys.readouterr().out
+        assert "--eye-view" in out and "F10" in out
+
+    def test_the_default_path_imports_neither_the_eye_view_nor_torch(self):
+        import subprocess
+        import sys
+
+        script = Path(__file__).resolve().parents[2] / "scripts" / "drive.py"
+        probe = (
+            "import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('drive', {str(script)!r})\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(module)\n"
+            "assert 'fly_driver.eye_view' not in sys.modules, 'eye_view imported by default'\n"
+            "assert 'torch' not in sys.modules, 'torch imported by default'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_missing_eye_stack_is_a_message_not_a_traceback(self, monkeypatch):
+        import sys
+
+        import mujoco
+
+        # None in sys.modules makes the import fail, as it does in the base .venv.
+        monkeypatch.setitem(sys.modules, "fly_driver.eye_view", None)
+        with pytest.raises(SystemExit, match="flyvis virtualenv"):
+            drive.load_eye_view(mujoco.MjModel.from_xml_string("<mujoco/>"), hud=True)

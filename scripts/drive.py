@@ -10,9 +10,19 @@ Run it::
     ./.venv/Scripts/python.exe scripts/drive.py
     ./.venv/Scripts/python.exe scripts/drive.py --input keyboard
     ./.venv/Scripts/python.exe scripts/drive.py --raw-steer
+    ./.venv-flyvis/Scripts/python.exe scripts/drive.py --eye-view
 
 The first uses a gamepad if one is plugged in and the keyboard otherwise. ``--raw-steer``
 gives the keyboard literal full lock at any speed -- what the fly gets for ``steer=1``.
+
+``--eye-view`` (GH-75) shows the track through the fly's eye while you drive: every control
+step the ``fly_head`` camera goes through the flyvis optic lobe, and what it made of the
+frame is drawn in this window -- the 721-column retina and the T4/T5 motion percept, hue
+for direction and brightness for strength (:mod:`fly_driver.eye_view`). **F10** cycles
+corner -> big -> fly -> off; ``fly`` fills the window with the retina alone, in grey, one
+facet per column -- the nearest thing here to what the fly sees. It needs the flyvis
+virtualenv, and flyvis is imported only on this path, so the default ``.venv`` and CI never
+need it.
 
 The car always receives a :class:`~fly_driver.interface.ControlVector`, and that vector is
 **analog** -- steer in [-1, 1], throttle and brake in [0, 1]. Whoever drives decides how
@@ -98,7 +108,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import mujoco
 import numpy as np
@@ -111,8 +121,14 @@ from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segment_log import SegmentLog
 from fly_driver.envs.segments import SegmentTimer, find_segments
 from fly_driver.envs.surface import SurfaceGrip
-from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD
-from fly_driver.interface import ControlVector
+from fly_driver.hud import HEIGHT as HUD_HEIGHT
+from fly_driver.hud import MAP_RECT, MPS_TO_MPH, Telemetry, TrackMap, ViewerHUD, show_overlays
+from fly_driver.hud import WIDTH as HUD_WIDTH
+from fly_driver.interface import FRAME_SHAPE, ControlVector
+
+if TYPE_CHECKING:
+    # Type only: fly_driver.eye_view needs torch, which --eye-view imports on its own path.
+    from fly_driver.eye_view import FlyEyeView
 
 CONTROL_HZ = 50
 
@@ -310,6 +326,37 @@ def reset_to_start(model: mujoco.MjModel, data: mujoco.MjData) -> None:
     mujoco.mj_forward(model, data)
 
 
+def load_eye_view(model: mujoco.MjModel, *, hud: bool) -> FlyEyeView:
+    """Build the fly's eye and the view of it, for ``--eye-view``.
+
+    flyvis (and torch) are imported here rather than at the top, so the default path --
+    and CI, which installs neither -- never touches them.
+    """
+    try:
+        from fly_driver.eye_view import FlyEyeView
+        from fly_driver.eyes.flyvis_eye import FlyvisEye, FlyvisNotInstalledError
+    except ImportError as exc:
+        raise SystemExit(
+            "--eye-view needs the flyvis virtualenv (torch + flyvis): run this script with "
+            ".venv-flyvis's python; docs/running-the-stacks.md sets it up."
+        ) from exc
+
+    print("loading the fly's eye (flyvis checkpoint flow/0000/000)...", flush=True)
+    try:
+        # One optic-lobe step per control step: the eye integrates at its frame rate, so
+        # it has to be built for the rate this loop actually runs at.
+        eye = FlyvisEye(frame_shape=FRAME_SHAPE, frame_rate_hz=float(CONTROL_HZ))
+    except FlyvisNotInstalledError as exc:
+        raise SystemExit(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"{exc}\nSet FLYVIS_ROOT_DIR and run `flyvis download-pretrained`."
+        ) from exc
+    return FlyEyeView(
+        model, eye, below_px=HUD_HEIGHT if hud else 0, beside_px=HUD_WIDTH if hud else 0
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", type=Path, help="write the MJCF here instead of driving")
@@ -335,6 +382,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--no-hud", action="store_true", help="do not draw the telemetry panel")
+    parser.add_argument(
+        "--eye-view",
+        action="store_true",
+        help=(
+            "show the track through the fly's eye (flyvis retina and T4/T5 motion) in the "
+            "window; F10 cycles corner, big, fly (full window, what the fly sees) and off. "
+            "Needs the flyvis virtualenv"
+        ),
+    )
     parser.add_argument(
         "--track-limit",
         type=float,
@@ -372,6 +428,9 @@ def main(argv: list[str] | None = None) -> int:
         print("mujoco.viewer is unavailable; this needs a desktop with OpenGL.", file=sys.stderr)
         return 1
 
+    # Before the input, whose keyboard listener would otherwise outlive a failed eye load.
+    eye_view = load_eye_view(model, hud=not args.no_hud) if args.eye_view else None
+
     # Input is chosen before the viewer launches: gamepad detection must run on the main
     # thread before the viewer starts its own GLFW work.
     source = choose_input(args.input, raw_steer=args.raw_steer)
@@ -397,9 +456,20 @@ def main(argv: list[str] | None = None) -> int:
         grid = centerline.project(float(data.xpos[car_body][0]), float(data.xpos[car_body][1]))
         lap_timer.reset(grid.arclength, float(data.time))
         segment_timer.reset(grid.arclength, float(data.time))
+        if eye_view is not None:
+            eye_view.reset(data)
+
+    def on_key(keycode: int) -> None:
+        """The viewer's key thread: F10 cycles the eye view. Every other key is the viewer's."""
+        if eye_view is not None and keycode == eye_view.key:
+            print()
+            print(f"eye view: {eye_view.cycle_mode().value}", flush=True)
 
     data = mujoco.MjData(model)
     reset_to_start(model, data)
+    if eye_view is not None:
+        # Settled on the grid view, so the first frames show motion, not the whole scene.
+        eye_view.reset(data)
 
     # Everything goes through CarDynamics, which is the only path that applies
     # aerodynamics. Setting data.ctrl directly here would let you hand-drive a car with no
@@ -424,7 +494,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with mujoco.viewer.launch_passive(
-            model, data, show_left_ui=False, show_right_ui=False
+            model,
+            data,
+            key_callback=on_key if eye_view is not None else None,
+            show_left_ui=False,
+            show_right_ui=False,
         ) as viewer:
             hud = None
             if not args.no_hud:
@@ -458,6 +532,8 @@ def main(argv: list[str] | None = None) -> int:
                 speed = dynamics.speed_mps(data)
                 control = source.control(speed)
                 dynamics.step(control, data, substeps)
+                if eye_view is not None:
+                    eye_view.step(data)
 
                 position = data.xpos[car_body]
                 projection = centerline.project(float(position[0]), float(position[1]))
@@ -528,9 +604,13 @@ def main(argv: list[str] | None = None) -> int:
                         flush=True,
                     )
 
-                if hud is not None:
+                # Everything on screen goes to the viewer in one call: set_images replaces
+                # the whole list, so the HUD and the eye view drawn separately would flicker.
+                overlays = []
+                # The fly view covers the whole window, so a panel under it is never seen.
+                if hud is not None and not (eye_view is not None and eye_view.covers_window):
                     travel = dynamics.suspension_travel(data)
-                    hud.update(
+                    panel = hud.overlay(
                         Telemetry(
                             speed_mps=speed,
                             gear=dynamics.gear + 1,
@@ -559,6 +639,14 @@ def main(argv: list[str] | None = None) -> int:
                             segment_is_best=last_was_best,
                         )
                     )
+                    if panel is not None:
+                        overlays.append(panel)
+                if eye_view is not None:
+                    eye_panel = eye_view.overlay(viewer.viewport)
+                    if eye_panel is not None:
+                        overlays.append(eye_panel)
+                if hud is not None or eye_view is not None:
+                    show_overlays(viewer, overlays)
 
                 # After the panel, because sync is what hands the frame to the renderer.
                 viewer.sync()
@@ -573,7 +661,8 @@ def main(argv: list[str] | None = None) -> int:
                         f"{projection.lateral:+6.2f} m {where:>8} | "
                         f"gear {dynamics.gear + 1} | "
                         f"thr {control.throttle:4.2f} brk {control.brake:4.2f} "
-                        f"steer {control.steer:+5.2f}",
+                        f"steer {control.steer:+5.2f}"
+                        + ("" if eye_view is None else f" | eye {eye_view.last_step_ms:4.1f} ms"),
                         end="",
                         flush=True,
                     )
@@ -584,6 +673,8 @@ def main(argv: list[str] | None = None) -> int:
                     time.sleep(remaining)
     finally:
         source.stop()
+        if eye_view is not None:
+            eye_view.close()
 
     print()
     return 0

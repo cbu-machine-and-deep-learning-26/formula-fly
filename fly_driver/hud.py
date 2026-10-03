@@ -45,9 +45,13 @@ __all__ = [
     "render",
     "rpm_fraction",
     "shift_light_on",
+    "show_overlays",
     "steer_to_x",
     "text_width",
 ]
+
+#: One image for the passive viewer: where it goes, and the ``(height, width, 3)`` uint8 RGB.
+Overlay = tuple[mujoco.MjrRect, npt.NDArray[np.uint8]]
 
 WIDTH, HEIGHT = 650, 244
 
@@ -608,32 +612,58 @@ class ViewerHUD:
             self.margin_px, viewport.height - HEIGHT - self.margin_px, WIDTH, HEIGHT
         )
 
-    def update(self, telemetry: Telemetry) -> None:
-        """Redraw with this frame's telemetry.
+    def overlay(self, telemetry: Telemetry) -> Overlay | None:
+        """This frame's panel and where it goes, without drawing it.
 
-        Call this *before* ``viewer.sync()``: sync is what hands the frame to the render
-        thread. Skipped while the window is too small to hold the panel.
+        For a caller that draws more than the panel: the viewer keeps one list of images,
+        so everything on screen has to reach it in a single :func:`show_overlays` call.
+        ``None`` while the window is too small to hold the panel.
         """
         viewport = self._viewer.viewport
         if viewport is None:
-            return
+            return None
         if viewport.width < WIDTH + 2 * self.margin_px:
-            return
+            return None
         if viewport.height < HEIGHT + 2 * self.margin_px:
-            return
+            return None
         image = render(
             telemetry,
             limiter_rpm=self.limiter_rpm,
             shift_rpm=self.shift_rpm,
             track=self.track,
         )
-        # This empty text overlay is load-bearing. MuJoCo's passive viewer only runs its
-        # overlay pass when a text overlay is set, so without it set_images() is accepted
-        # every frame, raises nothing, and draws nothing at all -- which is exactly how
-        # the first version of this panel shipped invisible. Proven by A/B: identical
-        # rect and image, the only difference being this call, panel present vs absent.
-        # The strings are empty so nothing but the panel is drawn.
-        self._viewer.set_texts(
-            (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPRIGHT, "", "")
-        )
-        self._viewer.set_images([(self.rect(viewport), image)])
+        return self.rect(viewport), image
+
+    def update(self, telemetry: Telemetry) -> None:
+        """Redraw with this frame's telemetry.
+
+        Call this *before* ``viewer.sync()``: sync is what hands the frame to the render
+        thread. Skipped while the window is too small to hold the panel.
+        """
+        overlay = self.overlay(telemetry)
+        if overlay is not None:
+            show_overlays(self._viewer, [overlay])
+
+
+def show_overlays(viewer, overlays: list[Overlay]) -> None:
+    """Hand every image for this frame to the passive viewer, in one call.
+
+    ``set_images`` replaces the viewer's whole list, so two panels that each called it
+    would take turns being invisible. Later entries draw on top of earlier ones. An empty
+    list clears whatever was showing.
+
+    Args:
+        viewer: The handle from :func:`mujoco.viewer.launch_passive`, or anything with its
+            ``set_texts`` and ``set_images``.
+        overlays: ``(rect, image)`` pairs, each image exactly the rect's size.
+    """
+    # This empty text overlay is load-bearing. MuJoCo's passive viewer only runs its
+    # overlay pass when a text overlay is set, so without it set_images() is accepted
+    # every frame, raises nothing, and draws nothing at all -- which is exactly how
+    # the first version of this panel shipped invisible. Proven by A/B: identical
+    # rect and image, the only difference being this call, panel present vs absent.
+    # The strings are empty so nothing but the panel is drawn.
+    viewer.set_texts(
+        (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPRIGHT, "", "")
+    )
+    viewer.set_images(list(overlays))

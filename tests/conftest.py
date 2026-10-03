@@ -27,6 +27,7 @@ _NEEDS_TORCH = [
     "analysis/*",
     "scripts/test_flyvis_eye_demo.py",
     "scripts/test_flyvis_eye_live.py",
+    "test_eye_view.py",
 ]
 
 collect_ignore_glob: list[str] = [] if importlib.util.find_spec("torch") else _NEEDS_TORCH
