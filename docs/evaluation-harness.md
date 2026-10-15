@@ -43,6 +43,9 @@ or an object with `to_array()`) and an optional `reset(seed=...)`, and an
 - **Lap time**: taken from `info["lap_time"]` when the env reports it on
   `info["lap_complete"]`, otherwise `steps / frame_rate_hz`. Every real env
   wrapper should set both keys.
+- **Progress**: the sum of `info["progress_m"]` over the episode (metres along
+  the centreline, net of reversing), `None` when the env does not report it.
+  The per-condition mean is `mean_progress_m`.
 - **Robustness**: per perturbation, `return_ratio_to_clean` (mean return over
   the clean mean; `None` if the clean mean is zero) plus lap completion rate.
   Built-in perturbations: `observation_noise(std)`, `brightness(scale)`,
@@ -75,7 +78,7 @@ Unknown keys are rejected.
 
 `episodes.csv` has one row per episode per condition (`condition, episode,
 seed, steps, total_return, lap_complete, lap_time_s, terminated, truncated,
-video_path`). `summary.json` holds the config, per-condition aggregates, the
+video_path, progress_m`). `summary.json` holds the config, per-condition aggregates, the
 actions digest, and which video backend (if any) was used.
 
 ## Video

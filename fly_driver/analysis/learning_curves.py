@@ -17,7 +17,7 @@ from fly_driver.training.evaluation import CLEAN_CONDITION, EvalReport
 
 __all__ = ["CURVE_METRICS", "learning_curve", "steps_to_threshold"]
 
-CURVE_METRICS = ("mean_return", "lap_completion_rate", "mean_lap_time_s")
+CURVE_METRICS = ("mean_return", "lap_completion_rate", "mean_lap_time_s", "mean_progress_m")
 
 
 def steps_to_threshold(

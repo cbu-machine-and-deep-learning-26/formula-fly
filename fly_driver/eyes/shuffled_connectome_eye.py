@@ -7,6 +7,13 @@ in :func:`~fly_driver.eyes.degree_shuffle.degree_matched_shuffle` changes which
 postsynaptic neuron each edge lands on, so the comparison isolates the
 *pattern* of the wiring rather than sparsity or degree.
 
+Self-loops are held fixed. The flyvis connectome has them (12,380 of 1,513,231
+edges in ``flow/0000/000``: one per column for about 17 cell types, e.g. L4, Mi4,
+T4a-d), and the swap rejects a graph with any. They are a neuron's recurrence on
+itself rather than a choice of partner, so they are split off, kept on their
+neuron unchanged, and only the remaining edges are swapped. Every neuron's in-
+and out-degree is still preserved exactly.
+
 flyvis is optional, exactly as for :class:`~fly_driver.eyes.flyvis_eye.FlyvisEye`.
 Constructing this eye without it raises :class:`FlyvisNotInstalledError`.
 """
@@ -29,7 +36,12 @@ from fly_driver.eyes.flyvis_eye import (
 )
 from fly_driver.eyes.hex_resampler import DEFAULT_FRAME_SHAPE
 
-__all__ = ["DEFAULT_SWAP_ATTEMPTS_PER_EDGE", "ShuffledConnectomeEye", "rewire_network"]
+__all__ = [
+    "DEFAULT_SWAP_ATTEMPTS_PER_EDGE",
+    "ShuffledConnectomeEye",
+    "rewire_network",
+    "shuffle_keeping_self_loops",
+]
 
 #: Swap attempts per edge. Most attempts on the optic lobe succeed (it is
 #: sparse), so this is several full passes over the edge list.
@@ -43,7 +55,8 @@ class ShuffledConnectomeEye(FlyvisEye):
     then rewires ``network._source_indices`` / ``_target_indices`` and the
     node-parameter source/target readers. Those are the two places the
     dynamics read the wiring; synapse strengths stay on the edge they were
-    trained on and move with it to the new target.
+    trained on and move with it to the new target. Self-loops are held fixed
+    (see :func:`shuffle_keeping_self_loops`).
 
     ``seed`` fixes the swaps. The default is 0, so a policy-seed sweep shares
     one shuffled connectome unless ``eye.params.seed`` overrides it.
@@ -110,7 +123,7 @@ class ShuffledConnectomeEye(FlyvisEye):
             attempts = n_edges * DEFAULT_SWAP_ATTEMPTS_PER_EDGE
         else:
             attempts = int(swap_attempts)
-        rewired_sources, rewired_targets = degree_matched_shuffle(
+        rewired_sources, rewired_targets = shuffle_keeping_self_loops(
             sources, targets, n_nodes=n_nodes, seed=self.seed, attempts=attempts
         )
         before_in, before_out = in_out_degrees(sources, targets, n_nodes)
@@ -129,6 +142,40 @@ class ShuffledConnectomeEye(FlyvisEye):
     def _edge_index(self, name: str) -> np.ndarray:
         tensor = getattr(self.network, name).detach().to(device="cpu")
         return tensor.numpy().astype(np.int64, copy=True)
+
+
+def shuffle_keeping_self_loops(
+    sources: np.ndarray, targets: np.ndarray, *, n_nodes: int, seed: int, attempts: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Degree-matched shuffle that leaves self-loop edges exactly where they are.
+
+    :func:`degree_matched_shuffle` rejects self-loops, and flyvis has them. A
+    self-loop adds one to its neuron's in- and out-degree whatever the rest of
+    the graph does, so swapping only the other edges preserves every degree.
+    A swap never creates a self-loop, so it cannot duplicate a held one either.
+
+    Args:
+        sources: Presynaptic index of each edge.
+        targets: Postsynaptic index of each edge.
+        n_nodes: Neurons in the graph.
+        seed: Seeds the swaps.
+        attempts: Swap attempts on the non-self-loop edges.
+
+    Returns:
+        New ``(sources, targets)`` int64 arrays in the input's edge order. Each
+        self-loop keeps its position, so its synapse parameters stay with it.
+    """
+    sources = np.asarray(sources, dtype=np.int64)
+    targets = np.asarray(targets, dtype=np.int64)
+    is_loop = sources == targets
+    shuffled_sources, shuffled_targets = degree_matched_shuffle(
+        sources[~is_loop], targets[~is_loop], n_nodes=n_nodes, seed=seed, attempts=attempts
+    )
+    rewired_sources = sources.copy()
+    rewired_targets = targets.copy()
+    rewired_sources[~is_loop] = shuffled_sources
+    rewired_targets[~is_loop] = shuffled_targets
+    return rewired_sources, rewired_targets
 
 
 def rewire_network(network: object, sources: np.ndarray, targets: np.ndarray) -> None:

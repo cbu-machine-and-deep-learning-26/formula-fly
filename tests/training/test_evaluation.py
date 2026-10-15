@@ -100,6 +100,31 @@ def test_lap_time_falls_back_to_steps_over_frame_rate() -> None:
     assert report.episodes[0].lap_time_s == pytest.approx(0.5)
 
 
+def test_progress_sums_progress_m_and_is_none_when_unreported() -> None:
+    class ForwardEnv:
+        def reset(self, *, seed: int | None = None) -> tuple[np.ndarray, dict]:
+            self.steps = 0
+            return np.zeros((4, 4, 3), dtype=np.uint8), {}
+
+        def step(self, action: object) -> tuple[np.ndarray, float, bool, bool, dict]:
+            self.steps += 1
+            info = {"progress_m": 0.5 if self.steps < 10 else -1.0}  # reversing counts against
+            return np.zeros((4, 4, 3), dtype=np.uint8), 0.0, self.steps == 10, False, info
+
+        def render(self) -> None:
+            return None
+
+    report = evaluate(ForwardEnv, ConstantAgent(), EvalConfig(episodes=2))
+    assert [item.progress_m for item in report.episodes] == [pytest.approx(3.5)] * 2
+    assert report.summary().mean_progress_m == pytest.approx(3.5)
+    assert (
+        evaluate(_make_env, ConstantAgent(), EvalConfig(episodes=1, max_steps=5))
+        .summary()
+        .mean_progress_m
+        is None
+    )
+
+
 def test_robustness_conditions_share_seeds_and_report_ratio() -> None:
     """Perturbed conditions reuse the clean seeds and report return ratios."""
     report = evaluate(_make_env, CentreSteeringAgent(), PERTURBED)

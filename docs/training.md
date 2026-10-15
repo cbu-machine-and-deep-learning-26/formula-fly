@@ -14,7 +14,7 @@ eye). The entry point is `scripts/train.py`.
 ```bash
 python scripts/train.py                                   # default condition, seeds 0, 1, 2
 python scripts/train.py --seed 0                          # one seed; put the others on other machines
-python scripts/train.py --config conditions/cnn.yaml      # another condition
+python scripts/train.py --config fly_driver/configs/conditions/cnn.yaml  # an RQ1 eye condition
 python scripts/train.py --env dummy --eye pixels --total-env-steps 20000 --name smoke
 python scripts/train.py --wandb                           # CSV as always, plus a W&B mirror
 ```
@@ -216,8 +216,8 @@ eye and 1.1 ms (CPU) to 3.8 ms (GPU) of policy. The PPO update over 2 048 steps 
 on the GPU against 10.2 s on the CPU, so the two end up level. 1M steps is about five hours
 per seed here. The track step is the largest share, which is what #63 is about.
 
-The flyvis rows need two fixes that are separate bug branches: the hex resampler on GPU hosts
-and flyvis's cache on Windows.
+The flyvis rows needed a fix for flyvis's cache on Windows. The eye also runs on a GPU host
+now, whatever device `import flyvis` makes torch's default (GH-27).
 
 ## Tests
 
