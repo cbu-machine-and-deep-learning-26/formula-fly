@@ -11,13 +11,16 @@ from fly_driver.training import (
     KNOWN_BRAINS,
     KNOWN_ENV_TYPES,
     KNOWN_EYE_TYPES,
+    BrainConfig,
     EnvConfig,
     EyeConfig,
     PPOConfig,
     TrainConfig,
 )
 
-DEFAULT_YAML = Path(__file__).parents[2] / "fly_driver" / "configs" / "train_default.yaml"
+CONFIGS = Path(__file__).parents[2] / "fly_driver" / "configs"
+DEFAULT_YAML = CONFIGS / "train_default.yaml"
+CX_YAML = CONFIGS / "train_flyvis_cx.yaml"
 
 
 class TestTheDefaultCondition:
@@ -26,10 +29,20 @@ class TestTheDefaultCondition:
         pytest.importorskip("yaml")
         config = TrainConfig.from_yaml(DEFAULT_YAML)
         assert config.eye.type == "flyvis" and config.eye.frozen is True
-        assert config.brain == "none"
+        assert config.brain == BrainConfig(type="none")
         assert config.env.type == "practice_track"
         assert config.seeds == (0, 1, 2) == DEFAULT_SEEDS
         assert config.logging.wandb.enabled is False
+
+    def test_the_brain_condition_is_the_default_with_a_brain_and_no_racing_line(self):
+        pytest.importorskip("yaml")
+        default = TrainConfig.from_yaml(DEFAULT_YAML)
+        config = TrainConfig.from_yaml(CX_YAML)
+        assert config.brain.type == "central_complex"
+        assert config.brain.params["neuron_count"] == 4096
+        assert config.env.params["racing_line"] is False
+        assert config.eye == default.eye and config.ppo == default.ppo
+        assert TrainConfig.from_dict(config.to_dict()) == config
 
     def test_three_seeds_are_the_default_field_not_a_comment(self):
         assert TrainConfig().seeds == (0, 1, 2)
@@ -54,6 +67,9 @@ class TestTheConditionFields:
             }
         )
         assert config.eye == EyeConfig(type="pixels", frozen=True, params={"downsample": 8})
+        assert config.brain == BrainConfig(type="none")
+        brain = {"type": "central_complex", "params": {"neuron_count": 64}}
+        assert TrainConfig.from_dict({"brain": brain}).brain == BrainConfig(**brain)
         assert TrainConfig.from_dict({"eye": {"frozen": False}}).eye.frozen is False
 
     @pytest.mark.parametrize(
@@ -61,6 +77,9 @@ class TestTheConditionFields:
         [
             ({"eye": {"type": "retina"}}, "unknown eye type"),
             ({"brain": "cortex"}, "unknown brain"),
+            ({"brain": {"type": "none", "params": {"neuron_count": 8}}}, "no params"),
+            ({"brain": {"type": "central_complex", "params": {"input_dim": 8}}}, "input_dim"),
+            ({"brain": {"type": "central_complex", "size": 8}}, "unknown"),
             ({"env": {"type": "carracing"}}, "unknown env type"),
             ({"eye": {"frozen": "yes"}}, "frozen"),
             ({"eye": {"params": {"frame_shape": [64, 64, 3]}}}, "frame_shape"),
@@ -73,7 +92,7 @@ class TestTheConditionFields:
 
     def test_the_known_names_are_what_the_default_yaml_documents(self):
         assert KNOWN_EYE_TYPES == ("flyvis", "cnn", "random_projection", "shuffled", "pixels")
-        assert KNOWN_BRAINS == ("none",)
+        assert KNOWN_BRAINS == ("none", "central_complex")
         assert set(KNOWN_ENV_TYPES) == {"practice_track", "dummy"}
 
 

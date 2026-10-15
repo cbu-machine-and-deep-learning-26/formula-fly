@@ -15,6 +15,11 @@ minibatch, which is what :meth:`PPOLearner.update` does when it is given one. Ey
 state are refused for ``frozen: false`` rather than silently trained as if they were
 feed-forward; see :mod:`fly_driver.training.train`.
 
+A recurrent brain between the eye and the policy is trained the same way the fine-tuned eye
+is, one step at a time: the buffer stores each step's eye features and the brain's membrane
+*before* that step, and the update replays that single step through
+:meth:`~fly_driver.brains.central_complex.CentralComplexBrain.transition` with gradients.
+
 Numerical guards, per `AGENTS.md` §11: the update raises on a non-finite loss instead of
 stepping on it, and the tests pin the advantage recursion to a hand-computed case.
 """
@@ -29,6 +34,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from fly_driver.brains.central_complex import CentralComplexBrain
 from fly_driver.policies.mlp_policy import ACTION_DIM, MlpPolicy
 from fly_driver.training.config import PPOConfig
 
@@ -60,13 +66,21 @@ class RolloutBuffer:
         steps: Rollout length.
         feature_dim: Feature length stored per step.
         frame_shape: When given, frames are stored too (uint8), for a fine-tuned eye.
+        brain_dims: ``(input_dim, neuron_count)`` of a brain. When given, each step's eye
+            features and the brain's membrane before the step are stored too, and
+            ``features`` holds the brain's output (what the policy read).
 
     ``episode_ends[t]`` is true when the episode ended *after* step ``t`` -- the natural
     reading -- so the advantage recursion never looks at the next row's flag.
     """
 
     def __init__(
-        self, steps: int, feature_dim: int, *, frame_shape: tuple[int, int, int] | None = None
+        self,
+        steps: int,
+        feature_dim: int,
+        *,
+        frame_shape: tuple[int, int, int] | None = None,
+        brain_dims: tuple[int, int] | None = None,
     ) -> None:
         if steps < 1 or feature_dim < 1:
             raise ValueError("steps and feature_dim must be positive")
@@ -75,6 +89,12 @@ class RolloutBuffer:
         self.features = np.zeros((self.steps, self.feature_dim), dtype=np.float32)
         self.frames = (
             None if frame_shape is None else np.zeros((self.steps, *frame_shape), dtype=np.uint8)
+        )
+        self.brain_inputs = (
+            None if brain_dims is None else np.zeros((self.steps, brain_dims[0]), np.float32)
+        )
+        self.brain_states = (
+            None if brain_dims is None else np.zeros((self.steps, brain_dims[1]), np.float32)
         )
         self.raw_actions = np.zeros((self.steps, ACTION_DIM), dtype=np.float32)
         self.log_probs = np.zeros(self.steps, dtype=np.float32)
@@ -100,6 +120,8 @@ class RolloutBuffer:
         episode_end: bool,
         value: float,
         frame: np.ndarray | None = None,
+        brain_input: np.ndarray | None = None,
+        brain_state: np.ndarray | None = None,
     ) -> None:
         """Store one step. Raises when the buffer is already full."""
         if self._filled >= self.steps:
@@ -115,6 +137,11 @@ class RolloutBuffer:
             if frame is None:
                 raise ValueError("this buffer stores frames; add() needs one")
             self.frames[index] = frame
+        if self.brain_inputs is not None and self.brain_states is not None:
+            if brain_input is None or brain_state is None:
+                raise ValueError("this buffer stores brain steps; add() needs both")
+            self.brain_inputs[index] = brain_input
+            self.brain_states[index] = brain_state
         self._filled += 1
 
     def reset(self) -> None:
@@ -168,6 +195,8 @@ class PPOLearner:
         config: Hyperparameters.
         eye: A :class:`DifferentiableEye` to fine-tune alongside the policy, or ``None`` to
             train the policy on the stored features alone (the frozen-eye default).
+        brain: A brain between the eye and the policy, trained alongside it. Its output is
+            recomputed per minibatch from the buffer's stored membranes.
         device: Where the update runs. ``None`` means wherever the policy's parameters
             are -- never torch's process-wide default device, which ``import flyvis`` sets to
             CUDA on any GPU machine.
@@ -183,11 +212,13 @@ class PPOLearner:
         config: PPOConfig,
         *,
         eye: DifferentiableEye | None = None,
+        brain: CentralComplexBrain | None = None,
         device: str | torch.device | None = None,
     ) -> None:
         self.policy = policy
         self.config = config
         self.eye = eye
+        self.brain = brain
         self.device = policy.device if device is None else torch.device(device)
         _require_device("policy", policy.parameters(), self.device)
         parameters = list(policy.parameters())
@@ -197,6 +228,9 @@ class PPOLearner:
                 raise ValueError("eye has no trainable parameters; use frozen: true")
             _require_device("eye", eye_parameters, self.device)
             parameters.extend(eye_parameters)
+        if brain is not None:
+            _require_device("brain", brain.parameters(), self.device)
+            parameters.extend(brain.parameters())
         self.optimizer = torch.optim.Adam(parameters, lr=config.learning_rate, eps=1e-5)
 
     def learning_rate_for(self, update_index: int, total_updates: int) -> float:
@@ -224,6 +258,8 @@ class PPOLearner:
             )
         if self.eye is not None and buffer.frames is None:
             raise ValueError("fine-tuning the eye needs a buffer that stores frames")
+        if self.brain is not None and buffer.brain_states is None:
+            raise ValueError("training a brain needs a buffer that stores brain steps")
 
         learning_rate = self.learning_rate_for(update_index, total_updates)
         for group in self.optimizer.param_groups:
@@ -233,6 +269,8 @@ class PPOLearner:
         frames = (
             None if buffer.frames is None else torch.as_tensor(buffer.frames, device=self.device)
         )
+        brain_inputs = _optional_tensor(buffer.brain_inputs, self.device)
+        brain_states = _optional_tensor(buffer.brain_states, self.device)
         raw_actions = torch.as_tensor(buffer.raw_actions, device=self.device)
         old_log_probs = torch.as_tensor(buffer.log_probs, device=self.device)
         advantages = torch.as_tensor(buffer.advantages, device=self.device)
@@ -253,8 +291,15 @@ class PPOLearner:
                 index = permutation[start : start + config.minibatch_size]
                 if self.eye is not None and frames is not None:
                     batch_features = self.eye.encode_batch(frames[index])
+                elif brain_inputs is not None:
+                    batch_features = brain_inputs[index]
                 else:
                     batch_features = features[index]
+                if self.brain is not None and brain_states is not None:
+                    # ponytail: single-step gradient from the stored membrane, no BPTT, so
+                    # no credit flows to what earlier frames left in the membrane. Truncated
+                    # BPTT over stored sequences if credit assignment over time matters.
+                    _, batch_features = self.brain.transition(brain_states[index], batch_features)
                 log_prob, entropy, value = self.policy.evaluate_actions(
                     batch_features, raw_actions[index]
                 )
@@ -330,6 +375,10 @@ class PPOLearner:
             learning_rate=learning_rate,
             epochs_run=epochs_run,
         )
+
+
+def _optional_tensor(array: np.ndarray | None, device: torch.device) -> torch.Tensor | None:
+    return None if array is None else torch.as_tensor(array, device=device)
 
 
 def _same_device(left: torch.device, right: torch.device) -> bool:

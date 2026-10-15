@@ -13,7 +13,9 @@ What a seed's run directory holds::
     runs/<name>/seed_0/config.yaml       the same, narrowed to this seed
     runs/<name>/seed_0/episodes.csv      one row per training episode, reward split by term
     runs/<name>/seed_0/updates.csv       one row per PPO update
+    runs/<name>/seed_0/parameters.json   trainable parameter counts (RQ2 reads these)
     runs/<name>/seed_0/policy_final.pt   the policy head (+ normaliser statistics)
+    runs/<name>/seed_0/brain_final.pt    the brain's state dict, when there is a brain
     runs/<name>/seed_0/eval/step_<n>/    the deterministic evaluation protocol's outputs
 
 The loop rolls out through the same seams :class:`~fly_driver.drivers.DirectDriveAgent`
@@ -30,6 +32,8 @@ on or off. On CPU two runs with the same config are byte-identical; the tests as
 
 from __future__ import annotations
 
+import copy
+import json
 import random
 import shutil
 import time
@@ -42,6 +46,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from fly_driver.brains.blank import blank_trainable_parameter_count
+from fly_driver.brains.central_complex import CentralComplexBrain
 from fly_driver.drivers import DirectDriveAgent
 from fly_driver.envs.dummy_track import DummyTrackEnv
 from fly_driver.envs.practice_track import PracticeTrack
@@ -57,6 +63,7 @@ from fly_driver.training.config import (
     KNOWN_BRAINS,
     KNOWN_ENV_TYPES,
     KNOWN_EYE_TYPES,
+    BrainConfig,
     EnvConfig,
     EyeConfig,
     PolicyConfig,
@@ -79,17 +86,21 @@ __all__ = [
     "ENV_BUILDERS",
     "EYE_BUILDERS",
     "FINAL_CHECKPOINT",
+    "PARAMETERS_FILENAME",
     "ProgressCallback",
     "SeedResult",
+    "build_brain",
     "build_env",
     "build_eye",
     "build_policy",
+    "load_driver",
     "resolve_device",
     "train",
     "train_seed",
 ]
 
 FINAL_CHECKPOINT = "policy_final.pt"
+PARAMETERS_FILENAME = "parameters.json"
 
 #: Called after every PPO update with its record; ``scripts/train.py`` prints it.
 ProgressCallback = Callable[[UpdateRecord], None]
@@ -155,9 +166,19 @@ EYE_BUILDERS: dict[str, Callable[[EyeConfig, Any], Eye]] = {
     "pixels": _build_pixel_eye,
 }
 
-#: Brain name → builder, or ``None`` for no brain (the policy reads the eye directly).
-#: GH-23 registers the whole-brain model here (and in ``KNOWN_BRAINS``).
-BRAIN_BUILDERS: dict[str, Callable[..., Any] | None] = {"none": None}
+
+def _build_central_complex(
+    config: BrainConfig, input_dim: int, frame_rate_hz: float
+) -> CentralComplexBrain:
+    return CentralComplexBrain(input_dim, frame_rate_hz=frame_rate_hz, **config.params)
+
+
+#: Brain name → builder taking the eye's feature count and the env's frame rate, or ``None``
+#: for no brain (the policy reads the eye directly).
+BRAIN_BUILDERS: dict[str, Callable[[BrainConfig, int, float], CentralComplexBrain] | None] = {
+    "none": None,
+    "central_complex": _build_central_complex,
+}
 
 assert set(ENV_BUILDERS) == set(KNOWN_ENV_TYPES)
 assert set(EYE_BUILDERS) == set(KNOWN_EYE_TYPES)
@@ -172,6 +193,14 @@ def build_env(config: EnvConfig) -> Any:
 def build_eye(config: EyeConfig, env: Any) -> Eye:
     """Construct the eye a config names, sized to ``env``'s frames."""
     return EYE_BUILDERS[config.type](config, env)
+
+
+def build_brain(config: BrainConfig, eye: Eye, env: Any) -> CentralComplexBrain | None:
+    """Construct the brain a config names, reading ``eye``'s features; ``None`` for no brain."""
+    builder = BRAIN_BUILDERS[config.type]
+    if builder is None:
+        return None
+    return builder(config, int(eye.feature_dim), float(env.frame_rate_hz))
 
 
 def build_policy(config: PolicyConfig, feature_dim: int) -> MlpPolicy:
@@ -282,18 +311,24 @@ def train_seed(
     try:
         eye = build_eye(config.eye, env)
         trainable_eye = _trainable_eye(config.eye, eye, device)
-        if BRAIN_BUILDERS[config.brain] is not None:  # pragma: no cover - none registered yet
-            raise NotImplementedError(f"brain {config.brain!r} has a builder but no wiring")
-        feature_dim = int(eye.feature_dim)
+        brain = build_brain(config.brain, eye, env)
+        if brain is not None:
+            brain.to(device)
+        feature_dim = int(eye.feature_dim) if brain is None else brain.output_dim
         policy = build_policy(config.policy, feature_dim).to(device)
-        learner = PPOLearner(policy, config.ppo, eye=trainable_eye, device=device)
-        loggers = _open_loggers(config, seed, run_dir)
+        learner = PPOLearner(policy, config.ppo, eye=trainable_eye, brain=brain, device=device)
+        parameters = _parameter_counts(config, trainable_eye, brain, policy)
+        (run_dir / PARAMETERS_FILENAME).write_text(
+            json.dumps(parameters, indent=2) + "\n", encoding="utf-8"
+        )
+        loggers = _open_loggers(config, seed, run_dir, parameters)
         try:
             return _run(
                 config,
                 seed,
                 env=env,
                 eye=eye,
+                brain=brain,
                 policy=policy,
                 learner=learner,
                 loggers=loggers,
@@ -331,7 +366,38 @@ def _trainable_eye(config: EyeConfig, eye: Eye, device: torch.device) -> Differe
     return eye
 
 
-def _open_loggers(config: TrainConfig, seed: int, run_dir: Path) -> RunLogger:
+def _parameter_counts(
+    config: TrainConfig,
+    eye: DifferentiableEye | None,
+    brain: CentralComplexBrain | None,
+    policy: MlpPolicy,
+) -> dict[str, Any]:
+    """Trainable scalars per stage, and a dense blank net of the brain's width (RQ2)."""
+
+    def trainable(module: Any) -> int:
+        if module is None:
+            return 0
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+    counts: dict[str, Any] = {
+        "brain": config.brain.type,
+        "eye_trainable": trainable(eye),
+        "brain_trainable": trainable(brain),
+        "head_trainable": trainable(policy),
+        "neuron_count": None,
+        "blank_trainable": None,
+    }
+    if brain is not None:
+        counts["neuron_count"] = brain.neuron_count
+        counts["blank_trainable"] = blank_trainable_parameter_count(
+            brain.input_dim, brain.neuron_count
+        )
+    return counts
+
+
+def _open_loggers(
+    config: TrainConfig, seed: int, run_dir: Path, parameters: Mapping[str, Any]
+) -> RunLogger:
     loggers: list[TrainingLogger] = [CsvLogger(run_dir)]
     if config.logging.wandb.enabled:
         loggers.append(
@@ -339,7 +405,7 @@ def _open_loggers(config: TrainConfig, seed: int, run_dir: Path) -> RunLogger:
                 config.logging.wandb,
                 run_name=f"{config.name}/seed_{seed}",
                 group=config.name,
-                run_config={**config.to_dict(), "seed": seed},
+                run_config={**config.to_dict(), "seed": seed, "parameters": dict(parameters)},
                 run_dir=run_dir,
             )
         )
@@ -448,6 +514,7 @@ def _evaluate(
     *,
     env_steps: int,
     eye: Eye,
+    brain: CentralComplexBrain | None,
     policy: MlpPolicy,
     run_dir: Path,
     frame_rate_hz: float,
@@ -462,7 +529,9 @@ def _evaluate(
         output_dir=str(run_dir / "eval" / f"step_{env_steps:09d}"),
         env_steps=env_steps,
     )
-    driver = DirectDriveAgent(eye, policy)
+    # A copy, so evaluation's resets do not clear the training rollout's membrane.
+    eval_brain = None if brain is None else copy.deepcopy(brain)
+    driver = DirectDriveAgent(eye, policy, brain=eval_brain)
     was_training = policy.training
     policy.eval()
     try:
@@ -478,6 +547,7 @@ def _run(
     *,
     env: Any,
     eye: Eye,
+    brain: CentralComplexBrain | None,
     policy: MlpPolicy,
     learner: PPOLearner,
     loggers: RunLogger,
@@ -488,10 +558,14 @@ def _run(
     ppo = config.ppo
     frame_shape = tuple(int(size) for size in env.frame_shape)
     frame_rate_hz = float(env.frame_rate_hz)
+    eye_dim = int(eye.feature_dim)
     feature_dim = int(policy.feature_dim)
     fine_tuned = learner.eye is not None
     buffer = RolloutBuffer(
-        ppo.rollout_steps, feature_dim, frame_shape=frame_shape if fine_tuned else None
+        ppo.rollout_steps,
+        feature_dim,
+        frame_shape=frame_shape if fine_tuned else None,
+        brain_dims=None if brain is None else (brain.input_dim, brain.neuron_count),
     )
     episode_seeds = np.random.default_rng(seed)
     num_updates = config.num_updates
@@ -505,13 +579,26 @@ def _run(
     def to_device(features: np.ndarray) -> torch.Tensor:
         return torch.as_tensor(features, device=device)[None]
 
-    def begin_episode() -> tuple[np.ndarray, np.ndarray]:
+    def observe(frame: np.ndarray) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
+        """Eye features, the brain's membrane before this frame, and what the policy reads.
+
+        The brain steps once per observed frame, here and nowhere else.
+        """
+        eye_features = validate_features(eye.encode(frame), eye_dim)
+        if brain is None:
+            return eye_features, None, eye_features
+        state = brain.activity()
+        return eye_features, state, validate_features(brain.step(eye_features), feature_dim)
+
+    def begin_episode() -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
         frame, _ = env.reset(seed=int(episode_seeds.integers(0, 2**31 - 1)))
         eye.reset()
+        if brain is not None:
+            brain.reset()
         frame = validate_frame(frame, frame_shape)
-        return frame, validate_features(eye.encode(frame), feature_dim)
+        return frame, *observe(frame)
 
-    frame, features = begin_episode()
+    frame, eye_features, brain_state, features = begin_episode()
     tally = _EpisodeTally(frame_rate_hz)
 
     for update in range(1, num_updates + 1):
@@ -533,8 +620,7 @@ def _run(
             if truncated and not terminated:
                 # A time limit is not a terminal state: bootstrap from the observation the
                 # cap cut off, so the value function does not learn that time runs out.
-                capped = validate_frame(next_frame, frame_shape)
-                capped_features = validate_features(eye.encode(capped), feature_dim)
+                capped_features = observe(validate_frame(next_frame, frame_shape))[2]
                 stored_reward += ppo.gamma * float(policy.value(to_device(capped_features))[0])
             done = terminated or truncated
             buffer.add(
@@ -545,6 +631,8 @@ def _run(
                 episode_end=done,
                 value=float(value[0]),
                 frame=frame if fine_tuned else None,
+                brain_input=eye_features,
+                brain_state=brain_state,
             )
 
             if done:
@@ -560,10 +648,10 @@ def _run(
                 finished.append(record)
                 episode_index += 1
                 tally = _EpisodeTally(frame_rate_hz)
-                frame, features = begin_episode()
+                frame, eye_features, brain_state, features = begin_episode()
             else:
                 frame = validate_frame(next_frame, frame_shape)
-                features = validate_features(eye.encode(frame), feature_dim)
+                eye_features, brain_state, features = observe(frame)
 
         last_value = 0.0 if buffer.episode_ends[-1] else float(policy.value(to_device(features))[0])
         buffer.compute_advantages(last_value, gamma=ppo.gamma, gae_lambda=ppo.gae_lambda)
@@ -571,6 +659,12 @@ def _run(
         # After the update, never before: the rollout's log-probabilities were computed
         # with the statistics in force during collection, and the update must see the same.
         policy.update_normalizer(torch.as_tensor(buffer.features, device=device))
+        if brain is not None:
+            # The next rollout's first frame went through the brain before this update; step
+            # it again from the same membrane so the policy reads what the update replays.
+            with torch.no_grad():
+                brain.voltage.copy_(torch.as_tensor(brain_state))
+            features = validate_features(brain.step(eye_features), feature_dim)
 
         now = time.perf_counter()
         last_record = UpdateRecord(
@@ -604,6 +698,8 @@ def _run(
                 run_dir / f"policy_update_{update:05d}.pt",
                 extra={"seed": seed, "env_steps": env_steps, "update": update},
             )
+            if brain is not None:
+                torch.save(brain.state_dict(), run_dir / f"brain_update_{update:05d}.pt")
         every_eval = config.eval.every_updates
         if every_eval and update % every_eval == 0:
             if eval_eye is None:
@@ -615,6 +711,7 @@ def _run(
                     seed,
                     env_steps=env_steps,
                     eye=eval_eye,
+                    brain=brain,
                     policy=policy,
                     run_dir=run_dir,
                     frame_rate_hz=frame_rate_hz,
@@ -632,6 +729,8 @@ def _run(
     )
     if fine_tuned and hasattr(eye, "state_dict"):
         torch.save(eye.state_dict(), run_dir / "eye_final.pt")
+    if brain is not None:
+        torch.save(brain.state_dict(), run_dir / "brain_final.pt")
     return SeedResult(
         seed=seed,
         run_dir=run_dir,
@@ -642,3 +741,46 @@ def _run(
         last_update=last_record,
         eval_reports=tuple(eval_reports),
     )
+
+
+def load_driver(
+    config: TrainConfig,
+    checkpoint: str | Path,
+    env: Any,
+    *,
+    device: str | torch.device = "cpu",
+) -> DirectDriveAgent:
+    """Rebuild a trained eye → brain → policy driver from a policy checkpoint.
+
+    The brain's and a fine-tuned eye's weights are read from the files saved beside the
+    checkpoint: ``policy_final.pt`` pairs with ``brain_final.pt`` and ``eye_final.pt``,
+    ``policy_update_00010.pt`` with ``brain_update_00010.pt``.
+
+    Args:
+        config: The run's config, e.g. ``TrainConfig.from_yaml(<seed dir>/config.yaml)``.
+        checkpoint: A ``policy_*.pt`` file written by training.
+        env: An env of the run's type; the eye takes its frame shape and rate from it.
+        device: Where the policy and the brain run.
+
+    Raises:
+        FileNotFoundError: If the run had a brain or a fine-tuned eye and its weights are
+            not beside the checkpoint. Periodic checkpoints do not save a fine-tuned eye.
+    """
+    checkpoint = Path(checkpoint)
+
+    def sibling(stage: str) -> Path:
+        path = checkpoint.with_name(checkpoint.name.replace("policy_", f"{stage}_", 1))
+        if path == checkpoint or not path.exists():
+            raise FileNotFoundError(f"{path} not found; it holds the {stage} for {checkpoint}")
+        return path
+
+    eye = build_eye(config.eye, env)
+    if not config.eye.frozen:
+        weights = torch.load(sibling("eye"), map_location="cpu", weights_only=True)
+        eye.load_state_dict(weights)  # type: ignore[attr-defined]
+    brain = build_brain(config.brain, eye, env)
+    if brain is not None:
+        brain.load_state_dict(torch.load(sibling("brain"), map_location="cpu", weights_only=True))
+        brain.to(device)
+    policy = MlpPolicy.load(checkpoint, device=device).eval()
+    return DirectDriveAgent(eye, policy, brain=brain)

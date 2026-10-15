@@ -227,21 +227,40 @@ class CentralComplexBrain(nn.Module):
         weight = nn.Parameter(torch.from_numpy(edges.weight.copy()))
         self.register_parameter(f"{name}_weight", weight)
 
-    def _integrate(self, drive: torch.Tensor) -> torch.Tensor:
-        sensory = torch.tanh(drive)
-        afferent = torch.zeros(self.neuron_count, dtype=torch.float32, device=drive.device)
-        afferent.index_add_(0, self.input_post, self.input_weight * sensory[self.input_pre])
-        rate = torch.tanh(self.voltage)
-        recurrent = torch.zeros(self.neuron_count, dtype=torch.float32, device=drive.device)
-        recurrent.index_add_(
-            0, self.recurrent_post, self.recurrent_weight * rate[self.recurrent_pre]
+    def transition(
+        self, voltage: torch.Tensor, features: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """One Euler step from a given membrane, leaving the module's own untouched.
+
+        Batched and differentiable. :meth:`step` runs it on the live membrane; the PPO
+        update replays stored membranes through it to get gradients for one step.
+
+        Args:
+            voltage: ``(..., neuron_count)`` membrane before the frame.
+            features: ``(..., input_dim)`` eye features for the frame.
+
+        Returns:
+            ``(next voltage (..., neuron_count), descending activation (..., output_dim))``.
+        """
+        sensory = torch.tanh(features)
+        last = voltage.dim() - 1
+        afferent = voltage.new_zeros(voltage.shape).index_add(
+            last, self.input_post, self.input_weight * sensory[..., self.input_pre]
+        )
+        rate = torch.tanh(voltage)
+        recurrent = voltage.new_zeros(voltage.shape).index_add(
+            last, self.recurrent_post, self.recurrent_weight * rate[..., self.recurrent_pre]
         )
         current = afferent + recurrent + self.bias
         tau = self.log_tau.exp().clamp(MIN_TAU_SECONDS, MAX_TAU_SECONDS)
         decay = torch.exp(-self.dt / tau)
-        updated = decay * self.voltage + (1.0 - decay) * current
-        self.voltage.copy_(updated.clamp(-VOLTAGE_LIMIT, VOLTAGE_LIMIT))
-        return torch.tanh(self.voltage[self.descending_start :])
+        updated = (decay * voltage + (1.0 - decay) * current).clamp(-VOLTAGE_LIMIT, VOLTAGE_LIMIT)
+        return updated, torch.tanh(updated[..., self.descending_start :])
+
+    def _integrate(self, drive: torch.Tensor) -> torch.Tensor:
+        updated, output = self.transition(self.voltage, drive)
+        self.voltage.copy_(updated)
+        return output
 
 
 @dataclass(frozen=True)
