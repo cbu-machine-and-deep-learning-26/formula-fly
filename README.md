@@ -52,7 +52,9 @@ No track blocks another. The contract is code, not prose:
 [`fly_driver/interface.py`](fly_driver/interface.py) holds the types, ranges and the
 `Eye` / `Policy` / `Body` / `Driver` protocols, and
 [`fly_driver/drivers.py`](fly_driver/drivers.py) composes them into `DirectDriveAgent`
-(no body) and `EmbodiedDriveAgent` (the fly in the loop).
+(no body) and `EmbodiedDriveAgent` (the fly in the loop). The brain slot on direct
+drive is a sized PyTorch central-complex module (`CentralComplexBrain`); neuron count
+is a sweep, and Brian2 stays offline.
 
 ## Research question
 

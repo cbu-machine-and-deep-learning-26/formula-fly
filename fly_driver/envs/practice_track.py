@@ -42,6 +42,13 @@ shared import, it is that the frame this env emits is exactly the frame the eye 
         if terminated or truncated:
             break
 
+A central-complex module sits between those two calls when the grade path is
+vision+brain direct drive. ``DirectDriveAgent(..., brain=brain)`` checks the widths
+and steps the brain once per frame; the policy then reads the brain's descending
+output rather than the eye. :class:`~fly_driver.brains.central_complex.CentralComplexBrain`
+is the PyTorch module. It does not import flyvis. Neuron count is an argument, swept
+against the 20 ms frame rather than fixed.
+
 Take the shape and the rate **from the env** rather than typing the numbers again. Both are
 constructor arguments on :class:`~fly_driver.eyes.FlyvisEye`, and the failure mode if they
 drift apart is silent: the eye integrates at the wrong ``dt`` and produces plausible
