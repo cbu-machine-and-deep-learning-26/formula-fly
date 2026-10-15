@@ -3,6 +3,11 @@
 Example:
     python scripts/evaluate.py --agent random --output runs/eval_random
     python scripts/evaluate.py --config fly_driver/configs/eval_default.yaml --record-video
+    python scripts/evaluate.py --checkpoint runs/flyvis_cx/seed_0/policy_final.pt
+
+``--checkpoint`` evaluates a trained driver (eye, brain if any, policy) on the env its run
+trained on, read from the ``config.yaml`` beside the checkpoint; ``--env`` is ignored.
+It needs torch.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fly_driver.envs import DummyTrackEnv
 from fly_driver.policies import ConstantAgent, RandomAgent
-from fly_driver.training import EvalConfig, EvalReport, evaluate
+from fly_driver.training import EvalConfig, EvalReport, TrainConfig, evaluate
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "fly_driver/configs/eval_default.yaml"
 
@@ -32,7 +37,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--env", choices=sorted(ENVS), default="dummy")
-    parser.add_argument("--agent", choices=sorted(AGENTS), default="random")
+    agent = parser.add_mutually_exclusive_group()
+    agent.add_argument("--agent", choices=sorted(AGENTS), default="random")
+    agent.add_argument("--checkpoint", type=Path, help="a policy_*.pt written by training")
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--output", type=Path, help="overrides output_dir")
@@ -70,7 +77,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.record_video:
         overrides["record_video"] = True
     config = replace(config, **overrides)
-    report = evaluate(ENVS[args.env], AGENTS[args.agent](), config)
+    if args.checkpoint is None:
+        report = evaluate(ENVS[args.env], AGENTS[args.agent](), config)
+    else:
+        from fly_driver.training.train import build_env, load_driver
+
+        run_config = TrainConfig.from_yaml(args.checkpoint.parent / "config.yaml")
+        env = build_env(run_config.env)
+        try:
+            driver = load_driver(run_config, args.checkpoint, env)
+            config = replace(config, frame_rate_hz=float(env.frame_rate_hz))
+        finally:
+            env.close()
+        report = evaluate(lambda: build_env(run_config.env), driver, config)
     _print_report(report)
     if config.output_dir is not None:
         print(f"wrote {Path(config.output_dir) / 'episodes.csv'} and summary.json")

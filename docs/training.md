@@ -71,7 +71,7 @@ misspelt hyperparameter cannot silently keep its default.
 | `eye.type` | `flyvis` (default), `cnn`, `random_projection`, `shuffled`, or `pixels` (the GH-17 smoke eye, not an RQ1 control) |
 | `eye.frozen` | `true` trains only the head. `false` puts the eye's parameters in the optimiser; see below |
 | `eye.params` | Constructor keyword arguments (`readouts`, `checkpoint`, `downsample`...). `frame_shape` and `frame_rate_hz` come from the env and may not be set here |
-| `brain` | `none` (the policy reads the eye directly). The sized central-complex module is in the DirectDrive loop; this trainer still only accepts `none` until lap training wires the rollout |
+| `brain` | `none` (the policy reads the eye directly), or `type: central_complex` with `params` (`neuron_count`, `output_dim`, `input_in_degree`, `recurrent_in_degree`, `seed` for the synthetic wiring). See [the brain condition](#the-brain-condition) |
 | `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std` |
 | `env.type` | `practice_track` or `dummy` |
 | `env.max_steps` | Episode truncation in frames. 15 000 = 5 minutes at 50 Hz, room for a slow clean lap |
@@ -92,7 +92,9 @@ runs/<name>/config.yaml              the condition as run
 runs/<name>/seed_0/config.yaml       the same, narrowed to this seed
 runs/<name>/seed_0/episodes.csv      one row per training episode
 runs/<name>/seed_0/updates.csv       one row per PPO update
+runs/<name>/seed_0/parameters.json   trainable parameter counts per stage (RQ2)
 runs/<name>/seed_0/policy_final.pt   the head, with its feature-normaliser statistics
+runs/<name>/seed_0/brain_final.pt    the brain's weights and mask, only with a brain
 runs/<name>/seed_0/eye_final.pt      the eye's weights, only when it was fine-tuned
 runs/<name>/seed_0/eval/step_<n>/    the evaluation harness's episodes.csv + summary.json
 ```
@@ -151,6 +153,42 @@ fixes it; default 0). `shuffled` is the pretrained flyvis eye with a degree-pres
 rewiring of its edges (`seed` and `swap_attempts` in `eye.params`). None of them is
 `pixels`.
 
+## The brain condition
+
+`fly_driver/configs/train_flyvis_cx.yaml` is RQ2's condition: the default frozen flyvis eye,
+then `CentralComplexBrain` (`fly_driver/brains/central_complex.py`), then the policy head,
+with the racing line off. The brain's synapse strengths, biases and time constants train
+with the head in the same Adam optimiser. Its mask does not train. The eye stays frozen.
+
+```bash
+python scripts/train.py --config fly_driver/configs/train_flyvis_cx.yaml --seed 0
+python scripts/train.py --env dummy --eye pixels --brain central_complex --name cx_smoke \
+    --total-env-steps 20000                # no flyvis needed; default width 256
+python scripts/evaluate.py --checkpoint runs/flyvis_cx/seed_0/policy_final.pt
+```
+
+`--brain central_complex` on another config uses the constructor defaults. Put
+`neuron_count` and the rest under `brain.params` in YAML to change them. The config uses
+4096 neurons and a 32-wide readout. `scripts/brain_frame_time.py` at the flyvis input width
+puts that step at about 1.4 ms, which fits in what the 20 ms frame has left after the
+render, the eye and the policy. 16384 neurons, at about 4.1 ms, does not.
+
+`parameters.json` holds `eye_trainable`, `brain_trainable`, `head_trainable`, and
+`blank_trainable`: the count for a dense `BlankWidthNet` of the same width and input. The
+`none` condition writes the same file with zero brain parameters, so RQ2 reads both from
+logs. The counts also go into the W&B run config.
+
+**Single-step gradient.** The brain is recurrent: its membrane carries over between frames
+and resets at each episode start. The rollout buffer stores each step's eye features and
+the membrane before that step. The update replays that one step through
+`CentralComplexBrain.transition` with gradients. There is no backpropagation through time,
+so no credit reaches what earlier frames left in the membrane. The membrane still carries
+information forward during rollouts. The brain cannot be trained to keep information it
+needs later. Truncated BPTT over stored sequences is the upgrade if this turns out to
+matter. `scripts/evaluate.py --checkpoint` reloads the brain from `brain_final.pt` (or
+`brain_update_<n>.pt` beside a periodic checkpoint) and runs the deterministic protocol on
+the run's env.
+
 ## Adding an eye, a brain, an env
 
 Two lists have to agree, and a test checks that they do:
@@ -159,7 +197,8 @@ Two lists have to agree, and a test checks that they do:
   so a config validates without importing torch.
 - `fly_driver/training/train.py`: `EYE_BUILDERS`, `BRAIN_BUILDERS`, `ENV_BUILDERS`, the
   functions that build the thing. An eye builder receives the env and must take
-  `frame_shape` (and `frame_rate_hz` if it integrates in time) from it.
+  `frame_shape` (and `frame_rate_hz` if it integrates in time) from it. A brain builder
+  receives the eye's feature count and the env's frame rate.
 
 ## What it does so far
 
@@ -185,5 +224,6 @@ and flyvis's cache on Windows.
 `tests/training/test_config.py` and `test_loggers.py` run everywhere. `test_ppo.py`
 (the advantage recursion is pinned to a hand-computed case), `test_train.py` (writes,
 seeds, evaluation, frozen versus fine-tuned, the env contract, and a `slow` test that the
-return rises on the dummy track) and `tests/policies/test_mlp_policy.py` skip without
+return rises on the dummy track), `test_train_brain.py` (membrane resets, replay matches the
+rollout, the mask stays fixed, a 15 000-step rollout stays bounded, checkpoints reload) and `tests/policies/test_mlp_policy.py` skip without
 torch, as CI's base install does.

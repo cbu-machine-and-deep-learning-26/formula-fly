@@ -8,6 +8,7 @@ Examples:
     python scripts/train.py --seed 0                 # one seed; the others on other machines
     python scripts/train.py --env dummy --eye pixels --total-env-steps 20000 --name smoke
     python scripts/train.py --config my_condition.yaml --wandb
+    python scripts/train.py --config fly_driver/configs/train_flyvis_cx.yaml --seed 0
 
 Needs torch. On a machine with the flyvis stack, run it from that virtualenv; without
 flyvis, ``--eye pixels`` still exercises the whole loop. See ``docs/training.md``.
@@ -26,6 +27,7 @@ from fly_driver.training.config import (  # noqa: E402
     KNOWN_BRAINS,
     KNOWN_ENV_TYPES,
     KNOWN_EYE_TYPES,
+    BrainConfig,
     TrainConfig,
 )
 from fly_driver.training.loggers import UpdateRecord  # noqa: E402
@@ -66,10 +68,12 @@ def _apply_overrides(config: TrainConfig, args: argparse.Namespace) -> TrainConf
             ("output_dir", None if args.output is None else str(args.output)),
             ("total_env_steps", args.total_env_steps),
             ("device", args.device),
-            ("brain", args.brain),
         )
         if value is not None
     }
+    if args.brain is not None and args.brain != config.brain.type:
+        # Params for one brain mean nothing to another.
+        top["brain"] = BrainConfig(type=args.brain)
     if args.seeds:
         top["seeds"] = tuple(args.seeds)
     eye = {
@@ -115,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"condition {config.name}: eye={config.eye.type} "
-        f"({'frozen' if config.eye.frozen else 'fine-tuned'}) brain={config.brain} "
+        f"({'frozen' if config.eye.frozen else 'fine-tuned'}) brain={config.brain.type} "
         f"env={config.env.type} seeds={list(config.seeds)} "
         f"steps/seed={config.total_env_steps} updates/seed={config.num_updates}"
     )

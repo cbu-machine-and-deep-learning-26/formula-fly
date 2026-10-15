@@ -289,6 +289,8 @@ Python 3.9+ process and requires `mss`, `pygetwindow`, and OpenCV. Upstream also
 documents a Proton/Linux path, but that is not the project's supported setup
 and was not tested for this ticket.
 
+To drive the AC car with the fly stack, see [assetto-corsa-bridge.md](assetto-corsa-bridge.md).
+
 ## Known failures and sharp edges
 
 - Python 3.13+ cannot install flyvis 1.2.0 and pip reports
