@@ -29,6 +29,7 @@ from typing import Any
 
 __all__ = [
     "DEFAULT_SEEDS",
+    "BrainConfig",
     "KNOWN_ACTIVATIONS",
     "KNOWN_BRAINS",
     "KNOWN_ENV_TYPES",
@@ -60,8 +61,8 @@ KNOWN_EYE_TYPES: tuple[str, ...] = (
 )
 
 #: Brains between the eye and the policy. ``none`` reads the eye directly (the RQ1 rung);
-#: the central-complex / whole-brain model (GH-23) registers here.
-KNOWN_BRAINS: tuple[str, ...] = ("none",)
+#: ``central_complex`` is the sized synthetic central-complex module (GH-23, RQ2).
+KNOWN_BRAINS: tuple[str, ...] = ("none", "central_complex")
 
 #: Environments. ``practice_track`` is the MuJoCo circuit; ``dummy`` is the numpy stand-in
 #: the harness and the tests use.
@@ -133,6 +134,38 @@ class EyeConfig:
             raise ValueError(
                 f"eye.params must not set {reserved}; the loop takes them from the env so the "
                 "eye and the track cannot disagree (see fly_driver/interface.py)"
+            )
+        object.__setattr__(self, "params", params)
+
+
+@dataclass(frozen=True)
+class BrainConfig:
+    """Which brain sits between the eye and the policy, and how to build it.
+
+    In YAML, a bare name (``brain: none``) is that brain with no params.
+
+    Args:
+        type: One of :data:`KNOWN_BRAINS`.
+        params: Keyword arguments for the brain's constructor. For ``central_complex``:
+            ``neuron_count``, ``output_dim``, ``input_in_degree``, ``recurrent_in_degree``
+            and ``seed`` (the synthetic wiring; fixed across run seeds unless set).
+            ``input_dim`` and ``frame_rate_hz`` come from the eye and the env.
+    """
+
+    type: str = "none"
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.type not in KNOWN_BRAINS:
+            raise ValueError(f"unknown brain {self.type!r}; choose from {list(KNOWN_BRAINS)}")
+        params = _check_params("brain.params", self.params)
+        if self.type == "none" and params:
+            raise ValueError(f"brain none takes no params, got {sorted(params)}")
+        reserved = sorted({"input_dim", "frame_rate_hz", "device"} & set(params))
+        if reserved:
+            raise ValueError(
+                f"brain.params must not set {reserved}; the loop takes them from the eye, "
+                "the env and the run's device"
             )
         object.__setattr__(self, "params", params)
 
@@ -393,7 +426,7 @@ class TrainConfig:
         total_env_steps: Env steps per seed. Rounded down to whole rollouts.
         device: ``auto`` (CUDA when available, else CPU), ``cpu``, or a torch device string.
         eye: The visual frontend.
-        brain: One of :data:`KNOWN_BRAINS`.
+        brain: Between the eye and the policy. A name is accepted for :class:`BrainConfig`.
         policy: The readout on top.
         env: The track.
         ppo: The optimiser.
@@ -407,7 +440,7 @@ class TrainConfig:
     total_env_steps: int = 1_000_000
     device: str = "auto"
     eye: EyeConfig = field(default_factory=EyeConfig)
-    brain: str = "none"
+    brain: BrainConfig = field(default_factory=BrainConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
@@ -433,8 +466,13 @@ class TrainConfig:
                 f"total_env_steps={self.total_env_steps} is less than one rollout of "
                 f"ppo.rollout_steps={self.ppo.rollout_steps}; nothing would be learned"
             )
-        if self.brain not in KNOWN_BRAINS:
-            raise ValueError(f"unknown brain {self.brain!r}; choose from {list(KNOWN_BRAINS)}")
+        if isinstance(self.brain, str):
+            object.__setattr__(self, "brain", BrainConfig(type=self.brain))
+        elif isinstance(self.brain, Mapping):
+            brain = _from_mapping(BrainConfig, self.brain, path="train config.brain")
+            object.__setattr__(self, "brain", brain)
+        elif not isinstance(self.brain, BrainConfig):
+            raise ValueError(f"brain must be a name or a mapping, got {self.brain!r}")
         if not isinstance(self.device, str) or not self.device:
             raise ValueError(f"device must be a non-empty string, got {self.device!r}")
 
