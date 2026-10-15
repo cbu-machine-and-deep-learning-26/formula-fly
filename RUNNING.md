@@ -198,7 +198,6 @@ what it made of each frame in the same window. It needs the flyvis virtualenv (s
 
 ```powershell
 $env:FLYVIS_ROOT_DIR = "$HOME\.cache\flyvis"
-$env:CUDA_VISIBLE_DEVICES = "-1"     # see below
 .\.venv-flyvis\Scripts\python.exe scripts\drive.py --eye-view
 ```
 
@@ -226,11 +225,6 @@ you go back to the grid, so the jump there doesn't show as a burst of motion.
 
 The terminal's status line adds the eye's cost per frame: about 9–12 ms on CPU. That fits in
 the 20 ms frame here, though on a slow machine the sim drops below real time.
-
-`CUDA_VISIBLE_DEVICES=-1` is needed on any machine with an NVIDIA GPU, for now. `import
-flyvis` makes CUDA torch's default device, and the hex resampler then crashes on CPU frames.
-That's a separate bug. Use `-1`, not an empty value: on Windows an empty value leaves torch
-reporting CUDA with no devices.
 
 ### Watching the fly drive
 

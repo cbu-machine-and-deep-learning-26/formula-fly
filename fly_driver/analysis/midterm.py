@@ -5,7 +5,6 @@ Reads what training and the robustness evaluation wrote, and nothing else::
     <runs>/<condition>/seed_<k>/config.yaml               which eye (and brain) the run used
     <runs>/<condition>/seed_<k>/eval/step_<n>/summary.json  the learning curve
     <runs>/<condition>/seed_<k>/robustness/summary.json     the final evaluation
-    <runs>/<condition>/seed_<k>/robustness/progress.csv     its per-episode track progress
 
 Runs are grouped by model: the eye type, plus ``+<brain>`` when the run had one, so a
 flyvis + central-complex run is not pooled with plain flyvis. The final evaluation (clean
@@ -28,7 +27,6 @@ from pathlib import Path
 import numpy as np
 
 from fly_driver.analysis.learning_curves import learning_curve
-from fly_driver.analysis.robustness import PROGRESS_FILENAME
 from fly_driver.training.config import TrainConfig
 from fly_driver.training.evaluation import (
     CLEAN_CONDITION,
@@ -62,8 +60,8 @@ _SUMMARY_METRICS = (
     ("lap_time_s", "mean_lap_time_s"),
     ("return", "mean_return"),
     ("return_ratio", "return_ratio_to_clean"),
+    ("progress_m", "mean_progress_m"),
 )
-_COLUMNS = (*(column for column, _ in _SUMMARY_METRICS), "progress_m")
 
 _SUMMARY_FIELDS = tuple(field.name for field in fields(ConditionSummary))
 
@@ -106,7 +104,8 @@ def find_seed_runs(runs_dir: str | Path) -> list[SeedRun]:
         if not (run_dir / "policy_final.pt").exists():
             continue
         config = TrainConfig.from_yaml(config_path)
-        model = config.eye.type if config.brain == "none" else f"{config.eye.type}+{config.brain}"
+        brain = config.brain.type
+        model = config.eye.type if brain == "none" else f"{config.eye.type}+{brain}"
         runs.append(SeedRun(model=model, seed=int(config.seeds[0]), run_dir=run_dir))
     return runs
 
@@ -130,22 +129,12 @@ def _mean_std(values: Sequence[float | None]) -> tuple[float, float, int]:
     return float(present.mean()), std, int(present.size)
 
 
-def seed_metrics(report: EvalReport, progress_by_condition: dict[str, list[float]]) -> SeedMetrics:
-    """One seed's numbers per evaluation condition: summary metrics plus mean progress.
-
-    Args:
-        report: The seed's robustness report.
-        progress_by_condition: Condition label → per-episode progress in metres.
-    """
-    metrics: SeedMetrics = {}
-    for item in report.conditions:
-        row: dict[str, float | None] = {
-            column: getattr(item, attribute) for column, attribute in _SUMMARY_METRICS
-        }
-        episodes = progress_by_condition.get(item.condition)
-        row["progress_m"] = float(np.mean(episodes)) if episodes else None
-        metrics[item.condition] = row
-    return metrics
+def seed_metrics(report: EvalReport) -> SeedMetrics:
+    """One seed's numbers per evaluation condition, read off its robustness report."""
+    return {
+        item.condition: {column: getattr(item, attribute) for column, attribute in _SUMMARY_METRICS}
+        for item in report.conditions
+    }
 
 
 def aggregate(seeds: dict[str, list[SeedMetrics]]) -> list[dict[str, object]]:
@@ -168,7 +157,7 @@ def aggregate(seeds: dict[str, list[SeedMetrics]]) -> list[dict[str, object]]:
                 "condition": condition,
                 "seeds": len(per_seed),
             }
-            for column in _COLUMNS:
+            for column, _ in _SUMMARY_METRICS:
                 mean, std, count = _mean_std([metrics[condition][column] for metrics in per_seed])
                 row[f"{column}_mean"] = mean
                 row[f"{column}_std"] = std
@@ -215,7 +204,9 @@ def markdown_table(rows: list[dict[str, object]]) -> str:
 
 
 def plot_learning_curves(runs: list[SeedRun], path: str | Path) -> Path:
-    """Clean evaluation return and lap completion against env steps, mean ± std band per model.
+    """Clean evaluation return, progress and lap completion against env steps, per model.
+
+    Each line is the mean over seeds with a ± std band.
 
     Seeds are aligned on the evaluation steps they all share.
     """
@@ -224,7 +215,7 @@ def plot_learning_curves(runs: list[SeedRun], path: str | Path) -> Path:
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
 
-    figure, axes = plt.subplots(1, 2, figsize=(11, 4), constrained_layout=True)
+    figure, axes = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
     for model in _model_order(run.model for run in runs):
         reports_per_seed = [
             [load_report(item) for item in sorted(run.run_dir.glob("eval/step_*/summary.json"))]
@@ -233,7 +224,8 @@ def plot_learning_curves(runs: list[SeedRun], path: str | Path) -> Path:
         ]
         for axis, metric, label in (
             (axes[0], "mean_return", "Return"),
-            (axes[1], "lap_completion_rate", "Lap completion"),
+            (axes[1], "mean_progress_m", "Progress (m)"),
+            (axes[2], "lap_completion_rate", "Lap completion"),
         ):
             curves = [learning_curve(reports, metric) for reports in reports_per_seed if reports]
             if not curves:
@@ -285,7 +277,7 @@ def write_results(runs_dir: str | Path, results_dir: str | Path, figure_path: st
         if not (robustness / "summary.json").exists():
             continue
         report = load_report(robustness / "summary.json")
-        metrics = seed_metrics(report, _read_progress(robustness / PROGRESS_FILENAME))
+        metrics = seed_metrics(report)
         seeds.setdefault(run.model, []).append(metrics)
         for condition, values in metrics.items():
             per_seed.append(
@@ -309,15 +301,6 @@ def write_results(runs_dir: str | Path, results_dir: str | Path, figure_path: st
     (results / "midterm_table.md").write_text(table, encoding="utf-8")
     plot_learning_curves(runs, figure_path)
     return table
-
-
-def _read_progress(path: Path) -> dict[str, list[float]]:
-    progress: dict[str, list[float]] = {}
-    if path.exists():
-        with path.open(encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                progress.setdefault(row["condition"], []).append(float(row["progress_m"]))
-    return progress
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:

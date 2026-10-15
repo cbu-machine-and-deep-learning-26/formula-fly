@@ -47,6 +47,39 @@ std over the 3 seeds. Lap time is averaged only over seeds that finished a lap, 
 shows `n=` when that is fewer than 3. Progress is metres along the centerline, net of
 reversing. A Silverstone lap is about 5.9 km.
 
+## Pilot: go/no-go before the full runs
+
+Before spending GPU-days, run one CNN seed for 200k steps on a single GPU. The CNN is the
+fastest eye. The pilot answers one question: does the policy learn to commit throttle?
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py --config fly_driver/configs/pilot_cnn.yaml
+```
+
+`fly_driver/configs/pilot_cnn.yaml` is `conditions/cnn.yaml` with seed 0 only and 200k
+steps (97 updates). It evaluates every 5 updates, about every 10k steps, and caps each eval
+at 3,000 steps (60 s). Read the clean-eval progress and lap completion at each eval:
+
+```bash
+python -c "
+from pathlib import Path
+from fly_driver.analysis.midterm import load_report
+for path in sorted(Path('runs/pilot_cnn/seed_0/eval').glob('step_*/summary.json')):
+    report = load_report(path)
+    clean = report.summary()
+    print(f'{report.config.env_steps:>7}  progress_m {clean.mean_progress_m:8.1f}  laps {clean.lap_completion_rate:.2f}')
+"
+```
+
+The same numbers are in each `eval/step_*/episodes.csv` (`progress_m`, `lap_complete`).
+Per training episode, `episodes.csv` has `reward_progress`, which is the same metres from the
+stochastic policy.
+
+**Go/no-go:** go if mean eval progress grows clearly beyond the untrained ~40 m by 200k
+steps, and keeps growing rather than spiking once. If it is still around 40 m, the policy
+has not learned to drive forward. Then 1M steps per seed is unlikely to produce a
+comparison, and the reward or the budget should be revisited before the 12 runs.
+
 ## How to run
 
 ### 1. Each GPU machine, once
@@ -109,7 +142,7 @@ foreach ($SEED in 0, 1, 2) {
 | 5090 #2 | `shuffled` | Same cost as flyvis, plus about a minute at startup for the shuffle. |
 | 4090 #1 | `cnn` | The frozen CNN encodes on the CPU, so the GPU only runs the head. |
 | 4090 #2 | `random_projection` | Same |
-| 5090 #1, shared with flyvis | `train_flyvis_cx.yaml` | Optional. The same three-seed loop with `--config fly_driver/configs/train_flyvis_cx.yaml`. It shares the flyvis GPU, so both conditions run slower. Check its `name:` and use that as `--condition` in step 3. |
+| 5090 #1, shared with flyvis | `train_flyvis_cx.yaml` | Optional. The same three-seed loop with `--config fly_driver/configs/train_flyvis_cx.yaml`. It shares the flyvis GPU, so both conditions run slower. Its run name is `flyvis_cx`, so step 3 uses `--condition flyvis_cx`. |
 
 **Two GPUs only:** run six processes per GPU, the same loop twice. Put flyvis + cnn on one
 GPU and shuffled + random_projection on the other, so that each GPU gets one slow eye. If the

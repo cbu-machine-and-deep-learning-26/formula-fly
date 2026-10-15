@@ -183,6 +183,7 @@ class EpisodeRecord:
     truncated: bool
     actions: Action
     video_path: str | None
+    progress_m: float | None = None
 
     def to_row(self) -> dict[str, Any]:
         """CSV row without the action array."""
@@ -203,6 +204,7 @@ class ConditionSummary:
     mean_lap_time_s: float | None
     mean_steps: float
     return_ratio_to_clean: float | None
+    mean_progress_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -304,6 +306,7 @@ def _run_episode(
     terminated = truncated = False
     lap_complete = False
     lap_time: float | None = None
+    progress_m: float | None = None
     steps = 0
     while not (terminated or truncated):
         action = _as_action(agent.act(observation))
@@ -312,6 +315,8 @@ def _run_episode(
         actions.append(action)
         total_return += float(reward)
         steps += 1
+        if "progress_m" in info:
+            progress_m = (progress_m or 0.0) + float(info["progress_m"])
         if writer is not None:
             frame = _capture_frame(env, observation)
             if frame is not None:
@@ -336,6 +341,7 @@ def _run_episode(
         truncated=truncated,
         actions=stacked,
         video_path=None if writer is None else str(writer.path),
+        progress_m=progress_m,
     )
 
 
@@ -344,6 +350,7 @@ def _summarise(
 ) -> ConditionSummary:
     returns = np.array([item.total_return for item in records], dtype=np.float64)
     lap_times = [item.lap_time_s for item in records if item.lap_time_s is not None]
+    progress = [item.progress_m for item in records if item.progress_m is not None]
     mean_return = float(returns.mean())
     ratio: float | None = None
     if clean_mean is not None and clean_mean != 0.0:
@@ -357,6 +364,7 @@ def _summarise(
         mean_lap_time_s=float(np.mean(lap_times)) if lap_times else None,
         mean_steps=float(np.mean([item.steps for item in records])),
         return_ratio_to_clean=ratio,
+        mean_progress_m=float(np.mean(progress)) if progress else None,
     )
 
 
