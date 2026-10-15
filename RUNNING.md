@@ -181,6 +181,8 @@ not a corner time. As with laps, delete a row and the next car through sets it a
 --fovy DEGREES                    camera field of view
 --export model.xml                write the MJCF instead of driving
 --eye-view                        show the track through the fly's eye (needs .venv-flyvis)
+--agent                           watch FlyvisEye + DirectDriveAgent drive (needs .venv-flyvis)
+--throttle 0.4                    the agent's constant throttle (with --agent)
 ```
 
 The racing line is off by default only in this tool. The environment keeps it on by default,
@@ -229,6 +231,23 @@ the 20 ms frame here, though on a slow machine the sim drops below real time.
 flyvis` makes CUDA torch's default device, and the hex resampler then crashes on CPU frames.
 That's a separate bug. Use `-1`, not an empty value: on Windows an empty value leaves torch
 reporting CUDA with no devices.
+
+### Watching the fly drive
+
+`--agent` hands the car to `FlyvisEye` + `DirectDriveAgent` in the same window. The policy is
+a constant one: it ignores the eye's features and holds throttle 0.4 and steer 0, but the eye
+still encodes every fly-head frame. Same virtualenv and environment variables as `--eye-view`
+(on macOS, `.venv-flyvis/bin/mjpython`):
+
+```powershell
+.\.venv-flyvis\Scripts\python.exe scripts\drive.py --agent
+```
+
+It drives the environment's own scene and rules, not this tool's: the racing line is on, as in
+training, and leaving the track sends the car back to the grid whatever `--track-limit` says.
+The car starts about 150 m behind the line, so the clock shows `OUT` until it crosses. Its laps
+go into the record book as `direct-drive`, with the penalty in its own column. It can't be
+combined with `--eye-view` yet. Close the window to quit.
 
 ---
 
