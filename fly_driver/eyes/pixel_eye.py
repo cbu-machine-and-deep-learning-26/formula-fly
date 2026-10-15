@@ -1,7 +1,7 @@
 """Grey pixels, block-averaged and flattened: the smoke-test eye (GH-17).
 
-This is **not** one of the RQ1 control eyes. Those -- a small CNN, a random projection and
-the degree-matched shuffled connectome -- are GH-15's and are sized to match the flyvis
+This is **not** one of the RQ1 control eyes. Those are ``CnnEye``,
+``RandomProjectionEye`` and ``ShuffledConnectomeEye`` (GH-15), sized to the flyvis
 readout. This one exists so the training loop can be run, tested and profiled on any
 machine, including ones with no flyvis checkpoint and no GPU, and so a "the loop learns
 something" check has an eye that costs nothing. It has no parameters, so it cannot be

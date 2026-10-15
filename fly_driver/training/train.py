@@ -46,8 +46,11 @@ from fly_driver.drivers import DirectDriveAgent
 from fly_driver.envs.dummy_track import DummyTrackEnv
 from fly_driver.envs.practice_track import PracticeTrack
 from fly_driver.envs.scene import SceneConfig
+from fly_driver.eyes.cnn_eye import CnnEye
 from fly_driver.eyes.flyvis_eye import FlyvisEye
 from fly_driver.eyes.pixel_eye import PixelEye
+from fly_driver.eyes.random_projection_eye import RandomProjectionEye
+from fly_driver.eyes.shuffled_connectome_eye import ShuffledConnectomeEye
 from fly_driver.interface import ControlVector, Eye, validate_features, validate_frame
 from fly_driver.policies.mlp_policy import MlpPolicy
 from fly_driver.training.config import (
@@ -116,6 +119,22 @@ def _build_flyvis_eye(config: EyeConfig, env: Any) -> Eye:
     )
 
 
+def _build_cnn_eye(config: EyeConfig, env: Any) -> Eye:
+    return CnnEye(frame_shape=tuple(env.frame_shape), **config.params)
+
+
+def _build_random_projection_eye(config: EyeConfig, env: Any) -> Eye:
+    return RandomProjectionEye(frame_shape=tuple(env.frame_shape), **config.params)
+
+
+def _build_shuffled_eye(config: EyeConfig, env: Any) -> Eye:
+    return ShuffledConnectomeEye(
+        frame_shape=tuple(env.frame_shape),
+        frame_rate_hz=float(env.frame_rate_hz),
+        **config.params,
+    )
+
+
 def _build_pixel_eye(config: EyeConfig, env: Any) -> Eye:
     return PixelEye(frame_shape=tuple(env.frame_shape), **config.params)
 
@@ -127,10 +146,12 @@ ENV_BUILDERS: dict[str, Callable[[EnvConfig], Any]] = {
 }
 
 #: Eye type name → builder taking the env, which supplies ``frame_shape`` and
-#: ``frame_rate_hz`` so the eye and the track cannot disagree. GH-15 registers the control
-#: eyes here (and in ``KNOWN_EYE_TYPES``).
+#: ``frame_rate_hz`` so the eye and the track cannot disagree.
 EYE_BUILDERS: dict[str, Callable[[EyeConfig, Any], Eye]] = {
     "flyvis": _build_flyvis_eye,
+    "cnn": _build_cnn_eye,
+    "random_projection": _build_random_projection_eye,
+    "shuffled": _build_shuffled_eye,
     "pixels": _build_pixel_eye,
 }
 
@@ -296,10 +317,11 @@ def _trainable_eye(config: EyeConfig, eye: Eye, device: torch.device) -> Differe
     if not isinstance(eye, DifferentiableEye):
         raise ValueError(
             f"eye type {config.type!r} cannot be fine-tuned by this loop: it has no "
-            "differentiable batch encoder (encode_batch). The flyvis optic lobe keeps state "
-            "between frames, so training through it is backpropagation through time -- a "
-            "separate condition (AGENTS.md §6) this loop does not build -- and pixels has no "
-            "parameters. Set eye.frozen: true."
+            "differentiable batch encoder (encode_batch). The flyvis optic lobe and the "
+            "shuffled connectome keep state between frames, so training through them is "
+            "backpropagation through time -- a separate condition (AGENTS.md §6) this loop "
+            "does not build -- and pixels and the random projection have no parameters. "
+            "The small CNN does expose encode_batch. Set eye.frozen: true."
         )
     if not any(parameter.requires_grad for parameter in eye.parameters()):
         raise ValueError(f"eye type {config.type!r} has no trainable parameters; set frozen: true")
