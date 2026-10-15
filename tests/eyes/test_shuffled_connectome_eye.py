@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from fly_driver.eyes.constants import FLYVIS_DEFAULT_FEATURE_DIM
+from fly_driver.eyes.degree_shuffle import in_out_degrees
 from fly_driver.eyes.flyvis_eye import (
     DEFAULT_MOTION_READOUTS,
     FlyvisNotInstalledError,
@@ -20,7 +21,11 @@ from fly_driver.eyes.flyvis_eye import (
 )
 from fly_driver.eyes.hex_resampler import HEX_COLUMN_COUNT, RGB_LUMA_WEIGHTS
 from fly_driver.eyes.random_projection_eye import _LUMA_WEIGHTS
-from fly_driver.eyes.shuffled_connectome_eye import ShuffledConnectomeEye, rewire_network
+from fly_driver.eyes.shuffled_connectome_eye import (
+    ShuffledConnectomeEye,
+    rewire_network,
+    shuffle_keeping_self_loops,
+)
 
 torch = pytest.importorskip("torch")
 
@@ -110,9 +115,26 @@ def test_pretrained_shuffle_preserves_degree_and_readout_width() -> None:
     assert eye.feature_dim == FLYVIS_DEFAULT_FEATURE_DIM
     sources = eye.network._source_indices.detach().cpu().numpy()
     targets = eye.network._target_indices.detach().cpu().numpy()
-    from fly_driver.eyes.degree_shuffle import in_out_degrees
-
     after_in, after_out = in_out_degrees(sources, targets, int(eye.network.n_nodes))
     np.testing.assert_array_equal(after_in, eye.in_degree)
     np.testing.assert_array_equal(after_out, eye.out_degree)
-    assert not np.any(sources == targets)
+    assert int(np.sum(sources == targets)) == 12_380  # flow/0000/000's self-loops, held fixed
+
+
+def test_self_loops_survive_the_shuffle_untouched() -> None:
+    sources = np.array([0, 0, 1, 1, 2, 2, 3, 3, 4, 5], dtype=np.int64)
+    targets = np.array([0, 1, 1, 2, 2, 3, 4, 5, 0, 3], dtype=np.int64)
+    is_loop = sources == targets
+    new_sources, new_targets = shuffle_keeping_self_loops(
+        sources, targets, n_nodes=6, seed=0, attempts=200
+    )
+    np.testing.assert_array_equal(new_sources[is_loop], sources[is_loop])
+    np.testing.assert_array_equal(new_targets[is_loop], targets[is_loop])
+    assert not np.any(new_sources[~is_loop] == new_targets[~is_loop])
+    assert not np.array_equal(new_targets, targets)
+    for before, after in zip(
+        in_out_degrees(sources, targets, 6),
+        in_out_degrees(new_sources, new_targets, 6),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(before, after)

@@ -114,7 +114,7 @@ def hex_receptor_centers(
     row_offsets = kernel_size * (u_coordinates + v_coordinates / 2)
     column_offsets = kernel_size * v_coordinates
     centers = np.stack((row_offsets, column_offsets), axis=-1)
-    return torch.as_tensor(centers, dtype=torch.long)
+    return torch.as_tensor(centers, dtype=torch.long, device="cpu")
 
 
 class HexResampler:
@@ -127,6 +127,10 @@ class HexResampler:
         extent: Hexagonal lattice radius in receptors.
         kernel_size: Mean-filter size and receptor spacing in pixels.
         expected_frame_shape: Declared camera frame shape. Other sizes error.
+
+    The resampler holds its constants on the CPU and computes on whatever device
+    its input is on, so it works whatever torch's default device is (``import
+    flyvis`` makes that CUDA on a GPU machine).
     """
 
     def __init__(
@@ -152,7 +156,7 @@ class HexResampler:
             int(np.ceil(padding)),
             int(np.floor(padding)),
         )
-        self._kernel = torch.ones(1, 1, kernel_size, kernel_size)
+        self._kernel = torch.ones(1, 1, kernel_size, kernel_size, device="cpu")
 
     def __call__(self, gray_sequence: torch.Tensor) -> torch.Tensor:
         """Resample grayscale frames onto the hexagonal retina.
@@ -190,7 +194,8 @@ class HexResampler:
         if gray_sequence.min() < 0 or gray_sequence.max() > 1:
             raise ValueError("gray_sequence values must be in [0, 1]")
 
-        if (self.min_frame_size > torch.tensor([height, width])).any():
+        device = gray_sequence.device
+        if (self.min_frame_size > torch.tensor([height, width], device="cpu")).any():
             # This fixed 96-to-391 camera-to-retina projection is deliberate.
             # Only undeclared input sizes are rejected above.
             target = [int(size) for size in self.min_frame_size.tolist()]
@@ -214,11 +219,13 @@ class HexResampler:
         filtered = filtered / self.kernel_size**2
         filtered = filtered.reshape(batch_size, frame_count, height, width)
 
-        centers = self.receptor_centers + torch.tensor([height // 2, width // 2])
+        centers = (
+            self.receptor_centers + torch.tensor([height // 2, width // 2], device="cpu")
+        ).to(device)
         sampled = filtered[:, :, centers[:, 0], centers[:, 1]]
         return sampled.view(batch_size, frame_count, 1, self.hexals)
 
     def frame(self, frame: Frame) -> torch.Tensor:
-        """Convert one RGB camera frame to ``(1, 1, 1, hexals)``."""
+        """Convert one RGB camera frame to ``(1, 1, 1, hexals)``, on the CPU."""
         gray = torch.from_numpy(frame_to_gray(frame, expected_shape=self.expected_frame_shape))
         return self(gray[None, None])

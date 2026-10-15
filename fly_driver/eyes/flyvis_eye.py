@@ -257,13 +257,11 @@ class FlyvisEye:
             (1, warmup_frames, height, width),
             self.warmup_luminance,
             dtype=torch.float32,
-            device="cpu",
+            device=self.device,
         )
         retina = self.resampler(grey)
         with torch.no_grad():
-            states = self.network.simulate(
-                retina.to(self.device), self.dt, initial_state=None, as_states=True
-            )
+            states = self.network.simulate(retina, self.dt, initial_state=None, as_states=True)
         self._state = states[-1]
 
     def encode(self, frame: Frame) -> Features:
@@ -280,7 +278,7 @@ class FlyvisEye:
             in ``readout_names`` order, each in flyvis hexagonal column order.
         """
         gray = frame_to_gray(frame, expected_shape=self.frame_shape)
-        retina = self.resampler(torch.from_numpy(gray)[None, None])
+        retina = self.resampler(torch.from_numpy(gray).to(self.device)[None, None])
         return self._step(retina)[0]
 
     def encode_sequence(self, frames: Frame, *, reset: bool = True) -> Features:
@@ -302,7 +300,7 @@ class FlyvisEye:
         if frames.shape[0] == 0:
             raise ValueError("frames must contain at least one frame")
         gray = np.stack([frame_to_gray(frame, expected_shape=self.frame_shape) for frame in frames])
-        retina = self.resampler(torch.from_numpy(gray)[None])
+        retina = self.resampler(torch.from_numpy(gray).to(self.device)[None])
         if reset:
             self.reset()
         return self._step(retina)
