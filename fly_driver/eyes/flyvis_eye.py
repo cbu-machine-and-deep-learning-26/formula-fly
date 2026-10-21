@@ -26,6 +26,7 @@ flyvis is imported lazily, so ``import fly_driver.eyes`` works without it.
 
 from __future__ import annotations
 
+import importlib
 import os
 import warnings
 from collections.abc import Sequence
@@ -152,8 +153,8 @@ class FlyvisEye:
             cell types is allowed.
         frame_shape: Declared camera frame shape ``(height, width, 3)``.
         device: Torch device for the network. ``None`` keeps flyvis's own choice
-            (CUDA when available). flyvis sets the process-wide torch default
-            device, so an explicit value changes that default too.
+            (CUDA when available). flyvis builds on the process-wide torch default
+            device, so construction sets that default to this device.
         frame_rate_hz: Environment frame rate; one frame is one integration step
             of ``dt = 1 / frame_rate_hz``. Must be at least 50 Hz.
         warmup_seconds: Grey stimulus duration used by :meth:`reset`.
@@ -231,9 +232,11 @@ class FlyvisEye:
 
     @staticmethod
     def _select_device(flyvis: Any, device: str | torch.device | None) -> torch.device:
-        if device is None:
-            return torch.device(flyvis.device)
-        requested = torch.device(device)
+        # flyvis samples initial parameters from tensors on torch's default device with a
+        # generator on `flyvis.network.initialization.device`, fixed at import. Both must be
+        # the eye's device or `init_network` fails with a generator device mismatch.
+        requested = torch.device(flyvis.device if device is None else device)
+        importlib.import_module("flyvis.network.initialization").device = requested
         current = torch.get_default_device()
         if requested.type != current.type or (
             requested.index is not None and requested.index != current.index

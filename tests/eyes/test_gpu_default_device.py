@@ -61,3 +61,25 @@ def test_resampler_and_eye_run_with_a_gpu_default_device(gpu_default_device: str
     features = eye.encode(frame)
     assert features.shape == (eye.feature_dim,)
     assert np.all(np.isfinite(features))
+
+
+@pytest.mark.parametrize("device", [None, "cpu"])
+def test_shuffled_eye_builds_whatever_the_default_device(
+    gpu_default_device: str, device: str | None
+) -> None:
+    """flyvis's init generator and torch's default device must agree with the eye's device.
+
+    ``None`` breaks on a Mac (default MPS, flyvis on the CPU) and ``"cpu"`` on a CUDA host
+    (default CUDA, flyvis's generator on CUDA).
+    """
+    pytest.importorskip("flyvis")
+    from fly_driver.eyes.flyvis_eye import resolve_checkpoint_dir
+    from fly_driver.eyes.shuffled_connectome_eye import ShuffledConnectomeEye
+
+    try:
+        resolve_checkpoint_dir()
+    except FileNotFoundError:
+        pytest.skip("run `flyvis download-pretrained` to enable this test")
+    torch.set_default_device(gpu_default_device)  # `import flyvis` resets it
+    eye = ShuffledConnectomeEye(device=device, swap_attempts=2_000, warmup_seconds=0.1)
+    assert next(eye.network.parameters()).device.type == eye.device.type
