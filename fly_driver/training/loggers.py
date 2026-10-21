@@ -63,6 +63,8 @@ class TrainingEpisode:
         terminated: Ended by the env (off track, lap done, diverged).
         truncated: Ended by the step cap.
         reward_terms: Per-term sums over the episode; they add up to ``total_return``.
+        start_m: Arclength the episode started at, or ``None`` for an env that does not
+            publish ``arclength_m``. Varies per episode under ``random_start``.
     """
 
     seed: int
@@ -76,6 +78,7 @@ class TrainingEpisode:
     terminated: bool
     truncated: bool
     reward_terms: Mapping[str, float]
+    start_m: float | None = None
 
     def to_row(self) -> dict[str, Any]:
         """Flat CSV row: the fixed columns, then one ``reward_<term>`` column per term."""

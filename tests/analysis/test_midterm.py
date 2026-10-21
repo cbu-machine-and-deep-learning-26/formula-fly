@@ -14,7 +14,7 @@ from fly_driver.analysis.midterm import (
     markdown_table,
     seed_metrics,
 )
-from fly_driver.training.config import BrainConfig, EyeConfig, TrainConfig
+from fly_driver.training.config import BrainConfig, EnvConfig, EyeConfig, TrainConfig
 from fly_driver.training.evaluation import ConditionSummary, EvalConfig, EvalReport
 from fly_driver.training.perturbations import PerturbationSpec
 
@@ -88,18 +88,25 @@ def test_mean_and_sample_std_over_seeds_per_model_and_condition() -> None:
     assert math.isnan(cnn_noisy["progress_m_mean"]) and cnn_noisy["progress_m_n"] == 0
 
 
-def test_a_brain_run_is_its_own_model_not_pooled_with_its_eye(tmp_path: Path) -> None:
-    for name, brain in (
-        ("rq1_flyvis", BrainConfig()),
-        ("flyvis_cx", BrainConfig("central_complex")),
+def test_brain_and_random_start_runs_are_their_own_models_not_pooled(tmp_path: Path) -> None:
+    random_start = EnvConfig(params={"random_start": True})
+    for name, brain, env in (
+        ("rq1_flyvis", BrainConfig(), EnvConfig()),
+        ("flyvis_cx", BrainConfig("central_complex"), EnvConfig()),
+        ("rq1v2_flyvis", BrainConfig(), random_start),
+        ("flyvis_cx_v2", BrainConfig("central_complex"), random_start),
     ):
         seed_dir = tmp_path / name / "seed_0"
         seed_dir.mkdir(parents=True)
-        config = TrainConfig(name=name, seeds=(0,), eye=EyeConfig(type="flyvis"), brain=brain)
+        config = TrainConfig(
+            name=name, seeds=(0,), eye=EyeConfig(type="flyvis"), brain=brain, env=env
+        )
         config.to_yaml(seed_dir / "config.yaml")
         (seed_dir / "policy_final.pt").touch()
     runs = find_seed_runs(tmp_path)
     assert {(run.run_dir.parent.name, run.model) for run in runs} == {
         ("rq1_flyvis", "flyvis"),
         ("flyvis_cx", "flyvis+central_complex"),
+        ("rq1v2_flyvis", "flyvis+random_start"),
+        ("flyvis_cx_v2", "flyvis+central_complex+random_start"),
     }

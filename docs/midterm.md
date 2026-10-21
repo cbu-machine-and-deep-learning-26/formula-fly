@@ -17,6 +17,15 @@ Four eyes, each frozen, each with a PPO-trained policy head, on the MuJoCo pract
 | `random_projection` | `.../conditions/random_projection.yaml` | Fixed Gaussian projection of grey pixels |
 | `flyvis+central_complex` | `fly_driver/configs/train_flyvis_cx.yaml` | **Fifth condition, not part of RQ1.** The flyvis eye feeding the central-complex brain. Its config is owned by the brain work. It is listed here so it can run alongside the others, and it is reported only if its runs exist. |
 
+**v2: random starts.** The first 12 runs (`runs/rq1_<eye>`, and `flyvis_cx`) all started
+every episode on the grid and stalled at about 555 m, flat out off the first bend. Every
+policy had only ever practised the opening straight. The configs now set
+`env.params.random_start: true`, so training episodes start anywhere round the lap and
+corners appear from the first update. Evaluation and robustness still start on the grid, so
+lap times stay comparable. The run names are now `rq1v2_<eye>` and `flyvis_cx_v2`, and the
+analysis reports them as their own models (`<eye>+random_start`), never pooled with v1. They
+also checkpoint every 25 updates, the eval cadence, to film the fly learning.
+
 The four files differ only in `name` and `eye.type`. Every eye emits 5,768 features and is
 frozen, so every condition trains the same `[64, 64]` tanh policy head with the same
 parameter count (the matching set up in #73). The racing line is off (`racing_line: false`),
@@ -148,7 +157,7 @@ foreach ($SEED in 0, 1, 2) {
 | 5090 #2 | `shuffled` | Same cost as flyvis, plus about a minute at startup for the shuffle. |
 | 4090 #1 | `cnn` | The frozen CNN encodes on the CPU, so the GPU only runs the head. |
 | 4090 #2 | `random_projection` | Same |
-| 5090 #1, shared with flyvis | `train_flyvis_cx.yaml` | Optional. The same three-seed loop with `--config fly_driver/configs/train_flyvis_cx.yaml`. It shares the flyvis GPU, so both conditions run slower. Its run name is `flyvis_cx`, so step 3 uses `--condition flyvis_cx`. |
+| 5090 #1, shared with flyvis | `train_flyvis_cx.yaml` | Optional. The same three-seed loop with `--config fly_driver/configs/train_flyvis_cx.yaml`. It shares the flyvis GPU, so both conditions run slower. Its run name is `flyvis_cx_v2`, so step 3 uses `--condition flyvis_cx_v2`. |
 
 **Two GPUs only:** run six processes per GPU, the same loop twice. Put flyvis + cnn on one
 GPU and shuffled + random_projection on the other, so that each GPU gets one slow eye. If the
@@ -164,15 +173,16 @@ budget must stay equal across eyes.
 ```bash
 for SEED in 0 1 2; do
   CUDA_VISIBLE_DEVICES=$GPU nohup python scripts/midterm_results.py runs --robustness-only \
-    --condition rq1_$EYE --seed $SEED --episodes 2 > logs/${EYE}_robust$SEED.log 2>&1 &
+    --condition rq1v2_$EYE --seed $SEED --episodes 2 > logs/${EYE}_robust$SEED.log 2>&1 &
 done
 ```
 
 ### 4. Copy back
 
-Each run writes to `runs/rq1_<eye>/seed_<k>/`: `config.yaml`, `episodes.csv`, `updates.csv`,
-`eval/step_*/`, `policy_final.pt` and, after step 3, `robustness/`. Nothing in it is a video,
-and the policy checkpoint is about 3 MB, so copy the whole `runs/rq1_*` directories (and the fifth condition's, if it ran) into one
+Each run writes to `runs/rq1v2_<eye>/seed_<k>/`: `config.yaml`, `episodes.csv`, `updates.csv`,
+`eval/step_*/`, `policy_update_*.pt` every 25 updates, `policy_final.pt` and, after step 3,
+`robustness/`. Nothing in it is a video, and each policy checkpoint is about 3 MB (about 60 MB
+per seed with the periodic ones), so copy the whole `runs/rq1v2_*` directories (and the fifth condition's, if it ran) into one
 `runs/` on the analysis machine. If step 3 was skipped somewhere, `policy_final.pt` lets the
 next command run it locally, but slowly.
 

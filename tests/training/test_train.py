@@ -283,6 +283,44 @@ class TestTheEnvContract:
             train_seed(_config(tmp_path), 0)
 
 
+CONDITIONS_DIR = Path(__file__).parents[2] / "fly_driver" / "configs" / "conditions"
+
+
+class TestRandomStartReachesOnlyTheTrainingEnv:
+    """Evaluation must stay on the grid, or lap times stop comparing across runs."""
+
+    def test_the_training_env_gets_it_and_every_eval_env_does_not(
+        self, tmp_path: Path, monkeypatch
+    ):
+        seen: list[dict] = []
+
+        def spy(config: EnvConfig) -> DummyTrackEnv:
+            seen.append(dict(config.params))
+            return DummyTrackEnv(max_steps=config.max_steps)
+
+        monkeypatch.setitem(train_module.ENV_BUILDERS, "dummy", spy)
+        config = _config(
+            tmp_path,
+            env=EnvConfig(type="dummy", max_steps=40, params={"random_start": True}),
+            eval=PeriodicEvalConfig(every_updates=1, episodes=1),
+        )
+        train_seed(config, 0)
+        assert seen[0] == {"random_start": True}, "the first env built is the training env"
+        assert len(seen) > 1 and all(params == {} for params in seen[1:])
+
+    @pytest.mark.render
+    def test_the_checked_in_conditions_train_from_random_starts_and_eval_from_the_grid(self):
+        config = TrainConfig.from_yaml(CONDITIONS_DIR / "cnn.yaml").env
+        training, evaluation = build_env(config, training=True), build_env(config)
+        try:
+            assert training.random_start and not evaluation.random_start
+            evaluation.reset(seed=5)
+            assert np.array_equal(evaluation.data.qpos, evaluation.model.qpos0)
+        finally:
+            training.close()
+            evaluation.close()
+
+
 @NEEDS_GPU
 def test_the_loop_trains_on_the_gpu(tmp_path: Path):
     """Same loop, same files, with the policy and the update on the GPU."""

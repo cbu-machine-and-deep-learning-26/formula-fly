@@ -39,7 +39,7 @@ import shutil
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -185,8 +185,18 @@ assert set(EYE_BUILDERS) == set(KNOWN_EYE_TYPES)
 assert set(BRAIN_BUILDERS) == set(KNOWN_BRAINS)
 
 
-def build_env(config: EnvConfig) -> Any:
-    """Construct the env a config names."""
+def build_env(config: EnvConfig, *, training: bool = False) -> Any:
+    """Construct the env a config names.
+
+    Args:
+        config: The env section of a run config.
+        training: Build the training env. Only then does ``params.random_start`` reach the
+            env; every evaluation env (periodic, ``scripts/evaluate.py``, robustness) drops
+            it and starts on the grid, so lap times stay comparable across runs.
+    """
+    if not training and "random_start" in config.params:
+        params = {key: value for key, value in config.params.items() if key != "random_start"}
+        config = replace(config, params=params)
     return ENV_BUILDERS[config.type](config)
 
 
@@ -307,7 +317,7 @@ def train_seed(
 
     seed_everything(seed)
     device = resolve_device(config.device)
-    env = build_env(config.env)
+    env = build_env(config.env, training=True)
     try:
         eye = build_eye(config.eye, env)
         trainable_eye = _trainable_eye(config.eye, eye, device)
@@ -415,8 +425,9 @@ def _open_loggers(
 class _EpisodeTally:
     """Running totals of the episode in progress."""
 
-    def __init__(self, frame_rate_hz: float) -> None:
+    def __init__(self, frame_rate_hz: float, start_m: float | None) -> None:
         self.frame_rate_hz = frame_rate_hz
+        self.start_m = start_m
         self.steps = 0
         self.total_return = 0.0
         self.terms: dict[str, float] = {}
@@ -463,6 +474,7 @@ class _EpisodeTally:
             terminated=terminated,
             truncated=truncated,
             reward_terms=dict(self.terms),
+            start_m=self.start_m,
         )
 
 
@@ -590,16 +602,20 @@ def _run(
         state = brain.activity()
         return eye_features, state, validate_features(brain.step(eye_features), feature_dim)
 
-    def begin_episode() -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
-        frame, _ = env.reset(seed=int(episode_seeds.integers(0, 2**31 - 1)))
+    def begin_episode() -> tuple[
+        np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, _EpisodeTally
+    ]:
+        """Reset env, eye and brain; the fresh tally records where the episode started."""
+        frame, info = env.reset(seed=int(episode_seeds.integers(0, 2**31 - 1)))
         eye.reset()
         if brain is not None:
             brain.reset()
         frame = validate_frame(frame, frame_shape)
-        return frame, *observe(frame)
+        start_m = info.get("arclength_m")
+        tally = _EpisodeTally(frame_rate_hz, None if start_m is None else float(start_m))
+        return frame, *observe(frame), tally
 
-    frame, eye_features, brain_state, features = begin_episode()
-    tally = _EpisodeTally(frame_rate_hz)
+    frame, eye_features, brain_state, features, tally = begin_episode()
 
     for update in range(1, num_updates + 1):
         update_started = time.perf_counter()
@@ -647,8 +663,7 @@ def _run(
                 loggers.log_episode(record)
                 finished.append(record)
                 episode_index += 1
-                tally = _EpisodeTally(frame_rate_hz)
-                frame, eye_features, brain_state, features = begin_episode()
+                frame, eye_features, brain_state, features, tally = begin_episode()
             else:
                 frame = validate_frame(next_frame, frame_shape)
                 eye_features, brain_state, features = observe(frame)

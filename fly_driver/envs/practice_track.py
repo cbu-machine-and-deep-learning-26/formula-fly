@@ -181,10 +181,9 @@ class PracticeTrack:
             :class:`~fly_driver.envs.scene.SceneConfig`, which starts the car
             ``grid_offset_m`` behind the line so the first lap is timed from a real
             crossing rather than from wherever the simulator booted.
-        seed: Default seed, overridable per episode by :meth:`reset`. Nothing in the env is
-            stochastic yet; the generator exists so that when episode randomisation arrives
-            it has one place to come from, and so that the seed-determinism check
-            `AGENTS.md` §11 asks for can be written now instead of retrofitted.
+        seed: Default seed, overridable per episode by :meth:`reset`. The only thing drawn
+            from it is the ``random_start`` position, so a given reset seed always gives the
+            same episode.
         max_steps: Truncate the episode after this many steps. ``None`` runs forever, which
             is what a hand-driven session or a lap-time measurement wants.
         frame_shape: ``(height, width, 3)``. Must fit inside the scene's offscreen buffer.
@@ -205,6 +204,13 @@ class PracticeTrack:
             :data:`~fly_driver.envs.penalty.DEFAULT_PENALTY_WEIGHTS`.
         camera: Name of the MJCF camera to render from.
         reward: Scores each step. Defaults to :class:`ProgressReward`.
+        random_start: Start each episode at a uniformly random arclength round the lap,
+            on the centreline, facing along the track, at rest. Off, every episode starts
+            on the grid. Training turns it on so corners appear from the first update;
+            evaluation leaves it off so lap times stay comparable. Nothing downstream
+            assumes the grid: the lap timer waits for the first crossing of the line
+            (the out lap), segments re-anchor at the start, and progress is a per-step
+            delta that is safe across the seam.
 
     Raises:
         ValueError: If any argument is out of range, if the frame does not fit the
@@ -226,6 +232,7 @@ class PracticeTrack:
         penalty_weights: PenaltyWeights | None = None,
         camera: str = DEFAULT_CAMERA,
         reward: RewardFunction | None = None,
+        random_start: bool = False,
     ) -> None:
         shape = tuple(int(value) for value in frame_shape)
         if len(shape) != 3 or shape[2] != 3:
@@ -249,6 +256,7 @@ class PracticeTrack:
         self._penalty = OffTrackPenalty(penalty_weights or PenaltyWeights())
         self._max_steps = max_steps
         self._camera = camera
+        self.random_start = bool(random_start)
         self.seed = int(seed)
         self.rng = np.random.default_rng(self.seed)
 
@@ -282,6 +290,8 @@ class PracticeTrack:
         self._body = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "car")
         if self._body < 0:  # pragma: no cover - assemble_model_xml always adds it
             raise ValueError("model has no body named 'car'")
+        root = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, "car_root")
+        self._root_qpos = int(self._model.jnt_qposadr[root])
         if mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera) < 0:
             raise ValueError(f"model has no camera named {camera!r}")
 
@@ -387,7 +397,7 @@ class PracticeTrack:
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[Frame, dict[str, Any]]:
-        """Put the car back on the grid and return the first frame and info.
+        """Put the car on the grid, or at a random start; return the first frame and info.
 
         Whatever drives this env must reset at the same moment -- in particular a
         :class:`~fly_driver.eyes.FlyvisEye` keeps its network state between frames and needs
@@ -405,6 +415,8 @@ class PracticeTrack:
 
         # qpos0 holds the grid pose baked into the MJCF by assemble_model_xml.
         mujoco.mj_resetData(self._model, self._data)
+        if self.random_start:
+            self._place_car(float(self.rng.uniform(0.0, self.centerline.length)))
         mujoco.mj_forward(self._model, self._data)
         self._dynamics.reset()
         self._surface.reset()
@@ -549,6 +561,17 @@ class PracticeTrack:
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("this PracticeTrack is closed; build a new one")
+
+    def _place_car(self, arclength: float) -> None:
+        """Move the car's free joint to the centreline at ``arclength``, facing along it.
+
+        Only x, y and yaw change. Height, wheels and suspension keep the grid's qpos0, and
+        velocities are already zero from ``mj_resetData``, so this is the grid start moved.
+        """
+        (x, y), yaw = self.centerline.pose_at(arclength)
+        qpos = self._data.qpos[self._root_qpos : self._root_qpos + 7]
+        qpos[0], qpos[1] = x, y
+        qpos[3:7] = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
 
     def _project(self) -> Projection:
         position = self._data.xpos[self._body]
