@@ -3,7 +3,7 @@
 Example:
     python scripts/evaluate.py --agent random --output runs/eval_random
     python scripts/evaluate.py --config fly_driver/configs/eval_default.yaml --record-video
-    python scripts/evaluate.py --checkpoint runs/flyvis_cx/seed_0/policy_final.pt
+    python scripts/evaluate.py --checkpoint runs/flyvis_cx_v2/seed_0/policy_final.pt
 
 ``--checkpoint`` evaluates a trained driver (eye, brain if any, policy) on the env its run
 trained on, read from the ``config.yaml`` beside the checkpoint; ``--env`` is ignored.

@@ -2,7 +2,7 @@
 # Identical to the other three files in this directory except `name` and `eye.type`:
 # every eye emits 5768 features and is frozen, so each trains the same policy head.
 # Launch commands and the reasons for the eval cadence: docs/midterm.md.
-name: rq1_flyvis
+name: rq1v2_flyvis  # v2 = random starts; rq1_flyvis was grid-only
 output_dir: runs
 seeds: [0, 1, 2]
 total_env_steps: 1000000
@@ -27,6 +27,7 @@ env:
   params:
     racing_line: false  # off for every RQ1 condition
     track_limit: 0.15
+    random_start: true  # training episodes start anywhere round the lap; eval stays on the grid
 
 ppo:
   rollout_steps: 2048
@@ -57,4 +58,4 @@ logging:
     entity: null
     mode: online
     tags: []
-  checkpoint_every_updates: 0   # 0 = only policy_final.pt
+  checkpoint_every_updates: 25  # ~51k steps, the eval cadence: film the fly learning; 0 = final only

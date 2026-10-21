@@ -7,7 +7,9 @@ Reads what training and the robustness evaluation wrote, and nothing else::
     <runs>/<condition>/seed_<k>/robustness/summary.json     the final evaluation
 
 Runs are grouped by model: the eye type, plus ``+<brain>`` when the run had one, so a
-flyvis + central-complex run is not pooled with plain flyvis. The final evaluation (clean
+flyvis + central-complex run is not pooled with plain flyvis, plus ``+random_start`` when it
+trained from random starts, so the v2 runs (``rq1v2_*``) are not pooled with the grid-only
+v1 runs (``rq1_*``). The final evaluation (clean
 plus every perturbation) is aggregated per model as the mean and
 sample standard deviation over seeds; each seed contributes one number per metric, its mean
 over the evaluation episodes. ``scripts/midterm_results.py`` runs the robustness
@@ -106,6 +108,8 @@ def find_seed_runs(runs_dir: str | Path) -> list[SeedRun]:
         config = TrainConfig.from_yaml(config_path)
         brain = config.brain.type
         model = config.eye.type if brain == "none" else f"{config.eye.type}+{brain}"
+        if config.env.params.get("random_start"):
+            model += "+random_start"
         runs.append(SeedRun(model=model, seed=int(config.seeds[0]), run_dir=run_dir))
     return runs
 

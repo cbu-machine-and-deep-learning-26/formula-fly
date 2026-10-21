@@ -75,11 +75,23 @@ misspelt hyperparameter cannot silently keep its default.
 | `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std` |
 | `env.type` | `practice_track` or `dummy` |
 | `env.max_steps` | Episode truncation in frames. 15 000 = 5 minutes at 50 Hz, room for a slow clean lap |
-| `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, and anything else `PracticeTrack` takes |
+| `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, `random_start` (training env only, see below), and anything else `PracticeTrack` takes |
 | `ppo` | CleanRL's continuous-control defaults: 2048-step rollouts, 32 minibatches, 10 epochs, lr 3e-4 annealed, γ 0.99, λ 0.95, clip 0.2 |
 | `eval` | `every_updates` (0 = off), `episodes`, `max_steps`, `record_video` |
 | `logging.wandb` | `enabled: false` by default; `project`, `entity`, `mode`, `tags` |
 | `logging.checkpoint_every_updates` | 0 = only the final checkpoint |
+
+**Random starts.** `env.params.random_start: true` starts every training episode at a
+uniformly random point round the lap, on the centreline, facing along the track, at rest,
+drawn from the episode's reset seed. The v1 RQ1 runs all started on the grid and plateaued
+at about 555 m: each policy only ever practised the opening straight and ran off the first
+bend. Lap timing needs no special case: the first crossing of the line ends the out lap, a
+lap counts only line to line, and progress is a per-step delta that is safe across the
+line. `build_env(..., training=True)` is the only path that passes it on. Periodic
+evaluation, `scripts/evaluate.py` and robustness build the env without it and start on the
+grid, so their lap times compare with every other run. `episodes.csv` records each
+episode's `start_m`. The four `conditions/*.yaml` and `train_flyvis_cx.yaml` turn it on and
+are renamed `rq1v2_<eye>` and `flyvis_cx_v2` so they do not overwrite the v1 runs.
 
 To run another condition, copy the file, change `name` and the condition keys, keep the
 seeds. To spread the seeds over the cluster, give every job the same file and a different
@@ -100,7 +112,8 @@ runs/<name>/seed_0/eval/step_<n>/    the evaluation harness's episodes.csv + sum
 ```
 
 **`episodes.csv`** -- `seed, episode, update, env_steps, steps, total_return, lap_complete,
-lap_time_s, terminated, truncated`, then one column per reward term:
+lap_time_s, terminated, truncated, start_m` (the arclength the episode started at), then
+one column per reward term:
 `reward_progress, reward_lateral, reward_lap_bonus, reward_off_track` (sorted by name).
 The term columns are what `AGENTS.md` §11 asks for: they always add up to `total_return`,
 so an agent farming one term without progressing shows in the columns rather than being
@@ -164,7 +177,7 @@ with the head in the same Adam optimiser. Its mask does not train. The eye stays
 python scripts/train.py --config fly_driver/configs/train_flyvis_cx.yaml --seed 0
 python scripts/train.py --env dummy --eye pixels --brain central_complex --name cx_smoke \
     --total-env-steps 20000                # no flyvis needed; default width 256
-python scripts/evaluate.py --checkpoint runs/flyvis_cx/seed_0/policy_final.pt
+python scripts/evaluate.py --checkpoint runs/flyvis_cx_v2/seed_0/policy_final.pt
 ```
 
 `--brain central_complex` on another config uses the constructor defaults. Put

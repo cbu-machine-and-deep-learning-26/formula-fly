@@ -1,7 +1,7 @@
 # RQ2 condition: frozen pretrained flyvis eye -> central-complex brain -> policy head.
 # A copy of train_default.yaml with the brain in and the racing line off.
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
-name: flyvis_cx
+name: flyvis_cx_v2  # v2 = random starts; flyvis_cx was grid-only
 output_dir: runs
 seeds: [0, 1, 2]
 total_env_steps: 1000000
@@ -34,6 +34,7 @@ env:
   params:
     racing_line: false  # off, as for the RQ1 comparisons
     track_limit: 0.15
+    random_start: true  # training episodes start anywhere round the lap; eval stays on the grid
 
 ppo:
   rollout_steps: 2048
@@ -64,4 +65,4 @@ logging:
     entity: null
     mode: online
     tags: []
-  checkpoint_every_updates: 0   # 0 = only policy_final.pt
+  checkpoint_every_updates: 25  # ~51k steps, the eval cadence: film the fly learning; 0 = final only

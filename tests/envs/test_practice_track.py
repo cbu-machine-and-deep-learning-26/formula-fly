@@ -1087,6 +1087,82 @@ class TestTheClockSurvivesRunningWide:
                 )
 
 
+def _car_yaw(env: PracticeTrack) -> float:
+    w, _, _, z = env.data.qpos[3:7]
+    return float(2.0 * np.arctan2(z, w))
+
+
+def _random_start_behind_the_line(env: PracticeTrack, within_m: float) -> dict:
+    """Reset seeds in turn until the random start lands within ``within_m`` of the line."""
+    for seed in range(2000):
+        _, info = env.reset(seed=seed)
+        if env.centerline.length - info["arclength_m"] < within_m:
+            return info
+    raise AssertionError(f"no seed under 2000 started within {within_m} m of the line")
+
+
+@pytest.mark.render
+class TestRandomStart:
+    """``random_start`` puts training episodes anywhere round the lap. Lap timing, progress
+    and the lap bonus must all mean what they mean from the grid (AGENTS.md §11)."""
+
+    def test_a_seed_always_gives_the_same_start_and_seeds_differ(self):
+        env = PracticeTrack(random_start=True)
+        try:
+            env.reset(seed=3)
+            first = env.data.qpos.copy()
+            env.reset(seed=4)
+            other = env.data.qpos.copy()
+            env.reset(seed=3)
+            assert np.array_equal(env.data.qpos, first)
+            assert not np.allclose(other[:2], first[:2])
+        finally:
+            env.close()
+
+    def test_the_car_starts_on_the_centreline_facing_along_it_at_rest(self):
+        env = PracticeTrack(random_start=True)
+        try:
+            for seed in range(5):
+                _, info = env.reset(seed=seed)
+                assert info["on_track"] and abs(info["lateral_m"]) < 0.05
+                assert info["speed_mps"] == 0.0 and not np.any(env.data.qvel)
+                _, heading = env.centerline.pose_at(info["arclength_m"])
+                error = np.angle(np.exp(1j * (_car_yaw(env) - heading)))
+                assert abs(error) < 1e-3
+                assert env.data.qpos[2] == env.model.qpos0[2], "ride height is the grid's"
+        finally:
+            env.close()
+
+    def test_off_by_default_the_start_is_the_grid_whatever_the_seed(self):
+        env = PracticeTrack()
+        try:
+            for seed in (0, 1, 2):
+                env.reset(seed=seed)
+                assert np.array_equal(env.data.qpos, env.model.qpos0)
+        finally:
+            env.close()
+
+    def test_crossing_the_line_from_just_behind_it_counts_metres_not_a_lap(self):
+        """Starting a few metres behind the line is the cheapest way to farm the lap bonus,
+        if a crossing counted as a lap. Progress must be the metres driven across the
+        seam, and the crossing must only end the out lap."""
+        env = PracticeTrack(random_start=True, terminate_off_track=False)
+        try:
+            start = _random_start_behind_the_line(env, within_m=60.0)
+            assert start["on_out_lap"]
+            infos = [_step(env, FLAT_OUT).info for _ in range(250)]
+            driven = sum(info["progress_m"] for info in infos)
+            net = (infos[-1]["arclength_m"] - start["arclength_m"]) % env.centerline.length
+            assert driven > env.centerline.length - start["arclength_m"], "never crossed"
+            assert driven == pytest.approx(net, abs=1e-6)
+            assert not any(info["lap_complete"] for info in infos)
+            assert all(info["reward_terms"]["lap_bonus"] == 0.0 for info in infos)
+            assert not infos[-1]["on_out_lap"], "the crossing ends the out lap"
+            assert 0.0 < infos[-1]["lap_fraction"] < 0.2
+        finally:
+            env.close()
+
+
 def _built_like_gh17(env_config) -> PracticeTrack:
     """The practice track exactly as ``fly_driver.training.train._build_practice_track`` builds
     it from a training config.
