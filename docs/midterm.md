@@ -89,20 +89,26 @@ Linux:
 ```bash
 git clone <repo> formula-fly && cd formula-fly && git checkout develop
 python3.12 -m venv .venv-flyvis && source .venv-flyvis/bin/activate
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu128   # 5090s need CUDA >= 12.8
-python -m pip install -r requirements-flyvis.txt -e ".[dev]"
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128   # 5090s need CUDA >= 12.8
+mkdir -p logs && python -m pip freeze | grep '^torch' > logs/torch-constraints.txt
+python -m pip install -r requirements-flyvis.txt -e ".[dev]" -c logs/torch-constraints.txt
 export FLYVIS_ROOT_DIR="$HOME/.cache/flyvis" && flyvis download-pretrained
 export MUJOCO_GL=egl                       # headless rendering; omit with a desktop session
 python -c "import torch; print(torch.cuda.device_count(), torch.cuda.get_device_name(0))"
 ```
+
+torch and torchvision come from the CUDA index together, and the constraints file pins them.
+Otherwise pip pulls torchvision from PyPI, which silently swaps in CPU-only torch.
 
 Windows (PowerShell):
 
 ```powershell
 git clone <repo> formula-fly; cd formula-fly; git checkout develop
 py -3.12 -m venv .venv-flyvis; .venv-flyvis\Scripts\Activate.ps1
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
-python -m pip install -r requirements-flyvis.txt -e ".[dev]"
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+New-Item -ItemType Directory -Force logs | Out-Null
+python -m pip freeze | Select-String '^torch' | % { $_.Line } | Set-Content -Encoding ascii logs\torch-constraints.txt
+python -m pip install -r requirements-flyvis.txt -e ".[dev]" -c logs\torch-constraints.txt
 $env:FLYVIS_ROOT_DIR = "$HOME\.cache\flyvis"; flyvis download-pretrained
 python -c "import torch; print(torch.cuda.device_count(), torch.cuda.get_device_name(0))"
 ```

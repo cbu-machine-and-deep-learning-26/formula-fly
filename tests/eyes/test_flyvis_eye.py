@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import fly_driver.eyes
@@ -51,3 +52,21 @@ def test_configuration_is_validated_before_loading(kwargs: dict[str, object], ma
     """Reject bad temporal and readout settings before touching flyvis."""
     with pytest.raises(ValueError, match=match):
         FlyvisEye(**kwargs)  # type: ignore[arg-type]
+
+
+def test_connectome_cache_writes_and_overwrites_arrays(tmp_path: Path) -> None:
+    """Overwriting a cache array used to crash on Windows (datamate's open-handle unlink).
+
+    The first write creates the directory, so only the second reaches the crashing path.
+    """
+    pytest.importorskip("flyvis")
+    import datamate
+
+    from fly_driver.eyes.flyvis_eye import _import_flyvis
+
+    _import_flyvis()
+    cache = datamate.Directory(tmp_path / "cache")
+    cache["unique_cell_types"] = np.array([b"T4a", b"T5a"])
+    cache["unique_cell_types"] = np.arange(3, dtype=np.float32)
+
+    np.testing.assert_array_equal(cache["unique_cell_types"][:], np.arange(3, dtype=np.float32))

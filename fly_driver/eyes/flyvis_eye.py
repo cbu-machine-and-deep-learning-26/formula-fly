@@ -77,7 +77,36 @@ def _import_flyvis() -> Any:
             "with `python -m pip install -r requirements-flyvis.txt`, then run "
             "`flyvis download-pretrained`."
         ) from error
+    import datamate.directory
+
+    datamate.directory._write_h5 = _write_h5
     return flyvis
+
+
+def _write_h5(path: Path, val: object) -> None:
+    """Write ``val`` to ``path`` as an HDF5 file with one dataset, ``data``.
+
+    Replaces ``datamate.io._write_h5``, which flyvis uses to build its connectome cache.
+
+    Args:
+        path: Destination ``.h5`` file. Its parent directories are created.
+        val: Array-like data to store.
+    """
+    # ponytail: datamate <= 1.0.0 _write_h5 opens the file with mode="w", fails to read the
+    # just-truncated "data", then unlinks the path with that handle still open. Windows refuses
+    # (WinError 32). The failing first attempt never succeeds, so this is its fallback branch
+    # alone, with the handle closed. Remove when datamate fixes _write_h5.
+    import h5py
+
+    val = np.asarray(val)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_dir():
+        path.rmdir()
+    else:
+        path.unlink(missing_ok=True)
+    with h5py.File(path, libver="latest", mode="w") as file:
+        file["data"] = val
+        file.swmr_mode = True
 
 
 def resolve_checkpoint_dir(
