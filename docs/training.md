@@ -216,8 +216,10 @@ eye and 1.1 ms (CPU) to 3.8 ms (GPU) of policy. The PPO update over 2 048 steps 
 on the GPU against 10.2 s on the CPU, so the two end up level. 1M steps is about five hours
 per seed here. The track step is the largest share, which is what #63 is about.
 
-The flyvis rows needed a fix for flyvis's cache on Windows. The eye also runs on a GPU host
-now, whatever device `import flyvis` makes torch's default (GH-27).
+On Windows, flyvis's connectome cache crashed on first build (datamate deletes an `.h5` file
+it still holds open). `fly_driver/eyes/flyvis_eye.py` patches datamate's writer until
+upstream fixes it. The eye also runs on a GPU host now, whatever device `import flyvis` makes
+torch's default (GH-27).
 
 ## Tests
 
