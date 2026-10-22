@@ -35,6 +35,15 @@ driver lies almost flat. Seated that way the front legs reach the wheel, with th
 SF70H the whole fly sits between 7 cm and 78 cm off the road. `--size` and `--recline` on the
 pose script change the fit.
 
+A fly looks along its body, so seated this way it looks up and back: 141 degrees above level
+ahead in the SF70H. Its neck cannot fix that (flybody's `head` joint bends -29 to +17
+degrees), and reclining less does not either: at 15 degrees it still looks 126 degrees up and
+the fly reaches 4 cm below the road, at 10 degrees 121 degrees up and 7 cm below. So the body
+keeps its 30-degree recline and the GH-26 app turns the head bone forward by a fixed 141
+degrees about the car's side axis, past a real fly's neck on purpose. The pose script prints
+the angle for the car it posed (`seated_fly.level_gaze_pitch_deg`); it is `HEAD_PITCH_DEG` in
+`fly_pose.lua`.
+
 The first fit scaled the fly so its thorax-to-head matched the driver's chest-to-head. That
 made it 1.65 m long, with the abdomen and wings hanging a metre through the floor. In the game
 only its head showed.
@@ -72,7 +81,8 @@ python scripts/cockpit/pose_fly_driver.py --preview outputs/cockpit/pose.png
 
 This reads the SF70H's `driver_base_pos.knh` from the Assetto Corsa install and flybody's
 `fruitfly.xml`. It writes one OBJ per fly part and `manifest.json` to
-`outputs/cockpit/parts`, and prints how far each joint landed from its target. Use `--car` for
+`outputs/cockpit/parts`, and prints how far each joint landed from its target and the head
+pitch that levels the fly's gaze (see "How it works"). Use `--car` for
 another car and `--ac-root` for another install.
 
 **2. Build the FBX in Blender** (about a minute):
@@ -89,10 +99,10 @@ because ksEditor ignores the paths inside the FBX and looks there. The meshes ar
 **3. Convert to KN5 in ksEditor.** This is the one step with no command line.
 
 1. Open `sdk/editor/ksEditor.exe` in the Assetto Corsa folder.
-2. Choose **File → Load FBX** and pick `outputs/cockpit/fly_driver/fly_driver.fbx`.
+2. Choose **File → Open FBX** and pick `outputs/cockpit/fly_driver/fly_driver.fbx`.
 3. On the **Materials** tab, check every `FLY_*` material uses `ksPerPixel` with its texture
    in `txDiffuse`. Set `FLY_membrane`, the wings, to alpha blend if you want them see-through.
-4. Save it as `fly_driver.kn5` in the same folder.
+4. Choose **File → Save KN5 → Car** and save it as `fly_driver.kn5` in the same folder.
 
 ## Put it in the game
 
@@ -135,6 +145,7 @@ copy. The pose comes from the `ControlVector` and the brain's activity instead
 | front legs on the wheel | `steer` | `RIG_Arm`, `RIG_ForeArm`, `RIG_HAND`, turned by the car's own `steer.ksanim` | ±90° wheel, sent but not applied |
 | right hind leg on the throttle | `throttle` | `DRIVER:RIG_Foot_R`, about the car's side axis | 0 to 25° |
 | left hind leg on the brake | `brake` | `DRIVER:RIG_Foot_L`, about the car's side axis | 0 to 25° |
+| head pitch | fixed, `HEAD_PITCH_DEG` in `fly_pose.lua` | `DRIVER:RIG_Head`, about the car's side axis | 141°, always applied |
 | head yaw | compass ring bump, `30° × sin(heading)` | `DRIVER:RIG_Head`, about the car's up axis | ±30° |
 | wings | mean \|activity\| of each half of the 32 descending neurons | `FLY:WING_L`, `FLY:WING_R`, about their x (wing yaw joint) | 0 to 10°, positive spreads the wing out |
 | antennae | signed mean of each half | `FLY:ANTENNA_L`, `FLY:ANTENNA_R`, about their x (antenna extend joint) | ±15° |
@@ -200,7 +211,8 @@ env = PoseStreamEnv(env, stream, brain=brain)  # or any env with reset/step, e.g
 ```
 
 Each `act` or `step` sends one pose to UDP port 9871. Open **Fly Pose** in the game's app
-bar to see poses arriving. With no pose for a second, the bones go back to rest.
+bar to see poses arriving. With no pose for a second, the bones go back to rest, except the
+head, which keeps its fixed pitch so the fly still looks ahead.
 
 ### What to check in the game
 
@@ -210,11 +222,15 @@ bar to see poses arriving. With no pose for a second, the bones go back to rest.
    `PEDAL_SIGN = -1` in `fly_pose.lua`.
 3. A positive head yaw (bump past a quarter of the ring) turns the head to the driver's
    right. If it turns left, set `HEAD_SIGN = -1`.
-4. The front legs still follow the wheel while the app runs. If the head and feet do not
+4. With the app running, even with no poses, the fly's face (the red eyes) looks towards the
+   front of the car, not up and back. If the head sinks into the tub instead, set
+   `HEAD_PITCH_SIGN = -1`. For another car, set `HEAD_PITCH_DEG` to what
+   `pose_fly_driver.py` prints.
+5. The front legs still follow the wheel while the app runs. If the head and feet do not
    move at all, try `HOLD_DRIVER_MODEL = true`, then check the front legs again.
-5. The head and antennae stay hidden in the cockpit camera, and show in the chase and TV
+6. The head and antennae stay hidden in the cockpit camera, and show in the chase and TV
    cameras.
-6. The wings spread out from the back with descending activity, and the antennae swing
+7. The wings spread out from the back with descending activity, and the antennae swing
    about their bases. If a wing folds into the body instead, set `HINGE_SIGN = -1`.
 
 ## Known limits
@@ -237,5 +253,6 @@ the pose's limits, the steer sign, the pedals, a head that follows a
 synthetic compass bump, the UDP round trip, one pose per step from each wrapper, and the app
 install. For #25 they cover the `.knh` reader and writer on synthetic trees, the fly-to-bone map, the axis
 conversion, mesh welding, the manifest and OBJ writer, and install and restore. With flybody's
-model files present, they also check that the pose reaches the knuckles, that every fly body is
+model files present, they also check the head pitch that levels the gaze, that the pose
+reaches the knuckles, that every fly body is
 mapped and every mesh exported, and that the wings are folded.

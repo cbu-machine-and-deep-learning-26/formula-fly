@@ -52,6 +52,7 @@ __all__ = [
     "body_parts",
     "driver_bone_for",
     "hinges",
+    "level_gaze_pitch_deg",
     "mujoco_from_ac",
     "pose_seated_fly",
 ]
@@ -394,6 +395,29 @@ def hinges(seated: SeatedFly) -> list[Hinge]:
         bone = driver_bone_for(body) or "DRIVER:RIG_Head"
         found.append(Hinge(name=name, bone=bone, world=_hinge_world(pivot * seated.scale, axis)))
     return found
+
+
+def level_gaze_pitch_deg(seated: SeatedFly) -> float:
+    """Degrees to turn the head about the car's side axis so the fly looks level ahead.
+
+    A fly looks along its body axis, and the seat lays that axis along the driver's reclined
+    hips-to-head line, so the seated fly looks up and back (about 141 degrees above level
+    ahead in the SF70H). Its neck cannot fix that: flybody's ``head`` joint bends -29 to +17
+    degrees, and reclining less pushes the fly through the floor. The GH-26 app turns the
+    ``DRIVER:RIG_Head`` bone by this angle instead (``HEAD_PITCH_DEG`` in ``fly_pose.lua``).
+
+    Returns:
+        The gaze's elevation above the car's forward axis. Turning the head by this much
+        about +x (the driver's left), right-handed, brings the gaze level and forward.
+    """
+    model = seated.model
+    rest = mujoco.MjData(model)
+    mujoco.mj_forward(model, rest)
+    head = model.body("head").id
+    # At rest the fly faces +x; carry that direction with the head into the seated pose.
+    gaze_local = rest.xmat[head].reshape(3, 3).T @ np.array([1.0, 0.0, 0.0])
+    gaze = ac_from_mujoco(seated.data.xmat[head].reshape(3, 3) @ gaze_local)
+    return float(np.degrees(np.arctan2(gaze[1], gaze[2])))  # AC: +y up, +z forward
 
 
 def _outward_sign(
