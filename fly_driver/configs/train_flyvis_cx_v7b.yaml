@@ -22,8 +22,12 @@
 # v7 pays a 50 m corner bonus per corner driven (fly_driver/envs/lap_time_reward.py), paints
 # the braking line in brightness bands (fly_driver/envs/braking_line.py), and raises entropy
 # to 0.005. Everything else is v6.
+# v7b: the B arm of the v7 A/B, v7a plus the braking line. Same starting weights, which
+# never saw the line: from the grid they stall after 1 m with it on (1,055 m with it off), and
+# a 50k-step smoke fell from 223 to 115 m per drive. Expect v7b to dip first while it learns
+# to use the line; 5M steps show whether it ends up ahead of v7a.
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
-name: flyvis_cx_v7  # v7 = corner bonus, braking line; v6 = fine-tuning PPO
+name: flyvis_cx_v7b  # v7b = corner bonus, braking line; v6 = fine-tuning PPO
 output_dir: runs
 # v6 seed 4 at update 70: its best 50-drive window (987 m, updates 34-79) is the best of round 6,
 # and 70 is the nearest checkpoint at or before it. Not in git: copied into weights/.
