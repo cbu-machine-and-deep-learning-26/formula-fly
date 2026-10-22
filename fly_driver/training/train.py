@@ -440,6 +440,7 @@ class _EpisodeTally:
         self.terms: dict[str, float] = {}
         self.lap_complete = False
         self.lap_time: float | None = None
+        self.distance_m: float | None = None
 
     def add(self, reward: float, terms: Mapping[str, float], info: Mapping[str, Any]) -> None:
         if self.terms and set(terms) != set(self.terms):
@@ -451,6 +452,8 @@ class _EpisodeTally:
         self.total_return += reward
         for name, value in terms.items():
             self.terms[name] = self.terms.get(name, 0.0) + value
+        if "progress_m" in info:
+            self.distance_m = (self.distance_m or 0.0) + float(info["progress_m"])
         if info.get("lap_complete"):
             self.lap_complete = True
             reported = info.get("lap_time")
@@ -482,6 +485,7 @@ class _EpisodeTally:
             truncated=truncated,
             reward_terms=dict(self.terms),
             start_m=self.start_m,
+            distance_m=self.distance_m,
         )
 
 

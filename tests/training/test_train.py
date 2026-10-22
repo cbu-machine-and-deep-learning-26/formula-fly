@@ -378,4 +378,6 @@ def test_the_practice_track_trains_through_the_same_loop(tmp_path: Path):
         raise
     rows = _rows(result.run_dir / EPISODES_FILENAME)
     assert rows and [key for key in rows[0] if key.startswith("reward_")] == TERM_COLUMNS
+    # ProgressReward pays one per metre, so its term is the distance column.
+    assert float(rows[0]["distance_m"]) == pytest.approx(float(rows[0]["reward_progress"]))
     assert result.env_steps == 64
