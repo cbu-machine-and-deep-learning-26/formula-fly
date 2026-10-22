@@ -443,6 +443,9 @@ class TrainConfig:
         ppo: The optimiser.
         eval: Periodic deterministic evaluation.
         logging: CSV always; W&B and checkpoints optional.
+        init_from: A ``policy_*.pt`` checkpoint to warm-start from, or ``None`` to start
+            fresh. The policy (with its feature-normaliser statistics) and the brain beside
+            it load before PPO starts; the optimiser starts fresh and the eye stays frozen.
     """
 
     name: str = "flyvis_frozen"
@@ -457,6 +460,7 @@ class TrainConfig:
     ppo: PPOConfig = field(default_factory=PPOConfig)
     eval: PeriodicEvalConfig = field(default_factory=PeriodicEvalConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    init_from: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or os.sep in self.name or "/" in self.name or self.name in (".", ".."):

@@ -333,6 +333,8 @@ def train_seed(
             brain.to(device)
         feature_dim = int(eye.feature_dim) if brain is None else brain.output_dim
         policy = build_policy(config.policy, feature_dim).to(device)
+        if config.init_from is not None:
+            warm_start(Path(config.init_from), policy, brain)
         learner = PPOLearner(policy, config.ppo, eye=trainable_eye, brain=brain, device=device)
         parameters = _parameter_counts(config, trainable_eye, brain, policy)
         (run_dir / PARAMETERS_FILENAME).write_text(
@@ -769,6 +771,39 @@ def _run(
     )
 
 
+def _sibling(checkpoint: Path, stage: str) -> Path:
+    """The ``stage`` weights saved beside a ``policy_*.pt`` checkpoint."""
+    path = checkpoint.with_name(checkpoint.name.replace("policy_", f"{stage}_", 1))
+    if path == checkpoint or not path.exists():
+        raise FileNotFoundError(f"{path} not found; it holds the {stage} for {checkpoint}")
+    return path
+
+
+def warm_start(checkpoint: Path, policy: MlpPolicy, brain: CentralComplexBrain | None) -> None:
+    """Load a checkpoint's policy, normaliser statistics and brain into freshly built ones.
+
+    Each round starts from the previous round's best checkpoint (docs/training.md). The
+    policy's normaliser statistics are buffers in its state dict, so they load with it.
+
+    Raises:
+        FileNotFoundError: If the checkpoint, or the brain beside it, is missing.
+        ValueError: If the checkpoint's policy is shaped differently from ``policy``.
+        RuntimeError: If the brain's weights do not fit ``brain`` (torch's strict load).
+    """
+    saved = MlpPolicy.load(checkpoint)
+    shape = (saved.feature_dim, saved.hidden_sizes, saved.activation, saved.normalizer is None)
+    wanted = (policy.feature_dim, policy.hidden_sizes, policy.activation, policy.normalizer is None)
+    if shape != wanted:
+        raise ValueError(
+            f"{checkpoint} holds a policy of (feature_dim, hidden_sizes, activation, "
+            f"unnormalised) {shape}, but this config builds {wanted}"
+        )
+    policy.load_state_dict(saved.state_dict())
+    if brain is not None:
+        weights = torch.load(_sibling(checkpoint, "brain"), map_location="cpu", weights_only=True)
+        brain.load_state_dict(weights)
+
+
 def load_driver(
     config: TrainConfig,
     checkpoint: str | Path,
@@ -793,20 +828,15 @@ def load_driver(
             not beside the checkpoint. Periodic checkpoints do not save a fine-tuned eye.
     """
     checkpoint = Path(checkpoint)
-
-    def sibling(stage: str) -> Path:
-        path = checkpoint.with_name(checkpoint.name.replace("policy_", f"{stage}_", 1))
-        if path == checkpoint or not path.exists():
-            raise FileNotFoundError(f"{path} not found; it holds the {stage} for {checkpoint}")
-        return path
-
     eye = build_eye(config.eye, env)
     if not config.eye.frozen:
-        weights = torch.load(sibling("eye"), map_location="cpu", weights_only=True)
+        weights = torch.load(_sibling(checkpoint, "eye"), map_location="cpu", weights_only=True)
         eye.load_state_dict(weights)  # type: ignore[attr-defined]
     brain = build_brain(config.brain, eye, env)
     if brain is not None:
-        brain.load_state_dict(torch.load(sibling("brain"), map_location="cpu", weights_only=True))
+        brain.load_state_dict(
+            torch.load(_sibling(checkpoint, "brain"), map_location="cpu", weights_only=True)
+        )
         brain.to(device)
     policy = MlpPolicy.load(checkpoint, device=device).eval()
     return DirectDriveAgent(eye, policy, brain=brain)

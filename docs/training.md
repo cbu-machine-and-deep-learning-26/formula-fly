@@ -248,7 +248,7 @@ target lap time (202 km/h at 105 s), `v` is `progress_m / dt`, `dt` is 0.02 s:
 | Term | Per step | Purpose |
 |---|---|---|
 | `pace` | `progress_m * max(clip(v / v*, 0, 2), 0.25)` forward, `progress_m` backwards | pays distance weighted by speed |
-| `track_limits` | `-v* * 1.7 * depth * dt` | charges running past the kerb, scaled by depth |
+| `track_limits` | `-v* * 1.7 * depth * dt`, capped at the step's pace since v5 | charges running past the kerb, scaled by depth |
 | `crash` | `-crash_penalty_m`, once; 0 in v4 | charged on a track-limit termination or a stall |
 | `lap_bonus` | `2000 * target / lap_time`, plus 1000 if `lap_time <= target`, once | pays for a completed lap, more for a faster one |
 
@@ -313,6 +313,41 @@ python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4.yaml --se
 # csds-pc-1
 python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4b.yaml --seed 0  # ... --seed 4
 ```
+
+## Warm starts
+
+Each round starts from the previous round's best checkpoint, not from scratch. `init_from:`
+in a run config names a `policy_*.pt`; before PPO starts, the policy (with its
+feature-normaliser statistics) loads from it and the brain from the `brain_*.pt` beside it,
+as `load_driver` pairs them. The eye stays frozen and pretrained, the optimiser starts
+fresh, and a policy or brain of another shape is an error. It works for every env type.
+
+Checkpoints are not in git. Copy the chosen pair into the training checkout's `weights/`
+(git-ignored) and point `init_from:` at it, relative to the checkout. Round 5
+(`train_flyvis_cx_v5.yaml`, `train_flyvis_cx_ac_v5.yaml`) starts from v4 seed 0's
+`policy_update_00250.pt`, before that seed collapsed, at its best 50-drive window (623 m
+average), in `weights/round4_best/`.
+
+## The v5 reward
+
+Round 4's best seeds drove 2.8 km through six corners at up to 140 km/h, but seeds 0, 3 and 5
+collapsed into two leaks. Kerb clipping cost about 14 m/s at the termination depth, so a
+policy that kept clipping expected less from continuing than from creeping off the track and
+ending the run. Seed 0 settled at 4 s, 7 m, 6 km/h episodes. And the stall rule only armed
+after the car first passed 2 m/s, so seed 3 never did and sat out every 300 s episode.
+
+v5 (`train_flyvis_cx_v5.yaml`) closes both:
+
+- **Every early end costs 18 m:** a crash, an off-track termination or a stall. 18 is the
+  largest whole metre for which, with a crash a fixed D ≥ 50 m ahead, the γ = 0.997
+  discounted return still rises with speed from 30 km/h to twice target pace. The bound is
+  18.44, tightest at 30 km/h and D = 50 m. The derivation is in
+  `fly_driver/envs/lap_time_reward.py`.
+- **Too slow ends the run.** Under 30 km/h (`stall_speed_mps: 8.3`) for 3 s ends the
+  episode, counted from the first step. Flat out from rest passes 30 km/h in 0.7 s.
+- **An exit never pays.** The cost past the kerb is capped at the step's pace, so a step that
+  moves forward is worth at least 0, on or off the track. The kerb itself stays free.
+- **Pace without the floor:** `pace_floor: 0`. The slow rule now forces the car to move.
 
 ## Adding an eye, a brain, an env
 
