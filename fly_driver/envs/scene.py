@@ -88,6 +88,13 @@ class SceneConfig:
             deliberately and say so. It is on by default because the people driving this
             by hand want it.
         racing_line_width_m: Width of the painted stripe.
+        braking_line: Paint the racing line in three brightness bands from
+            :func:`~fly_driver.envs.braking_line.speed_profile`: black where the profile
+            brakes, mid-grey where it carries cornering speed, white where it pushes. The eye
+            sees luminance, so the bands are luminance. Visible to the fly, like
+            ``racing_line``, and off by default.
+        braking_line_width_m: Width of that stripe. Wider than the racing line so the eye's
+            721 columns resolve it.
         include_walls: Add collidable walls at the track edges. Off by default: the reward
             already penalises leaving the track, and walls add thousands of contact geoms
             that slow every step of every rollout.
@@ -161,6 +168,8 @@ class SceneConfig:
     kerb_width_m: float = 1.00
     racing_line: bool = True
     racing_line_width_m: float = 0.18
+    braking_line: bool = False
+    braking_line_width_m: float = 0.8
     include_walls: bool = False
     wall_height_m: float = 0.6
     timestep: float = 0.002
@@ -225,6 +234,51 @@ class SceneConfig:
                 f"need 0 < znear_extents < zfar_extents, got "
                 f"{self.znear_extents} and {self.zfar_extents}"
             )
+
+
+def _braking_line_xml(centerline: Centerline, config: SceneConfig) -> tuple[str, str]:
+    """Meshes and geoms for the braking line: one ribbon per run of one band."""
+    from fly_driver.envs.braking_line import BRAKE, CARRY, PUSH, speed_profile
+
+    profile = speed_profile(centerline)
+    points, bands = profile.points, profile.bands
+    tangents = np.roll(points, -1, axis=0) - np.roll(points, 1, axis=0)
+    normals = np.stack([-tangents[:, 1], tangents[:, 0]], axis=1)
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-9)
+    half = config.braking_line_width_m / 2.0
+    count = len(points)
+    # Start the walk at a band change, so no run wraps past the end of the arrays.
+    first = int(np.flatnonzero(bands != np.roll(bands, 1))[0])
+    order = np.roll(np.arange(count), -first)
+    material = {BRAKE: "band_brake", CARRY: "band_carry", PUSH: "band_push"}
+    meshes, geoms = "", ""
+    run_start = 0
+    for position in range(1, count + 1):
+        if position < count and bands[order[position]] == bands[order[run_start]]:
+            continue
+        # Through the next run's first point, so the stripe has no gaps.
+        index = order[np.arange(run_start, position + 1) % count]
+        run = points[index]
+        arclength = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(run, axis=0), axis=1))])
+        vertex, face, texcoord = _ribbon_mesh(
+            run + normals[index] * half,
+            run - normals[index] * half,
+            config.surface_height_m + 0.012,
+            arclength,
+            config.texture_repeat_m,
+        )
+        name = f"braking_line_{len(geoms.splitlines())}"
+        meshes += (
+            f'\n    <mesh name="{name}" inertia="shell" vertex="{vertex}" '
+            f'face="{face}" texcoord="{texcoord}"/>'
+        )
+        geoms += (
+            f'\n    <geom name="{name}_geom" type="mesh" mesh="{name}" '
+            f'material="{material[int(bands[order[run_start]])]}" '
+            'contype="0" conaffinity="0" group="1"/>'
+        )
+        run_start = position
+    return meshes, geoms
 
 
 def _ribbon_mesh(
@@ -628,6 +682,11 @@ def build_scene_xml(
             'material="racing_line" contype="0" conaffinity="0" group="1"/>'
         )
 
+    if config.braking_line and config.braking_line_width_m > 0:
+        band_meshes, band_geoms = _braking_line_xml(centerline, config)
+        line_mesh += band_meshes
+        line_geom += band_geoms
+
     walls = ""
     if config.include_walls:
         for side, sign in (("left", 1.0), ("right", -1.0)):
@@ -704,6 +763,9 @@ def build_scene_xml(
     <material name="kerb" texture="kerb_tex"/>
     <material name="wall" rgba="0.8 0.8 0.85 1"/>
     <material name="racing_line" rgba="0.15 0.55 0.95 0.85"/>
+    <material name="band_brake" rgba="0.02 0.02 0.02 1"/>
+    <material name="band_carry" rgba="0.55 0.55 0.55 1"/>
+    <material name="band_push" rgba="1 1 1 1"/>
     <!-- The start/finish check. texuniform keeps the squares world-scaled, so they stay
          square across the full width of the circuit instead of stretching with the geom. -->
     <texture name="start_tex" type="2d" builtin="checker" width="64" height="64"

@@ -354,6 +354,8 @@ class PracticeTrack:
         self._done = True
         self._steps = 0
         self._previous_s = 0.0
+        self._odometer_m = 0.0
+        self._corner_paid_at: dict[int, float] = {}
         self._frame: Frame | None = None
 
     # -- read-only view of the world -------------------------------------------------
@@ -466,6 +468,7 @@ class PracticeTrack:
         self._lap.reset(projection.arclength, float(self._data.time))
         self._segments.reset(projection.arclength, float(self._data.time))
         self._penalty.reset()
+        self._reset_corners()
 
         self._frame = self._render()
         info = self._info(
@@ -540,6 +543,7 @@ class PracticeTrack:
 
         now = float(self._data.time)
         segment = self._segments.update(projection.arclength, now, off_track=is_off)
+        corner_complete = self._corner_complete(segment, progress_m)
         completed = self._lap.update(projection.arclength, now, on_track=not is_off)
 
         lap_penalty: float | None = None
@@ -570,6 +574,7 @@ class PracticeTrack:
             crashed=crashed,
             stalled=stalled,
         )
+        info["corner_complete"] = corner_complete
         reward, terms = self.reward(info, self.dt)
         info["reward_terms"] = terms
 
@@ -618,6 +623,31 @@ class PracticeTrack:
         qpos = self._data.qpos[self._root_qpos : self._root_qpos + 7]
         qpos[0], qpos[1] = x, y
         qpos[3:7] = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
+
+    def _reset_corners(self) -> None:
+        """Zero the odometer. A corner the car starts inside was not driven whole, so it
+        pays only once the car comes round to it again."""
+        self._odometer_m = 0.0
+        current = self._segments.current
+        self._corner_paid_at = {current.index: 0.0} if current and current.is_corner else {}
+
+    def _corner_complete(self, segment: SegmentTiming | None, progress_m: float) -> bool:
+        """Whether this step finished driving a corner, for the reward's corner bonus.
+
+        The segment timer already counts only forward entry into the next segment. On top
+        of that a corner pays once per lap of net forward progress: the odometer must have
+        run over half a lap since it last paid, so rocking back and forth over a corner's
+        exit, or reversing round and driving it again, pays nothing more.
+        """
+        self._odometer_m += progress_m
+        if segment is None or not segment.segment.is_corner:
+            return False
+        index = segment.segment.index
+        paid_at = self._corner_paid_at.get(index)
+        if paid_at is not None and self._odometer_m - paid_at < 0.5 * self.centerline.length:
+            return False
+        self._corner_paid_at[index] = self._odometer_m
+        return True
 
     def _project(self) -> Projection:
         position = self._data.xpos[self._body]

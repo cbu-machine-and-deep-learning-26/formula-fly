@@ -26,7 +26,7 @@ import pytest
 from fly_driver.envs.lap_time_reward import LapTimeReward
 from fly_driver.envs.penalty import PenaltyWeights
 from fly_driver.envs.practice_track import DEFAULT_TRACK_LIMIT, PracticeTrack, ProgressReward
-from fly_driver.envs.scene import SceneConfig
+from fly_driver.envs.scene import SceneConfig, build_scene_xml
 from fly_driver.envs.segment_log import SegmentLog
 from fly_driver.interface import FRAME_DTYPE, FRAME_RATE_HZ, FRAME_SHAPE, ControlVector
 
@@ -595,7 +595,7 @@ class TestLapTimeRewardInTheEnv:
             for _ in range(50):
                 result = _step(env, FLAT_OUT)
                 terms = result.info["reward_terms"]
-                assert set(terms) == {"pace", "track_limits", "crash", "lap_bonus"}
+                assert set(terms) == {"pace", "track_limits", "crash", "corner_bonus", "lap_bonus"}
                 assert sum(terms.values()) == pytest.approx(result.reward)
         finally:
             env.close()
@@ -1361,3 +1361,76 @@ class TestTheCheckedInTrainingConfig:
         out the progress signal the policy is meant to learn from."""
         total, _, _ = attempt
         assert -100.0 < total < 100.0, f"one failed attempt returned {total:.1f}"
+
+
+class TestTheCornerBonusCannotBeFarmed:
+    """``info["corner_complete"]`` pays each corner once per lap of net forward driving.
+
+    Driven through the env's own segment timer with arclength alone, so no rendering.
+    """
+
+    @pytest.fixture
+    def env(self):
+        env = PracticeTrack()
+        yield env
+        env.close()
+
+    def _corner(self, env):
+        return next(segment for segment in env.segment_timer.segments if segment.is_corner)
+
+    def _drive_to(self, env, start_m: float, end_m: float, step_m: float) -> int:
+        """Feed the timer and the bonus rule from ``start_m`` to ``end_m``; count payments."""
+        paid = 0
+        count = max(1, int(round(abs(end_m - start_m) / step_m)))
+        for position in np.linspace(start_m, end_m, count + 1)[1:]:
+            progress = float(np.sign(end_m - start_m)) * abs(end_m - start_m) / count
+            timing = env.segment_timer.update(position % env.centerline.length, 0.0)
+            paid += env._corner_complete(timing, progress)
+        return paid
+
+    def _start(self, env, at_m: float) -> None:
+        env.segment_timer.reset(at_m)
+        env._reset_corners()
+
+    def test_driving_out_of_a_corner_pays_once(self, env):
+        corner = self._corner(env)
+        self._start(env, corner.start_m - 20.0)
+        assert self._drive_to(env, corner.start_m - 20.0, corner.end_m + 20.0, 1.0) == 1
+
+    def test_rocking_over_the_exit_pays_nothing_more(self, env):
+        corner = self._corner(env)
+        self._start(env, corner.start_m - 20.0)
+        self._drive_to(env, corner.start_m - 20.0, corner.end_m + 5.0, 1.0)
+        repaid = 0
+        for _ in range(20):
+            repaid += self._drive_to(env, corner.end_m + 5.0, corner.end_m - 5.0, 1.0)
+            repaid += self._drive_to(env, corner.end_m - 5.0, corner.end_m + 5.0, 1.0)
+        assert repaid == 0
+
+    def test_reversing_through_a_corner_pays_nothing(self, env):
+        corner = self._corner(env)
+        self._start(env, corner.end_m + 20.0)
+        assert self._drive_to(env, corner.end_m + 20.0, corner.start_m - 20.0, 1.0) == 0
+
+    def test_the_corner_a_random_start_lands_in_does_not_pay(self, env):
+        corner = self._corner(env)
+        inside = (corner.start_m + corner.end_m) / 2.0
+        self._start(env, inside)
+        assert self._drive_to(env, inside, corner.end_m + 20.0, 1.0) == 0
+
+    def test_every_corner_pays_once_a_lap(self, env):
+        corners = sum(segment.is_corner for segment in env.segment_timer.segments)
+        self._start(env, 1.0)
+        length = env.centerline.length
+        assert self._drive_to(env, 1.0, 1.0 + 2.0 * length, 2.0) == 2 * corners
+
+
+class TestTheBrakingLine:
+    def test_it_is_off_by_default_and_painted_when_asked(self):
+        from fly_driver.envs.centerline import Centerline
+
+        centerline = Centerline.load()
+        assert 'material="band_brake"' not in build_scene_xml(centerline)
+        painted = build_scene_xml(centerline, SceneConfig(braking_line=True))
+        for band in ("band_brake", "band_carry", "band_push"):
+            assert f'material="{band}"' in painted

@@ -105,6 +105,44 @@ class TestSlowingDownNeverPays:
         assert crash == stall == -REWARD.crash_penalty_m < 0.0
 
 
+#: v7's reward: v5's, plus the corner bonus.
+V7 = replace(REWARD, corner_bonus_m=50.0)
+
+
+class TestBrakingForACorner:
+    """250 to 120 km/h over 2 s, against carrying 250 km/h into the apex and crashing."""
+
+    V_FAST, V_CORNER = 250.0 / 3.6, 120.0 / 3.6
+
+    def _brake_and_make_it(self, reward: LapTimeReward, exit_m: float) -> float:
+        """Brake over 2 s to the apex, drive ``exit_m`` to the exit, take the bonus, and
+        crash on the very next step: the worst case for braking."""
+        speeds = list(np.linspace(self.V_FAST, self.V_CORNER, 100))
+        speeds += [self.V_CORNER] * round(exit_m / (self.V_CORNER * DT))
+        total = sum(GAMMA**t * reward(_info(speed_mps=v), DT)[0] for t, v in enumerate(speeds))
+        n = len(speeds)
+        bonus = reward(_info() | {"corner_complete": True}, DT)[0]
+        return total + GAMMA**n * bonus + GAMMA ** (n + 1) * reward(_info(crashed=True), DT)[0]
+
+    def _crash_at_speed(self, reward: LapTimeReward) -> float:
+        zone_m = float(np.sum(np.linspace(self.V_FAST, self.V_CORNER, 100)) * DT)
+        steps = round(zone_m / (self.V_FAST * DT))
+        pace = reward(_info(speed_mps=self.V_FAST), DT)[0]
+        crash = reward(_info(crashed=True), DT)[0]
+        return sum(GAMMA**t * pace for t in range(steps)) + GAMMA**steps * crash
+
+    @pytest.mark.parametrize("exit_m", [30.0, 50.0, 100.0])
+    def test_braking_for_a_corner_beats_crashing_at_speed(self, exit_m):
+        """By more than a crash costs, even if braking then crashes straight after."""
+        margin = self._brake_and_make_it(V7, exit_m) - self._crash_at_speed(V7)
+        assert margin > V7.crash_penalty_m
+
+    def test_without_the_bonus_it_is_a_coin_toss(self):
+        """Round 6's reward: braking and crashing within a few metres of each other."""
+        margin = self._brake_and_make_it(REWARD, 30.0) - self._crash_at_speed(REWARD)
+        assert abs(margin) < REWARD.crash_penalty_m
+
+
 class TestAnExitNeverPays:
     @pytest.mark.parametrize("speed_mps", [MIN_SPEED_MPS, 20.0, REWARD.target_speed_mps, 100.0])
     @pytest.mark.parametrize("seconds", [0.5, 2.0, 10.0])
@@ -232,7 +270,7 @@ class TestTerms:
     def test_the_terms_add_up_to_the_reward(self):
         info = _info(speed_mps=50.0, depth=0.1, lap_time=110.0)
         reward, terms = REWARD(info, DT)
-        assert set(terms) == {"pace", "track_limits", "crash", "lap_bonus"}
+        assert set(terms) == {"pace", "track_limits", "crash", "corner_bonus", "lap_bonus"}
         assert sum(terms.values()) == pytest.approx(reward)
 
 
