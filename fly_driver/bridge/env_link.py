@@ -140,7 +140,11 @@ def checked_reset(car: AcCar, attempts: int = RESET_ATTEMPTS) -> Frame:
         )
         if telemetry.centre_on_track and telemetry.tyres_out == 0:
             if hasattr(car, "shift_up"):
-                engage_first_gear(car)
+                try:
+                    engage_first_gear(car)
+                except Exception:  # a gear problem must not fail the reset
+                    GEAR_STATS["failures"] += 1
+                    logger.exception("gear-up failed (%d failures so far)", GEAR_STATS["failures"])
             return frame
     raise RuntimeError(f"car still off the road after {attempts} resets: {telemetry}")
 
