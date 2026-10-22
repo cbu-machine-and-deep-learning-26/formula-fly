@@ -88,6 +88,22 @@ class TestTheGaussian:
         torch.testing.assert_close(policy.log_std.exp(), torch.full((3,), float(np.exp(-0.5))))
 
 
+class TestTheInitialActionMean:
+    @pytest.mark.parametrize(
+        ("mean", "expected"),
+        [((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)), ((0.0, 0.4, -0.6), (0.0, 0.4, 0.0))],
+    )
+    def test_a_fresh_head_acts_the_configured_mean_after_clipping(self, mean, expected):
+        """Zero features reach the actor's output layer as zeros, so its bias is the mean."""
+        policy = MlpPolicy(feature_dim=8, init_action_mean=mean)
+        action = policy.act(np.zeros(8, dtype=np.float32))
+        assert (action.steer, action.throttle, action.brake) == pytest.approx(expected)
+
+    def test_it_needs_three_values(self):
+        with pytest.raises(ValueError, match="init_action_mean"):
+            MlpPolicy(feature_dim=8, init_action_mean=(0.4,))
+
+
 class TestTheNormalizer:
     def test_running_statistics_match_numpy_over_several_batches(self):
         normalizer = RunningNormalizer(DIM, epsilon=0.0)

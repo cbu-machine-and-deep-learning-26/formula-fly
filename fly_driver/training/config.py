@@ -183,12 +183,15 @@ class PolicyConfig:
             layer. Optic-lobe activity spans roughly -3 to 6 a.u. with very different scales
             per cell type; pixels sit in ``[0, 1]``. The statistics are part of the checkpoint.
         init_log_std: Initial log standard deviation of the Gaussian over the raw action.
+        init_action_mean: Initial raw action mean ``(steer, throttle, brake)``. Zeros, the
+            default, park an untrained car half the time; see ``MlpPolicy``.
     """
 
     hidden_sizes: tuple[int, ...] = (64, 64)
     activation: str = "tanh"
     normalize_features: bool = True
     init_log_std: float = 0.0
+    init_action_mean: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def __post_init__(self) -> None:
         sizes = tuple(self.hidden_sizes)
@@ -202,6 +205,12 @@ class PolicyConfig:
         object.__setattr__(
             self, "init_log_std", _check_finite("policy.init_log_std", self.init_log_std)
         )
+        mean = tuple(
+            _check_finite("policy.init_action_mean entries", v) for v in self.init_action_mean
+        )
+        if len(mean) != 3:
+            raise ValueError(f"policy.init_action_mean needs 3 values, got {self.init_action_mean}")
+        object.__setattr__(self, "init_action_mean", mean)
 
 
 @dataclass(frozen=True)

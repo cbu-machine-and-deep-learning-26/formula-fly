@@ -28,6 +28,9 @@ policy:
   activation: tanh
   normalize_features: true
   init_log_std: 0.0
+  # Throttle starts at +0.4 and brake at -0.6 (clipped to 0 most of the time), so the
+  # untrained car pulls away. Zeros left it parked: every 20k-step episode stalled.
+  init_action_mean: [0.0, 0.4, -0.6]
 
 env:
   type: practice_track  # practice_track | dummy

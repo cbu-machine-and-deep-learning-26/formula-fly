@@ -63,6 +63,7 @@ _FLAT_OUT_STEPS = 900
 _RUN_UP_STEPS = 120
 _FULL_LOCK_STEPS = 200
 _FULL_LOCK = ControlVector(steer=1.0, throttle=1.0, brake=0.0)
+_FULL_BRAKE = ControlVector(steer=0.0, throttle=0.0, brake=1.0)
 
 
 @pytest.fixture(scope="module")
@@ -589,17 +590,31 @@ class TestLapTimeRewardInTheEnv:
             env.close()
 
     def test_a_stall_terminates_with_the_crash_penalty(self):
+        """Stopping after having moved is a crash."""
         env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
         try:
             _started(env)
-            for _ in range(200):
-                result = _step(env, COASTING)
+            _drive(env, FLAT_OUT, 25)
+            assert env.dynamics.speed_mps(env.data) > 2.0, "the car launched"
+            for _ in range(300):
+                result = _step(env, _FULL_BRAKE)
                 if result.terminated:
                     break
             assert result.terminated and result.info["stalled"]
             assert not result.info["crashed"]
-            assert env.steps == round(1.0 * FRAME_RATE_HZ) + 1, "just over stall_seconds"
             assert result.info["reward_terms"]["crash"] == -env.reward.crash_cost_m
+        finally:
+            env.close()
+
+    def test_a_car_that_never_launches_does_not_stall(self):
+        """It pays the time cost instead, which keeps a learning signal for an untrained
+        policy that cannot yet pull away."""
+        env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
+        try:
+            _started(env)
+            result = _drive(env, COASTING, 200)
+            assert not result.terminated and not result.info["stalled"]
+            assert result.info["reward_terms"]["time"] < 0.0
         finally:
             env.close()
 

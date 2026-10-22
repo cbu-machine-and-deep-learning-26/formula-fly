@@ -72,7 +72,7 @@ misspelt hyperparameter cannot silently keep its default.
 | `eye.frozen` | `true` trains only the head. `false` puts the eye's parameters in the optimiser; see below |
 | `eye.params` | Constructor keyword arguments (`readouts`, `checkpoint`, `downsample`...). `frame_shape` and `frame_rate_hz` come from the env and may not be set here |
 | `brain` | `none` (the policy reads the eye directly), or `type: central_complex` with `params` (`neuron_count`, `output_dim`, `input_in_degree`, `recurrent_in_degree`, `seed` for the synthetic wiring). See [the brain condition](#the-brain-condition) |
-| `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std` |
+| `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std`, `init_action_mean` (default zeros) |
 | `env.type` | `practice_track` or `dummy` |
 | `env.max_steps` | Episode truncation in frames. 15 000 = 5 minutes at 50 Hz, room for a slow clean lap |
 | `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, `random_start` (training env only, see below), and anything else `PracticeTrack` takes |
@@ -217,7 +217,18 @@ env:
     stall_speed_mps: 2.0      # slower than this for more than stall_seconds ends the episode
     stall_seconds: 2.5
     reward: {type: lap_time, target_lap_time_s: 105.0}
+policy:
+  init_action_mean: [0.0, 0.4, -0.6]   # steer, throttle, brake
 ```
+
+The stall clock starts only once the car has first gone faster than `stall_speed_mps`.
+Stopping after that is a crash. A car that never pulls away is not terminated: it pays the
+time cost until truncation (-4,205 over 300 s), which still beats crashing and leaves
+progress as a learning signal. `policy.init_action_mean` sets the actor's initial output
+bias. The default of zeros leaves throttle and brake clipped to 0 half the time, and in the
+first 20k-step v3 run, before both fixes, every episode stalled at 2.5 s with the same
+return (explained variance 0). Starting throttle at +0.4 and brake at -0.6 makes the
+untrained car pull away.
 
 `reward` takes `type: progress` (the default, unchanged) or `type: lap_time`, plus that
 class's keyword arguments. All terms are in metres. `v*` is lap length over target lap time,
