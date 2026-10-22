@@ -47,6 +47,7 @@ env:
     reward:
       type: lap_time
       target_lap_time_s: 105.0
+      scale: 0.01  # crash ~-47, lap bonus ~+17-30: unnormalised PPO needs small returns
 
 ppo:
   rollout_steps: 2048

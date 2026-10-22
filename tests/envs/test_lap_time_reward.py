@@ -172,6 +172,25 @@ class TestTerms:
         assert sum(terms.values()) == pytest.approx(reward)
 
 
+class TestScale:
+    SCALED = LapTimeReward(scale=0.01)
+
+    def test_it_multiplies_every_term(self):
+        info = _info(speed_mps=50.0, depth=0.1, crashed=True, lap_time=110.0)
+        reward, terms = REWARD(info, DT)
+        scaled_reward, scaled_terms = self.SCALED(info, DT)
+        assert scaled_terms == pytest.approx({name: 0.01 * v for name, v in terms.items()})
+        assert scaled_reward == pytest.approx(0.01 * reward)
+
+    def test_it_preserves_the_orderings(self):
+        def drive(speed_mps: float) -> float:
+            return _drive(speed_mps, 60.0, self.SCALED)
+
+        assert drive(0.0) < drive(30.0 / 3.6) < 0.0 < drive(self.SCALED.target_speed_mps)
+        crash = self.SCALED(_info(crashed=True), DT)[0]
+        assert crash < drive(0.0) * self.SCALED.horizon_s / 60.0
+
+
 class TestTheDefaultIsUnchanged:
     def test_progress_reward_scores_as_before(self):
         """Hand-computed against the round-2 formula, so old runs reproduce exactly."""

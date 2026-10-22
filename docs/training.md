@@ -216,7 +216,7 @@ env:
   params:
     stall_speed_mps: 2.0      # slower than this for more than stall_seconds ends the episode
     stall_seconds: 2.5
-    reward: {type: lap_time, target_lap_time_s: 105.0}
+    reward: {type: lap_time, target_lap_time_s: 105.0, scale: 0.01}
 policy:
   init_action_mean: [0.0, 0.4, -0.6]   # steer, throttle, brake
 ```
@@ -231,8 +231,11 @@ return (explained variance 0). Starting throttle at +0.4 and brake at -0.6 makes
 untrained car pull away.
 
 `reward` takes `type: progress` (the default, unchanged) or `type: lap_time`, plus that
-class's keyword arguments. All terms are in metres. `v*` is lap length over target lap time,
-`dt` is 0.02 s:
+class's keyword arguments. All terms are in metres, then multiplied by `scale`. v3 uses
+0.01, so a crash is about -47 rather than -4,700: PPO here does not normalise returns or
+values, and the unscaled returns gave the critic nothing it could fit (explained variance
+0 over 20k steps). Scaling every term keeps their ratios, so the table below is in metres.
+`v*` is lap length over target lap time, `dt` is 0.02 s:
 
 | Term | Per step | Purpose |
 |---|---|---|

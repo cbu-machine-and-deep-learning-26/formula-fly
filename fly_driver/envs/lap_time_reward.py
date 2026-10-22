@@ -13,7 +13,10 @@ amount of slow driving could:
            + lap_bonus_m * target / lap_time            once, per completed lap
            + target_bonus_m                             once, if that lap beat the target
 
-Everything is in metres, so the terms add up in one unit.
+Everything is in metres, so the terms add up in one unit, and then multiplied by ``scale``.
+PPO here does not normalise returns or values, so the scale is what keeps the critic's
+targets small: at ``scale=0.01`` a crash is about -47 instead of -4,700. It multiplies every
+term, so the ratios between them, and every property below, are unchanged.
 
 **Pace beats distance.** Per second the car earns ``v - time_cost_fraction * v_target``, which
 is negative below that pace (59 km/h for a 90 s target) and grows with speed. Standing still
@@ -76,6 +79,7 @@ class LapTimeReward:
         penalty_weights: The env's off-track rule. ``time_weight`` sets the cost past the
             kerb, ``minimum_depth`` and ``maximum_depth`` bound the depth it applies to.
         lap_length_m: Track length, for target pace.
+        scale: Multiplies every term before it is returned and logged.
 
     Raises:
         ValueError: If a time or length is not positive, or a weight is negative.
@@ -89,9 +93,10 @@ class LapTimeReward:
     target_bonus_m: float = 1000.0
     penalty_weights: PenaltyWeights = field(default_factory=lambda: DEFAULT_PENALTY_WEIGHTS)
     lap_length_m: float = _LAP_LENGTH_M
+    scale: float = 1.0
 
     def __post_init__(self) -> None:
-        for name in ("target_lap_time_s", "horizon_s", "lap_length_m"):
+        for name in ("target_lap_time_s", "horizon_s", "lap_length_m", "scale"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
         for name in ("time_cost_fraction", "crash_penalty_m", "lap_bonus_m", "target_bonus_m"):
@@ -129,4 +134,5 @@ class LapTimeReward:
             terms["lap_bonus"] = self.lap_bonus_m * self.target_lap_time_s / lap_time
             if lap_time <= self.target_lap_time_s:
                 terms["lap_bonus"] += self.target_bonus_m
+        terms = {name: self.scale * value for name, value in terms.items()}
         return float(sum(terms.values())), terms
