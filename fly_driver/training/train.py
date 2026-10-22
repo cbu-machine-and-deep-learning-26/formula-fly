@@ -634,11 +634,13 @@ def _run(
         update_started = time.perf_counter()
         buffer.reset()
         finished: list[TrainingEpisode] = []
+        controls: list[tuple[float, float, float]] = []
         for _ in range(ppo.rollout_steps):
             raw, log_prob, value = policy.sample(to_device(features))
             raw_action = raw[0].cpu().numpy()
             # The interface's explicit squash: a non-finite sample raises here, loudly.
             control = ControlVector.clipped(*raw_action.tolist())
+            controls.append((control.throttle, control.brake, abs(control.steer)))
             next_frame, reward, terminated, truncated, info = env.step(control)
             terminated, truncated = bool(terminated), bool(truncated)
             terms = _reward_terms(info, reward)
@@ -695,6 +697,7 @@ def _run(
             features = validate_features(brain.step(eye_features), feature_dim)
 
         now = time.perf_counter()
+        mean_throttle, mean_brake, mean_abs_steer = np.mean(controls, axis=0).tolist()
         last_record = UpdateRecord(
             seed=seed,
             update=update,
@@ -715,6 +718,9 @@ def _run(
             learning_rate=stats.learning_rate,
             steps_per_second=ppo.rollout_steps / max(now - update_started, 1e-9),
             elapsed_s=now - started,
+            mean_throttle=mean_throttle,
+            mean_brake=mean_brake,
+            mean_abs_steer=mean_abs_steer,
         )
         loggers.log_update(last_record)
         if progress is not None:

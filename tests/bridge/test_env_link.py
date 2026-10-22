@@ -9,7 +9,13 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from fly_driver.bridge.env_link import RemoteCar, checked_reset, serve_env
+from fly_driver.bridge.env_link import (
+    FIRST_GEAR,
+    GEAR_STATS,
+    RemoteCar,
+    checked_reset,
+    serve_env,
+)
 from fly_driver.bridge.fake_ac import FakeAc
 from fly_driver.bridge.fly_side import open_listener
 from fly_driver.envs.assetto_corsa import AssettoCorsaTrack
@@ -171,3 +177,34 @@ def test_a_server_that_does_not_come_back_raises(server) -> None:
     _drop(remote)
     with pytest.raises(ConnectionError, match="not back"):
         remote.step()
+
+
+def test_a_reset_leaves_the_car_in_neutral_and_the_envs_reset_puts_it_in_first(server) -> None:
+    """AC's reset leaves the SF70H in neutral, where 0.15 throttle never launches it."""
+    car, port = server
+    car.reset()
+    assert car.gear() < FIRST_GEAR
+    env = AssettoCorsaTrack.connect("127.0.0.1", port)
+    env.reset()
+    assert car.gear() >= FIRST_GEAR
+    for _ in range(20):
+        env.step(ControlVector(0.0, 0.15, 0.0))
+    assert car.telemetry().speed_mps > 0.0
+    env.close()
+
+
+class NoShiftCar(FakeAc):
+    """A gearbox that ignores gear-up."""
+
+    def shift_up(self) -> None:
+        pass
+
+
+def test_a_car_that_will_not_shift_is_logged_not_failed(caplog) -> None:
+    car = NoShiftCar(realtime=False)
+    before = dict(GEAR_STATS)
+    frame = checked_reset(car)
+    assert frame.shape == FRAME_SHAPE and car.gear() < FIRST_GEAR
+    assert GEAR_STATS["gear_ups"] == before["gear_ups"] + 2
+    assert GEAR_STATS["failures"] == before["failures"] + 1
+    assert "after two gear-ups" in caplog.text

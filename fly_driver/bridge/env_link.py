@@ -43,12 +43,27 @@ from fly_driver.bridge.wire import (
 )
 from fly_driver.interface import ControlVector, Frame
 
-__all__ = ["RESET_ATTEMPTS", "AcCar", "RemoteCar", "checked_reset", "serve_env"]
+__all__ = [
+    "FIRST_GEAR",
+    "GEAR_STATS",
+    "RESET_ATTEMPTS",
+    "AcCar",
+    "RemoteCar",
+    "checked_reset",
+    "engage_first_gear",
+    "serve_env",
+]
 
 logger = logging.getLogger(__name__)
 
 #: Resets tried before the server gives up on a car that will not come back to the road.
 RESET_ATTEMPTS = 3
+
+#: AC's gear value for first (``acsys.CS.Gear``: 0 reverse, 1 neutral, 2 first).
+FIRST_GEAR = 2
+
+#: Gear-ups pressed and resets left out of gear, over the server's life, for its log.
+GEAR_STATS = {"gear_ups": 0, "failures": 0}
 
 
 class AcCar(Protocol):
@@ -70,11 +85,43 @@ class AcCar(Protocol):
         """Release the car."""
 
 
+def engage_first_gear(car: Any) -> bool:
+    """Press gear-up until the car reads first or higher: once, then one retry.
+
+    ``ac.ext_resetCar()`` leaves the SF70H in neutral, and its auto-shifter only engages
+    first under enough throttle: 0.5 takes 0.5-1 s, 0.33 takes 5.6 s, and 0.15 never makes
+    it inside the slow window. A car still out of gear is logged and counted, not an error.
+
+    Returns:
+        Whether the car is in first or higher.
+    """
+    for _ in range(2):
+        if car.gear() >= FIRST_GEAR:
+            return True
+        car.shift_up()
+        GEAR_STATS["gear_ups"] += 1
+    gear = car.gear()
+    if gear >= FIRST_GEAR:
+        logger.info("in gear %d after a reset (%d gear-ups so far)", gear, GEAR_STATS["gear_ups"])
+        return True
+    GEAR_STATS["failures"] += 1
+    logger.warning(
+        "still in gear %d after two gear-ups (%d gear-ups, %d failures so far)",
+        gear,
+        GEAR_STATS["gear_ups"],
+        GEAR_STATS["failures"],
+    )
+    return False
+
+
 def checked_reset(car: AcCar, attempts: int = RESET_ATTEMPTS) -> Frame:
-    """Reset until the car is on the road with all four tyres in.
+    """Reset until the car is on the road with all four tyres in, then put it in first.
 
     Upstream's reset sends one message and sleeps a second; nothing confirms the car moved.
-    This checks the telemetry it lands with and tries again.
+    This checks the telemetry it lands with and tries again. A car that can shift (AC and
+    :class:`~fly_driver.bridge.fake_ac.FakeAc`, not :class:`RemoteCar`) is then put in
+    first by :func:`engage_first_gear`. The frame returned is the one from the reset: the car
+    is at rest while it shifts.
 
     Raises:
         RuntimeError: If ``attempts`` resets leave the car off the road.
@@ -92,6 +139,12 @@ def checked_reset(car: AcCar, attempts: int = RESET_ATTEMPTS) -> Frame:
             telemetry.speed_mps,
         )
         if telemetry.centre_on_track and telemetry.tyres_out == 0:
+            if hasattr(car, "shift_up"):
+                try:
+                    engage_first_gear(car)
+                except Exception:  # a gear problem must not fail the reset
+                    GEAR_STATS["failures"] += 1
+                    logger.exception("gear-up failed (%d failures so far)", GEAR_STATS["failures"])
             return frame
     raise RuntimeError(f"car still off the road after {attempts} resets: {telemetry}")
 

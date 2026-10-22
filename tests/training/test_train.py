@@ -117,6 +117,10 @@ class TestARunWritesWhatTheIssueAsksFor:
         assert [int(row["env_steps"]) for row in updates] == [64, 128, 192, 256]
         assert all(np.isfinite(float(row["policy_loss"])) for row in updates)
         assert float(updates[-1]["learning_rate"]) < float(updates[0]["learning_rate"])
+        for row in updates:  # the controls the env was sent, after clipping
+            assert 0.0 <= float(row["mean_throttle"]) <= 1.0
+            assert 0.0 <= float(row["mean_brake"]) <= 1.0
+            assert 0.0 <= float(row["mean_abs_steer"]) <= 1.0
 
         assert (result.run_dir / "config.yaml").exists()
         assert result.checkpoint == result.run_dir / FINAL_CHECKPOINT

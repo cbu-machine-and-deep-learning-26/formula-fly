@@ -113,6 +113,9 @@ class UpdateRecord:
         learning_rate: Step size used for the update.
         steps_per_second: Env steps per wall-clock second over collection plus update.
         elapsed_s: Wall-clock seconds since the run started.
+        mean_throttle: Mean throttle the env was sent over the rollout, after clipping.
+        mean_brake: Mean brake, likewise.
+        mean_abs_steer: Mean ``|steer|``, likewise.
     """
 
     seed: int
@@ -130,6 +133,9 @@ class UpdateRecord:
     learning_rate: float
     steps_per_second: float
     elapsed_s: float
+    mean_throttle: float
+    mean_brake: float
+    mean_abs_steer: float
 
     def to_row(self) -> dict[str, Any]:
         """Flat CSV row."""

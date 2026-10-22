@@ -49,6 +49,9 @@ def _update(**overrides) -> UpdateRecord:
         "learning_rate": 3e-4,
         "steps_per_second": 900.0,
         "elapsed_s": 0.6,
+        "mean_throttle": 0.4,
+        "mean_brake": 0.1,
+        "mean_abs_steer": 0.2,
     }
     values.update(overrides)
     return UpdateRecord(**values)
