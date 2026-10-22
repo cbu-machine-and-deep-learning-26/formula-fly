@@ -80,10 +80,12 @@ class TestNoEarlyExitPays:
         )
         assert parked < _crash_after(speed_mps, stall_s, gamma=gamma)
 
-    def test_a_stall_costs_the_same_as_a_crash(self):
-        crash = REWARD(_info(crashed=True), DT)[1]["crash"]
-        stall = REWARD(_info(stalled=True), DT)[1]["crash"]
-        assert stall == crash == -REWARD.crash_penalty_m
+    @pytest.mark.parametrize("crash_at_m", [30.0, 100.0, 300.0, 1000.0])
+    def test_slowing_down_to_delay_a_crash_never_pays(self, crash_at_m):
+        """With a crash a fixed distance ahead, discounting must not make slower better."""
+        speeds = np.linspace(2.0, 80.0, 40)
+        returns = [_crash_after(v, crash_at_m / v, gamma=0.997) for v in speeds]
+        assert np.all(np.diff(returns) > 0.0)
 
 
 class TestPaceBeatsDistance:
@@ -92,13 +94,14 @@ class TestPaceBeatsDistance:
         sprint = _crash_after(REWARD.target_speed_mps, 20.0)
         assert crawl < sprint
 
-    def test_a_faster_metre_pays_more_up_to_the_cap(self):
+    def test_a_faster_metre_pays_more_between_the_floor_and_the_cap(self):
         def per_metre(speed_mps: float) -> float:
             return REWARD(_info(speed_mps=speed_mps), DT)[0] / (speed_mps * DT)
 
         target = REWARD.target_speed_mps
         assert per_metre(0.5 * target) < per_metre(target) < per_metre(2.0 * target)
         assert per_metre(3.0 * target) == pytest.approx(REWARD.pace_cap)
+        assert per_metre(0.1 * target) == pytest.approx(REWARD.pace_floor)
 
 
 class TestReversing:

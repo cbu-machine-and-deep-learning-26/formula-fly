@@ -5,23 +5,27 @@ fast and crashing. Round 3 charged a quarter of target pace per second (about 50
 105 s target), so every slower second lost reward. An untrained car cannot hold 50 km/h
 without crashing, so ending the episode was the cheapest policy, and all 10 seeds learned to
 stall: speeds of 4-19 km/h, every episode a crash or a stall, distances shrinking. This
-reward makes every forward second pay, and faster seconds pay more per metre:
+reward makes every forward metre pay, and faster metres pay more:
 
-    reward = progress_m * clip(v / v_target, 0, pace_cap)   forward; v = progress_m / dt
-           = progress_m                                     backwards
-           - v_target * time_weight * depth * dt            only past the kerb's outer edge
-           - crash_penalty_m                                once, on a crash or a stall
-           + lap_bonus_m * target / lap_time                once, per completed lap
-           + target_bonus_m                                 once, if that lap beat the target
+    reward = progress_m * w,  w = max(clip(v / v_target, 0, pace_cap), pace_floor)
+                                                         forward; v = progress_m / dt
+           = progress_m                                  backwards
+           - v_target * time_weight * depth * dt         only past the kerb's outer edge
+           - crash_penalty_m                             once, on a crash or a stall; 0
+           + lap_bonus_m * target / lap_time             once, per completed lap
+           + target_bonus_m                              once, if that lap beat the target
 
 Everything is in metres, then multiplied by ``scale``. PPO here does not normalise returns
 or values, so the scale keeps the critic's targets small: at ``scale=0.01`` a lap at target
-pace is about +89 and a crash -5.
+pace is about +89.
 
-**Pace beats distance.** Per second the car earns ``v^2 / v_target``: target pace earns
-``v_target``, and 28 km/h earns 14% as much per metre. **No early exit pays.** No term is
-negative for a forward-moving car on track, so driving on and crashing later always beats
-crashing now, discounted or not; a stall costs the same as a crash.
+**Pace beats distance.** A metre at target pace pays twice a metre at half of it, and the
+floor keeps a gradient toward faster at the crawling speeds an untrained car drives.
+
+**A crash costs only the reward it forfeits.** A constant crash penalty, discounted, is
+cheaper the later it lands, so slowing down to delay a crash pays; at any penalty above 0
+some crash distance makes slow beat fast. With none, every forward step pays at least 0, so
+ending the episode early never pays, and driving faster to a fixed crash always does.
 
 **Track limits.** The kerb counts as track, as in F1: the cost is driven by
 :func:`~fly_driver.envs.centerline.off_track_fraction`, which measures from the car's outer
@@ -61,7 +65,8 @@ class LapTimeReward:
     Args:
         target_lap_time_s: The lap time the reward is calibrated to.
         pace_cap: Most a forward metre can be weighted, as a multiple of target pace.
-        crash_penalty_m: Cost of a crash or a stall.
+        pace_floor: Least a forward metre is weighted, however slow the car.
+        crash_penalty_m: Cost of a crash or a stall. 0 by default: see the module docstring.
         lap_bonus_m: Bonus for a lap at exactly the target time, scaled by
             ``target / lap_time``.
         target_bonus_m: Extra bonus for a lap at or under the target.
@@ -76,7 +81,8 @@ class LapTimeReward:
 
     target_lap_time_s: float = DEFAULT_TARGET_LAP_TIME_S
     pace_cap: float = 2.0
-    crash_penalty_m: float = 500.0
+    pace_floor: float = 0.25
+    crash_penalty_m: float = 0.0
     lap_bonus_m: float = 2000.0
     target_bonus_m: float = 1000.0
     penalty_weights: PenaltyWeights = field(default_factory=lambda: DEFAULT_PENALTY_WEIGHTS)
@@ -87,7 +93,7 @@ class LapTimeReward:
         for name in ("target_lap_time_s", "pace_cap", "lap_length_m", "scale"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
-        for name in ("crash_penalty_m", "lap_bonus_m", "target_bonus_m"):
+        for name in ("pace_floor", "crash_penalty_m", "lap_bonus_m", "target_bonus_m"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative, got {getattr(self, name)}")
 
@@ -103,6 +109,7 @@ class LapTimeReward:
         progress_m = float(info["progress_m"])
         if progress_m > 0.0:
             weight = min(progress_m / dt / self.target_speed_mps, self.pace_cap)
+            weight = max(weight, self.pace_floor)
             pace = progress_m * weight
         else:
             pace = progress_m

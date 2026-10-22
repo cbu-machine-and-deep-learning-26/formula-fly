@@ -3,8 +3,10 @@
 # v3 (GH-27): the lap-time reward, stall termination, a longer discount horizon, 10 seeds.
 # v4 (GH-27): v3's time cost taught all 10 seeds to stall: below ~50 km/h every second lost
 # reward and a crash cost the same at any point, so ending the episode was the cheapest
-# policy. v4 pays pace-weighted progress instead, so every forward second pays and faster
-# pays more. Everything else is v3.
+# policy. v4 pays pace-weighted progress instead, so every forward metre pays and faster
+# pays more. A crash costs only the reward it forfeits: a discounted constant penalty is
+# cheaper the later it lands, so any penalty above 0 pays the car to slow down and delay it.
+# Everything else is v3.
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
 name: flyvis_cx_v4  # v4 = pace reward; v3 = lap-time; v2 = random starts; flyvis_cx was grid-only
 output_dir: runs
@@ -50,9 +52,10 @@ env:
     reward:
       type: lap_time
       target_lap_time_s: 105.0
-      pace_cap: 2.0  # a forward metre is weighted by speed / target speed, up to 2x
-      crash_penalty_m: 500.0
-      scale: 0.01  # target-pace lap ~+89, crash -5: unnormalised PPO needs small returns
+      pace_cap: 2.0  # a forward metre is weighted by speed / target speed, from 0.25 up to 2
+      pace_floor: 0.25
+      crash_penalty_m: 0.0
+      scale: 0.01  # target-pace lap ~+89: unnormalised PPO needs small returns
 
 ppo:
   rollout_steps: 2048

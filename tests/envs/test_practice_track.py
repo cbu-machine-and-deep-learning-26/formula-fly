@@ -574,6 +574,10 @@ class TestBuildingTheRewardFromConfig:
             PracticeTrack(reward={"type": "vibes"})
 
 
+# The default crash penalty is 0. A non-zero one shows the env charges it on the right steps.
+PENALISED = {"type": "lap_time", "crash_penalty_m": 500.0}
+
+
 @pytest.mark.render
 class TestLapTimeRewardInTheEnv:
     def test_every_term_is_logged_on_a_real_drive(self):
@@ -590,7 +594,7 @@ class TestLapTimeRewardInTheEnv:
 
     def test_a_stall_terminates_with_the_crash_penalty(self):
         """Stopping after having moved is a crash."""
-        env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
+        env = PracticeTrack(reward=PENALISED, stall_speed_mps=2.0, stall_seconds=1.0)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 25)
@@ -627,7 +631,7 @@ class TestLapTimeRewardInTheEnv:
             env.close()
 
     def test_leaving_the_circuit_still_terminates_and_costs_the_crash_penalty(self):
-        env = PracticeTrack(reward={"type": "lap_time"})
+        env = PracticeTrack(reward=PENALISED)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)

@@ -227,7 +227,7 @@ env:
   params:
     stall_speed_mps: 2.0      # slower than this for more than stall_seconds ends the episode
     stall_seconds: 2.5
-    reward: {type: lap_time, target_lap_time_s: 105.0, pace_cap: 2.0, crash_penalty_m: 500.0, scale: 0.01}
+    reward: {type: lap_time, target_lap_time_s: 105.0, pace_cap: 2.0, pace_floor: 0.25, crash_penalty_m: 0.0, scale: 0.01}
 policy:
   init_action_mean: [0.0, 0.4, -0.6]   # steer, throttle, brake
 ```
@@ -241,22 +241,25 @@ Starting throttle at +0.4 and brake at -0.6 makes the untrained car pull away.
 
 `reward` takes `type: progress` (the default, unchanged) or `type: lap_time`, plus that
 class's keyword arguments. All terms are in metres, then multiplied by `scale`. At 0.01 a
-lap at target pace returns about +89 and a crash -5: PPO here does not normalise returns or
+lap at target pace returns about +89: PPO here does not normalise returns or
 values, and unscaled returns gave the critic nothing it could fit. `v*` is lap length over
 target lap time (202 km/h at 105 s), `v` is `progress_m / dt`, `dt` is 0.02 s:
 
 | Term | Per step | Purpose |
 |---|---|---|
-| `pace` | `progress_m * clip(v / v*, 0, 2)` forward, `progress_m` backwards | pays distance weighted by speed |
+| `pace` | `progress_m * max(clip(v / v*, 0, 2), 0.25)` forward, `progress_m` backwards | pays distance weighted by speed |
 | `track_limits` | `-v* * 1.7 * depth * dt` | charges running past the kerb, scaled by depth |
-| `crash` | `-500`, once | charged on a track-limit termination or a stall |
+| `crash` | `-crash_penalty_m`, once; 0 in v4 | charged on a track-limit termination or a stall |
 | `lap_bonus` | `2000 * target / lap_time`, plus 1000 if `lap_time <= target`, once | pays for a completed lap, more for a faster one |
 
-- **Pace beats distance.** Per second the car earns `v^2 / v*`. Crawling at 28 km/h for
-  the whole 300 s earns 323 m. Target pace for 20 s and then a crash earns 621 m.
-- **No early exit pays.** No term is negative for a forward-moving car on track, so
-  driving on and crashing later always beats crashing now, discounted or not. Parking
-  until the stall ends the episode is the worst forward-or-stopped outcome.
+- **Pace beats distance.** A metre at target pace pays twice a metre at half of it.
+  Crawling at 28 km/h for the whole 300 s earns 583 m. Target pace for 20 s and then a
+  crash earns 1,121 m. The 0.25 floor keeps a gradient toward faster at crawling speeds.
+- **A crash costs only the reward it forfeits.** A first v4 smoke run with a 500 m crash
+  penalty slid from 17 to 4 km/h: discounted, a constant penalty is cheaper the later it
+  lands, so slowing down to delay a crash paid. Any penalty above 0 makes slow beat fast
+  for some crash distance. With none, every forward step pays at least 0, so ending the
+  episode early never pays and driving faster to a fixed crash always does.
 - **The kerb is track.** `depth` is `off_track_fraction`: the fraction of the car's width
   past the kerb's *outer* edge. Two wheels on the kerb read 0 and cost nothing. Past the
   kerb, each second costs the seconds the env's lap-time penalty adds
