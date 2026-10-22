@@ -154,28 +154,84 @@ def serve_env(car: AcCar, listener: socket.socket, hello: dict[str, Any]) -> Non
 class RemoteCar:
     """The car behind :func:`serve_env`, with the car's own methods.
 
+    If the connection drops (the server or AC died and was restarted), the car reconnects
+    for up to ``reconnect_s``. A :meth:`step` that lost its connection then returns the last
+    frame with ``ended`` true, so the env ends that episode and the next reset carries on; a
+    real-time run of hours should not end on one server restart. A :meth:`reset` retries on
+    the new connection, at most :data:`RESET_RECONNECTS` times, because the server closes a
+    client deliberately when a reset fails its checks.
+
     Args:
         host: The env server's address; ``127.0.0.1`` on the AC box itself.
         port: Its port.
         timeout_s: Longest wait for any answer. A reset takes about a second on AC.
+        reconnect_s: How long to keep trying to reconnect; ``0`` raises at once.
 
     Attributes:
         hello: What the server announced: track, car, frame shape and rate.
+        reconnects: Connections re-established so far.
     """
 
-    def __init__(self, host: str, port: int, timeout_s: float = 60.0) -> None:
-        self._sock = socket.create_connection((host, port), timeout=timeout_s)
-        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self.hello = recv_hello(self._sock)
+    #: Reconnects one :meth:`reset` may use before it raises.
+    RESET_RECONNECTS = 3
+
+    def __init__(
+        self, host: str, port: int, timeout_s: float = 60.0, reconnect_s: float = 600.0
+    ) -> None:
+        self._address = (host, port)
+        self._timeout_s = timeout_s
+        self._reconnect_s = reconnect_s
+        self.hello = self._connect()
+        self.reconnects = 0
         self._control = ControlVector.neutral()
         self._episode: int | None = None
         self._telemetry: Telemetry | None = None
+        self._frame: Frame | None = None
+
+    def _connect(self) -> dict[str, Any]:
+        self._sock = socket.create_connection(self._address, timeout=self._timeout_s)
+        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return recv_hello(self._sock)
+
+    def _reconnect(self, error: Exception) -> None:
+        host, port = self._address
+        logger.warning(
+            "env server at %s:%d dropped (%s); reconnecting for up to %.0f s",
+            host,
+            port,
+            error,
+            self._reconnect_s,
+        )
+        self._sock.close()
+        deadline = time.monotonic() + self._reconnect_s
+        while True:
+            try:
+                hello = self._connect()
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ConnectionError(
+                        f"env server at {host}:{port} not back in {self._reconnect_s:.0f} s"
+                    ) from error
+                time.sleep(min(5.0, self._reconnect_s))
+        if hello != self.hello:
+            raise ConnectionError(f"env server came back serving {hello}, not {self.hello}")
+        self.reconnects += 1
+        logger.warning("reconnected to the env server (%d so far)", self.reconnects)
 
     def reset(self) -> Frame:
         """Reset the car on the server."""
-        send_request(self._sock, RESET, ControlVector.neutral())
-        self._episode, _, self._telemetry, frame = recv_observation(self._sock)
-        return frame
+        for attempt in range(self.RESET_RECONNECTS + 1):
+            try:
+                send_request(self._sock, RESET, ControlVector.neutral())
+                self._episode, _, self._telemetry, frame = recv_observation(self._sock)
+                self._frame = frame
+                return frame
+            except OSError as error:  # ConnectionError and timeouts are OSErrors
+                if attempt == self.RESET_RECONNECTS:
+                    raise
+                self._reconnect(error)
+        raise AssertionError("unreachable")
 
     def apply(self, control: ControlVector) -> None:
         """Hold ``control`` for the next :meth:`step`; it is sent with it."""
@@ -185,11 +241,19 @@ class RemoteCar:
         """Send the control and wait for the next tick.
 
         Returns:
-            ``(frame, ended)``. ``ended`` is true when AC ended the episode, or when another
-            client reset the car since this client's last reset.
+            ``(frame, ended)``. ``ended`` is true when AC ended the episode, when another
+            client reset the car since this client's last reset, or when the connection
+            dropped and was re-established (the frame is then the last one received).
         """
-        send_request(self._sock, STEP, self._control)
-        episode, ended, self._telemetry, frame = recv_observation(self._sock)
+        try:
+            send_request(self._sock, STEP, self._control)
+            episode, ended, self._telemetry, frame = recv_observation(self._sock)
+        except OSError as error:
+            if self._frame is None:
+                raise
+            self._reconnect(error)
+            return self._frame, True
+        self._frame = frame
         return frame, ended or episode != self._episode
 
     def telemetry(self) -> Telemetry:
