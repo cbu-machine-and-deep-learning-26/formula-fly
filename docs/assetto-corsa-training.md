@@ -1,0 +1,220 @@
+# Training in Assetto Corsa (GH-29)
+
+`scripts/train.py` trains in Assetto Corsa (the original 2014 AC, through AssettoCorsaGym)
+with the same PPO loop and YAML conditions as the MuJoCo practice track. Two processes:
+
+- `scripts/ac_env_server.py` runs next to AC on the Windows box, in AssettoCorsaGym's
+  Python 3.9 env. It owns the car and answers reset and step requests on TCP 2351.
+- The trainer builds `env.type: assetto_corsa`, an `AssettoCorsaTrack`
+  (`fly_driver/envs/assetto_corsa.py`) that connects to the server. It has
+  `PracticeTrack`'s `reset`/`step` and `info` keys and takes the same `reward` callable.
+
+This is not the driving bridge in [assetto-corsa-bridge.md](assetto-corsa-bridge.md). The
+bridge pushes frames and never waits. The env server waits for the trainer to ask.
+
+## How it behaves
+
+**Resets.** Upstream's reset (`AssettoCorsaEnv/ac_env.py` → `ac_client.py` → the
+`sensors_par` plugin) closes the UDP link, sends `reset` to the plugin's management port,
+which calls Custom Shaders Patch's `ac.ext_resetCar()`, sleeps 1 s, reconnects and flushes
+three ticks. CSP documents that call as "resets car to the road invalidating lap": the car
+goes back on the road **where it stopped**, at rest. CSP's Python API has no call that puts
+the car at a chosen point, and upstream adds none. So:
+
+- There are **no random starts.** Each episode starts where the last one ended, which
+  spreads starts round the lap on its own, biased towards the corners the policy fails at.
+- There is **no fixed start** for evaluation either. Evaluation uses the same env and
+  starts wherever the car is. Lap times are still comparable, because a lap is timed from
+  the first crossing of the line (the out lap), as on the practice track.
+- `reset(seed=...)` accepts the seed and ignores it.
+
+The server checks every reset: the car must come back with its centre on the track and all
+four tyres in, or it resets again, up to three times. After that the trainer's connection
+closes and its env raises. Each reset is logged with its duration and position.
+
+Getting chosen starts would need a CSP **Lua** app (`physics.setCarPosition`) next to the
+plugin. That is new plugin code and not part of this task.
+
+**Episode ends.** Upstream's own terminations are switched off on the server, and the env
+decides:
+
+| End | Kind | Rule |
+|---|---|---|
+| Off track | terminated | `tyres_out / 4 > track_limit`; the default 0.5 is upstream's "three tyres out" |
+| Stall | terminated | slower than `stall_speed_mps` (1 m/s) for `stall_s` seconds; off unless set |
+| Step cap | truncated | `env.max_steps` |
+| Late trainer | truncated | one step missed more than `max_missed_ticks` (5) ticks |
+| Interrupted | truncated | AC ended the session, or another client reset the car |
+
+**Real time.** A step applies its control at once and blocks until AC's next tick (20 ms
+at 50 Hz). AC does not wait. When the trainer comes back late, the server drains the stale
+UDP states and answers with the newest tick, so the observation is never old. The skipped
+ticks show as a gap in AC's tick counter: `info["missed_ticks"]` per step,
+`env.missed_ticks` in total, and a warning per episode that missed any. While the trainer is
+away the car drives on with its last control, so a gap of more than `max_missed_ticks` ends
+the episode instead of crediting the policy with driving it did not do. **Every PPO update
+is such a gap**, so each rollout boundary costs one episode and one reset.
+
+**Periodic evaluation** opens a second connection while the training one sits idle. The
+server serves both under one lock. The evaluation's reset moves the car, so the training
+env's next step comes back `truncated` with `info["interrupted"]`, and training resets.
+
+**Track position** comes from AC and upstream's track data: `arclength_m` is
+`NormalizedSplinePosition × TrackLength` (0 at the line), `lateral_m` is upstream's distance
+to AC's racing line, `on_track` is the car centre inside upstream's occupancy grid, and
+`off_track_fraction` is `tyres_out / 4`. There is no off-track time penalty; `lap_time`
+equals `lap_time_raw`.
+
+**Protocol** (`fly_driver/bridge/wire.py`). On connect the server sends a JSON hello:
+`track`, `car`, `frame_shape`, `frame_rate_hz`. The env refuses a server whose hello differs
+from its config. Then the trainer sends `!Bddd` (kind, steer, throttle, brake), with kind 1
+for reset and 2 for step. The server answers `!I?IdddddB?` (episode count, ended, tick,
+time, lap distance, track length, lateral, speed, tyres out, centre on track) followed by
+the bridge's frame record. See `fly_driver/bridge/env_link.py`.
+
+## The AC box: csds-pc-2
+
+Inspected read-only on 2026-10-21 over SSH as `stoff`:
+
+| Needed | State |
+|---|---|
+| Assetto Corsa | Installed, `C:\Program Files (x86)\Steam\steamapps\common\assettocorsa`, build 14923034 |
+| Silverstone | `content\tracks\ks_silverstone`, with the `gp` layout |
+| `dallara_f317` | **Not installed.** The Formula cars present are `ks_ferrari_sf70h`, `ks_ferrari_sf15t`, `tatuusfa1` |
+| Custom Shaders Patch | **Missing** (no `extension\`, no `dwrite.dll`). Without it there is no reset at all |
+| `sensors_par` plugin | **Missing** from `apps\python` |
+| Socket DLLs in `system\x64` | **Missing** (only `python33.dll`, `Python33.zip`, `openvr_api.dll`) |
+| vJoy | **Missing** (no `C:\Program Files\vJoy`, no device) |
+| Python 3.9 / conda | **Missing.** Only Python 3.11 (`C:\Program Files\Python311`); no conda |
+| AssettoCorsaGym checkout | **Missing** everywhere under `C:\Users` and `C:\` |
+| Occupancy grid `ks_silverstone-gp_0.1m.pkl` | **Missing** (comes from HuggingFace `dasgringuen/assettoCorsaGym`) |
+| AC video settings (`CSDS 2`'s profile) | 3440×1440 fullscreen, no FPS cap. Upstream needs 640×480 windowed at 50 FPS |
+| AC controls (`CSDS 2`'s profile) | `INPUT_METHOD=KEYBOARD`. Needs vJoy |
+| Inbound firewall for 2351 | None. Only needed for a trainer on another machine |
+| GPU | RTX 4090 |
+| Fly stack | `C:\Users\student\formula-fly` with `.venv-flyvis` and earlier runs |
+
+**The car.** Upstream ships steering maps only for `dallara_f317`, `bmw_z4_gt3` and
+`ks_mazda_miata`, and `AssettoCorsaEnv` reads `AssettoCorsaConfigs/cars/<car>/steer_map.csv`
+at start-up. Either buy the DLC that contains `dallara_f317`, or use `ks_ferrari_sf70h`,
+which is the car the MuJoCo practice track models and the car GH-25's fly driver is fitted
+to. For the SF70H, add `AssettoCorsaConfigs/cars/ks_ferrari_sf70h/steer_map.csv` in the
+same two-row form as the Dallara's (`action_steerAngle,steerAngle`, then
+`-a,-lock` and `a,lock`). Measure `lock` (degrees of steering wheel at full lock) in game,
+and take `a = lock / 449.3`, the ratio the Dallara's row implies (`0.534 = 240 / 449.3`).
+Then pass `--car ks_ferrari_sf70h` to the server and `car: ks_ferrari_sf70h` in the YAML.
+
+**Sessions.** The console session belongs to `CSDS 2`, whose profile is `C:\Users\griss`
+(Documents redirected to OneDrive). AC must render in an interactive desktop, and the
+server must run **in the same session as AC**: the plugin's screen capture hands frames
+over through `Local\` named events and shared memory, which Windows scopes to one session.
+An SSH shell is a different session, so the server cannot be started from SSH directly.
+
+- Start AC at the console as `CSDS 2` (Steam → Assetto Corsa → Hotlap, SF70H or Dallara,
+  Silverstone GP, `sensors_par` enabled).
+- Start the server in that session with a scheduled task that runs only when `CSDS 2` is
+  logged on (`/IT`). As an admin over SSH:
+
+  ```powershell
+  schtasks /Create /TN fly_ac_env_server /SC ONCE /ST 00:00 /RU "CSDS 2" /IT /F `
+    /TR "cmd /c cd /d C:\Users\student\formula-fly && C:\path\to\p309\python.exe scripts\ac_env_server.py --gym-root C:\src\assetto_corsa_gym --car ks_ferrari_sf70h > ac_env_server.log 2>&1"
+  schtasks /Run /TN fly_ac_env_server
+  ```
+
+  `schtasks` may ask for `CSDS 2`'s password even with `/IT`; if it does, create the same
+  task in Task Scheduler with "Run only when user is logged on". Whoever is logged on at the
+  console sees the server's window; that is expected.
+- The trainer does not need the desktop. Run it over SSH as `student` against
+  `127.0.0.1:2351`; loopback TCP crosses sessions.
+
+## One-time setup on csds-pc-2
+
+Do the AssettoCorsaGym install from [running-the-stacks.md](running-the-stacks.md#assettocorsagym-car)
+and the plugin settings from [assetto-corsa-bridge.md](assetto-corsa-bridge.md#one-time-setup-on-the-windows-box),
+which together cover every **Missing** row above: Content Manager and CSP, vJoy, the
+`p309` conda env, the plugin and its `system\x64` libraries, the occupancy grid, 640×480
+windowed at 50 FPS, and `sensors_par/config.py` with `ego_sampling_freq = 50`,
+`screen_capture_enable = True`, `screen_capture_freq = 50`, 96×96 and `bgr`. Do it in
+`CSDS 2`'s session, because AC's settings live in that user's Documents.
+
+## Run it
+
+1. AC in a Hotlap at the console, as above.
+2. The env server, by the scheduled task. Its log should show `env server for
+   ks_silverstone-gp/<car> on 127.0.0.1:2351`.
+3. A condition YAML for the trainer (keep it outside `fly_driver/configs/` until a
+   reviewed config lands there):
+
+   ```yaml
+   name: ac_flyvis_frozen
+   seeds: [0]
+   total_env_steps: 1000000
+   eye: {type: flyvis, frozen: true}
+   env:
+     type: assetto_corsa
+     max_steps: 15000
+     params:
+       host: 127.0.0.1
+       port: 2351
+       track: ks_silverstone-gp
+       car: ks_ferrari_sf70h      # or dallara_f317 once installed
+       stall_s: 5.0
+       # track_limit: 0.5, terminate_off_track: true, max_missed_ticks: 5
+   ppo: {rollout_steps: 4096, minibatches: 32, epochs: 10}
+   eval: {every_updates: 0}
+   ```
+
+4. The trainer, over SSH as `student`. A process started in a Windows SSH session dies
+   when the session closes, so for a real run launch it detached (a `schtasks` task as
+   `student`, or `Win32_Process Create`) and log to a file:
+
+   ```powershell
+   cd C:\Users\student\formula-fly
+   .venv-flyvis\Scripts\python.exe scripts\train.py --config ac_flyvis_frozen.yaml
+   ```
+
+**Split host** (trainer on a Spark or a Mac): start the server with `--host 0.0.0.0`, allow
+inbound TCP 2351 on csds-pc-2, and set `host:` to the box's address. The env is identical.
+
+**Dry run without AC**, anywhere: `python scripts/ac_env_server.py --fake`, then the same
+YAML with `port: 2351`. The fake reports whatever `--track` and `--car` it is given.
+Verified on a Mac: `--total-env-steps 4096` with the pixel eye, 1024-step rollouts and an
+evaluation every two updates completed in 114 s, with 20 training episodes, 23 resets and
+both evaluations interrupting the training episode as designed. The fake also runs under
+Python 3.9.
+
+## What to check on the box
+
+1. **Where a reset lands.** The server logs `reset N took S s: at D m, T tyres out`. Drive
+   off at a known point and confirm the car comes back on the road near `D`, at rest, facing
+   forwards. If it lands somewhere else (the pits, the grid), the "no fixed start" note above
+   is wrong and the doc needs correcting.
+2. **Reset time.** Upstream sleeps 1 s and flushes three ticks, so expect 1.1 to 1.5 s.
+   Retries (`reset 2`, `reset 3`) mean the car came back off the road.
+3. **Tick rate.** At 50 FPS with capture on, `info["missed_ticks"]` must be 0 on almost
+   every step outside PPO updates. A steady trickle of single misses means AC is not
+   holding 50 Hz or the trainer's step (eye + policy) is too slow; time it.
+4. **Steer sign and scale**, as in the bridge doc: `steer=+0.5` must turn right, and full
+   lock must match the car's wheel.
+5. **Frames.** The first frame of each episode should be the cockpit view at 96×96 RGB.
+6. **Off-track rule.** Put two, then three tyres on the grass; the episode must end at three.
+
+## Throughput
+
+Real time bounds everything: 50 steps/s, so **1M steps take 5.6 h** of driving. On top of
+that, per episode, one reset of about 1.1 to 1.5 s, and per PPO update, the update itself
+plus the episode it truncates. With 4096-step rollouts, 1M steps is 244 updates; at, say,
+10 s per update on the 4090 and 1.5 s per reset, that adds about 45 min plus the resets of
+ordinary episode ends. Seeds and conditions cannot run in parallel on one AC. Expect about
+one condition-seed per working day.
+
+On the Mac the fake's ticks slip by tens of milliseconds because `time.sleep` overshoots
+there by about 44 ms, so the fake reports missed ticks that real AC would not. That is the
+counter working, not the protocol.
+
+## Next step: behaviour cloning
+
+Pure online RL here is bounded by the wall clock. `AGENTS.md` §6's plan is to
+behaviour-clone from AssettoCorsaGym's 2.3M-step human dataset first and then fine-tune with
+this env. Note that the dataset is telemetry, not 96×96 frames, so cloning the frame-based
+fly needs either recorded frames or the hybrid observation §6 allows.
