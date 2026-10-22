@@ -301,13 +301,17 @@ credit assignment over a whole lap.
 
 ### v4 runs
 
-10 seeds × 5M steps, checkpoints every 50 updates, eval every 25 (from the grid):
+An A/B on `pace_floor`, paired on seeds 0-4, 5M steps each. `train_flyvis_cx_v4b.yaml` is
+v4 with `pace_floor: 0.0`. Below the floor's speed (50 km/h at 0.25) a metre pays the same
+however slow it is driven, while slower driving survives further. Without it, a slow metre
+pays proportionally less. Whether the floor's early gradient or that incentive wins only
+shows once the policy can steer:
 
 ```bash
 # csds-pc-2
-python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4.yaml --seed 0  # ... --seed 4
+python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4.yaml --seed 0   # ... --seed 4
 # csds-pc-1
-python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4.yaml --seed 5  # ... --seed 9
+python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4b.yaml --seed 0  # ... --seed 4
 ```
 
 ## Adding an eye, a brain, an env

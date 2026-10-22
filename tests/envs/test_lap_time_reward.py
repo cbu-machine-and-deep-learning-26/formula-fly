@@ -59,32 +59,36 @@ def _crash_after(
 SPEEDS_MPS = [0.1, 28.0 / 3.6, REWARD.target_speed_mps, 3.0 * REWARD.target_speed_mps]
 
 
+FLOORS = [pytest.param(LapTimeReward(pace_floor=f), id=f"floor_{f}") for f in (0.0, 0.25)]
+
+
+@pytest.mark.parametrize("reward", FLOORS)
 class TestNoEarlyExitPays:
     @pytest.mark.parametrize("gamma", [1.0, 0.997])
     @pytest.mark.parametrize("speed_mps", SPEEDS_MPS)
     @pytest.mark.parametrize("crash_at_s", [0.02, 1.0, 30.0, 299.0])
     def test_crashing_now_is_worse_than_driving_on_and_crashing_later(
-        self, gamma, speed_mps, crash_at_s
+        self, reward, gamma, speed_mps, crash_at_s
     ):
-        now = REWARD(_info(speed_mps=speed_mps, crashed=True), DT)[0]
-        assert now < _crash_after(speed_mps, crash_at_s, gamma=gamma)
+        now = reward(_info(speed_mps=speed_mps, crashed=True), DT)[0]
+        assert now < _crash_after(speed_mps, crash_at_s, reward, gamma)
 
     @pytest.mark.parametrize("gamma", [1.0, 0.997])
     @pytest.mark.parametrize("speed_mps", SPEEDS_MPS)
-    def test_stalling_never_beats_driving(self, gamma, speed_mps):
+    def test_stalling_never_beats_driving(self, reward, gamma, speed_mps):
         """Parked until the stall ends the episode, against any forward drive that crashes."""
         stall_s = 2.5
         parked = (
-            _drive(0.0, stall_s, gamma=gamma)
-            + gamma ** round(stall_s / DT) * REWARD(_info(stalled=True), DT)[0]
+            _drive(0.0, stall_s, reward, gamma)
+            + gamma ** round(stall_s / DT) * reward(_info(stalled=True), DT)[0]
         )
-        assert parked < _crash_after(speed_mps, stall_s, gamma=gamma)
+        assert parked < _crash_after(speed_mps, stall_s, reward, gamma)
 
     @pytest.mark.parametrize("crash_at_m", [30.0, 100.0, 300.0, 1000.0])
-    def test_slowing_down_to_delay_a_crash_never_pays(self, crash_at_m):
+    def test_slowing_down_to_delay_a_crash_never_pays(self, reward, crash_at_m):
         """With a crash a fixed distance ahead, discounting must not make slower better."""
         speeds = np.linspace(2.0, 80.0, 40)
-        returns = [_crash_after(v, crash_at_m / v, gamma=0.997) for v in speeds]
+        returns = [_crash_after(v, crash_at_m / v, reward, 0.997) for v in speeds]
         assert np.all(np.diff(returns) > 0.0)
 
 
