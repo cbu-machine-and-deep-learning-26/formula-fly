@@ -46,6 +46,19 @@ def _wait(shared: mmap.mmap, ready, timeout_s: float, what: str) -> tuple:
     raise TimeoutError(f"no {what} after {timeout_s} s; last state {_read(shared)}")
 
 
+def _wait_for_foreground(win32gui, window: int, step: int, timeout_s: float = 600.0) -> None:
+    """Block while another window is in front of AC, e.g. someone using the console."""
+    if win32gui.GetForegroundWindow() == window:
+        return
+    print(f"step {step}: AC is not the foreground window; waiting", flush=True)
+    deadline = time.monotonic() + timeout_s
+    while win32gui.GetForegroundWindow() != window:
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"AC was not the foreground window for {timeout_s} s")
+        time.sleep(0.5)
+    time.sleep(0.5)  # let AC redraw over whatever was there
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True, help="output prefix")
@@ -61,6 +74,11 @@ def main() -> int:
 
     sys.path.insert(0, str(args.ac_root / "apps" / "python" / "sensors_par"))
     import screen_capture  # the plugin's own grab and resize
+    import win32gui
+
+    window = win32gui.FindWindow(None, "Assetto Corsa")
+    if not window:
+        raise RuntimeError("the AC window was not found")
 
     shared = mmap.mmap(-1, LAYOUT.size, tagname="Local\\fly_bc_replay")
     state = _wait(
@@ -82,6 +100,8 @@ def main() -> int:
         step = args.start + k
         struct.pack_into("<i", shared, 0, step + 1)
         state = _wait(shared, lambda s, want=step + 1: s[1] == want, 10.0, f"step {step} on screen")
+        # The grab is of the screen where AC's window is: anything on top of it is captured.
+        _wait_for_foreground(win32gui, window, step)
         image, _ = screen_capture.capture_and_process(args.size, args.size, color_mode="bgr")
         if image is None:
             raise RuntimeError("the AC window was not found")

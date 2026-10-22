@@ -248,11 +248,15 @@ ourselves and render the frames from the replay.
    runs in (csds-pc-2's `student` console for the first drive). Copy `scripts/bc_replay_app/`
    to `<AC>\apps\lua\fly_bc_replay\` once, copy the replay to
    `Documents\Assetto Corsa\replay\`, set `race.ini`'s `[REPLAY] ACTIVE=1` and
-   `FILENAME=<replay file name>`, set `video.ini`'s `SMOKE=0` (back both up first), and
-   start AC as for training (`fly_ac_start`: 640×480 windowed, 50 FPS, nose camera). Smoke
-   must be off: AC renders each held step several times, and its tyre-smoke emitters spawn
-   particles on every one, so with training's `SMOKE=3` the replay fills with a haze that
-   real driving never shows. The only frames that lose real smoke are lock-ups and spins. The Lua app keeps the camera on
+   `FILENAME=<replay file name>` (back it up first), turn smoke off, and start AC as for
+   training (`fly_ac_start`: 640×480 windowed, 50 FPS, nose camera). For smoke, put
+   `[SMOKE]` / `ENABLED=0` in `Documents\Assetto Corsa\cfg\extension\particles_fx.ini`
+   (CSP's Particles FX) and set `video.ini`'s `SMOKE=0`. Smoke must be off because AC
+   renders each held step several times, and CSP's long-lasting tyre smoke builds up on
+   every one, until the replay is in a haze that Ryan's own screen recording of the drive
+   never shows. `video.ini` alone does not stop it. The only frames that lose real smoke are
+   lock-ups and spins. Keep the console untouched while it renders: the capture is a grab of
+   the screen where AC's window is, and it waits whenever AC is not the foreground window. The Lua app keeps the camera on
    the F1 nose view (`DRIVABLE_MODE=4`), hides all of AC's UI in the replay (its playback
    bar would sit in every frame), and holds the replay wherever
    `scripts/bc_replay_capture.py` asks, so every frame is one 20 ms step of replay time
@@ -264,8 +268,8 @@ ourselves and render the frames from the replay.
    ```
 
    It runs at about 9 frames/s, so a 4-minute drive takes 20 minutes. Afterwards stop AC
-   (`fly_ac_stop`) and restore `race.ini` and `video.ini`, or AC opens the replay again
-   and training runs without smoke.
+   (`fly_ac_stop`), restore `race.ini` and `video.ini` and delete the `particles_fx.ini`
+   override, or AC opens the replay again and training runs without smoke.
 3. **Pair frames with inputs**, anywhere with the repo:
 
    ```bash
