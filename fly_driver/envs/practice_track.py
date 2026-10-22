@@ -173,7 +173,7 @@ class ProgressReward:
         return float(sum(terms.values())), terms
 
 
-def _build_reward(spec: Mapping[str, Any], horizon_s: float | None) -> RewardFunction:
+def _build_reward(spec: Mapping[str, Any]) -> RewardFunction:
     """A reward from its config mapping, e.g. ``{"type": "lap_time", "target_lap_time_s": 90}``.
 
     Raises:
@@ -184,8 +184,6 @@ def _build_reward(spec: Mapping[str, Any], horizon_s: float | None) -> RewardFun
     if kind == "progress":
         return ProgressReward(**params)
     if kind == "lap_time":
-        if horizon_s is not None:
-            params.setdefault("horizon_s", horizon_s)
         return LapTimeReward(**params)
     raise ValueError(f"unknown reward type {kind!r}; choose 'progress' or 'lap_time'")
 
@@ -223,9 +221,8 @@ class PracticeTrack:
         camera: Name of the MJCF camera to render from.
         reward: Scores each step. Defaults to :class:`ProgressReward`. A mapping builds one
             from config: ``{"type": "lap_time", **kwargs}`` gives a
-            :class:`~fly_driver.envs.lap_time_reward.LapTimeReward` whose ``horizon_s``
-            defaults to ``max_steps`` in seconds, and ``{"type": "progress", **kwargs}`` a
-            :class:`ProgressReward`.
+            :class:`~fly_driver.envs.lap_time_reward.LapTimeReward`, and
+            ``{"type": "progress", **kwargs}`` a :class:`ProgressReward`.
         random_start: Start each episode at a uniformly random arclength round the lap,
             on the centreline, facing along the track, at rest. Off, every episode starts
             on the grid. Training turns it on so corners appear from the first update;
@@ -284,8 +281,7 @@ class PracticeTrack:
         self.car = car or CarConfig()
         self.scene = scene or SceneConfig()
         if isinstance(reward, Mapping):
-            horizon_s = None if max_steps is None else max_steps / float(frame_rate_hz)
-            reward = _build_reward(reward, horizon_s)
+            reward = _build_reward(reward)
         self.reward = reward or ProgressReward()
         self._stall_speed_mps = stall_speed_mps
         self._stall_seconds = float(stall_seconds)

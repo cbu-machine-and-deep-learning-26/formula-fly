@@ -65,6 +65,9 @@ class TrainingEpisode:
         reward_terms: Per-term sums over the episode; they add up to ``total_return``.
         start_m: Arclength the episode started at, or ``None`` for an env that does not
             publish ``arclength_m``. Varies per episode under ``random_start``.
+        distance_m: Metres driven along the centreline, summed from ``info["progress_m"]``,
+            or ``None`` for an env that does not publish it. Kept apart from the reward
+            terms so distance stays readable whatever the reward pays.
     """
 
     seed: int
@@ -79,6 +82,7 @@ class TrainingEpisode:
     truncated: bool
     reward_terms: Mapping[str, float]
     start_m: float | None = None
+    distance_m: float | None = None
 
     def to_row(self) -> dict[str, Any]:
         """Flat CSV row: the fixed columns, then one ``reward_<term>`` column per term."""

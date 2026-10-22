@@ -112,14 +112,15 @@ runs/<name>/seed_0/eval/step_<n>/    the evaluation harness's episodes.csv + sum
 ```
 
 **`episodes.csv`** -- `seed, episode, update, env_steps, steps, total_return, lap_complete,
-lap_time_s, terminated, truncated, start_m` (the arclength the episode started at), then
+lap_time_s, terminated, truncated, start_m, distance_m` (the arclength the episode started
+at, and metres driven along the centreline), then
 one column per reward term:
 `reward_progress, reward_lateral, reward_lap_bonus, reward_off_track` (sorted by name).
 The term columns are what `AGENTS.md` §11 asks for: they always add up to `total_return`,
 so an agent farming one term without progressing shows in the columns rather than being
 inferred from a curve. The terms come from the env's `info["reward_terms"]`; both the
 practice track and the dummy publish the same four under the default reward (the
-[lap-time reward](#the-lap-time-reward-v3) publishes its own five), and the loop refuses an
+[pace reward](#the-pace-reward-v4) publishes its own four), and the loop refuses an
 env that does not publish any, or whose terms do not sum to its reward.
 
 **`updates.csv`** -- `seed, update, env_steps, episodes_completed, mean_episode_return,
@@ -203,67 +204,74 @@ matter. `scripts/evaluate.py --checkpoint` reloads the brain from `brain_final.p
 `brain_update_<n>.pt` beside a periodic checkpoint) and runs the deterministic protocol on
 the run's env.
 
-## The lap-time reward (v3)
+## The pace reward (v4)
 
 Round 2 (`flyvis_cx_v2`) trained on `ProgressReward`, which pays metres and nothing else.
 With a 300 s episode, slow driving earned more total distance than fast driving that
 crashed. One seed learned to hug the kerb at 28 km/h, some checkpoints parked at full
-lock, and no seed finished a lap. `fly_driver/configs/train_flyvis_cx_v3.yaml` switches to
-`LapTimeReward` (`fly_driver/envs/lap_time_reward.py`) and turns on stall termination:
+lock, and no seed finished a lap.
+
+Round 3 (`flyvis_cx_v3`) charged a time cost of a quarter of target pace per second, about
+50 km/h at a 105 s target, plus a constant crash penalty (about -47 after scaling). Every
+second below 50 km/h lost reward, and an untrained car cannot hold 50 km/h without
+crashing, so ending the episode early was the cheapest policy. After about 200k steps all
+10 seeds averaged 4-19 km/h, every episode ended in a crash or a stall, and training and
+eval distances were shrinking (seed 7: 196 m to 65 m, seed 6's eval: 371 m to 0 m).
+
+`fly_driver/configs/train_flyvis_cx_v4.yaml` keeps v3's stall termination, random starts,
+discount and initial action, and pays pace-weighted progress (`LapTimeReward`,
+`fly_driver/envs/lap_time_reward.py`):
 
 ```yaml
 env:
   params:
     stall_speed_mps: 2.0      # slower than this for more than stall_seconds ends the episode
     stall_seconds: 2.5
-    reward: {type: lap_time, target_lap_time_s: 105.0, scale: 0.01}
+    reward: {type: lap_time, target_lap_time_s: 105.0, pace_cap: 2.0, pace_floor: 0.25, crash_penalty_m: 0.0, scale: 0.01}
 policy:
   init_action_mean: [0.0, 0.4, -0.6]   # steer, throttle, brake
 ```
 
 The stall clock starts only once the car has first gone faster than `stall_speed_mps`.
-Stopping after that is a crash. A car that never pulls away is not terminated: it pays the
-time cost until truncation (-4,205 over 300 s), which still beats crashing and leaves
-progress as a learning signal. `policy.init_action_mean` sets the actor's initial output
-bias. The default of zeros leaves throttle and brake clipped to 0 half the time, and in the
-first 20k-step v3 run, before both fixes, every episode stalled at 2.5 s with the same
-return (explained variance 0). Starting throttle at +0.4 and brake at -0.6 makes the
-untrained car pull away.
+Stopping after that is a crash. A car that never pulls away is not terminated: it earns
+nothing until truncation. `policy.init_action_mean` sets the actor's initial output bias.
+The default of zeros leaves throttle and brake clipped to 0 half the time, and in the first
+20k-step v3 run every episode stalled at 2.5 s with the same return (explained variance 0).
+Starting throttle at +0.4 and brake at -0.6 makes the untrained car pull away.
 
 `reward` takes `type: progress` (the default, unchanged) or `type: lap_time`, plus that
-class's keyword arguments. All terms are in metres, then multiplied by `scale`. v3 uses
-0.01, so a crash is about -47 rather than -4,700: PPO here does not normalise returns or
-values, and the unscaled returns gave the critic nothing it could fit (explained variance
-0 over 20k steps). Scaling every term keeps their ratios, so the table below is in metres.
-`v*` is lap length over target lap time, `dt` is 0.02 s:
+class's keyword arguments. All terms are in metres, then multiplied by `scale`. At 0.01 a
+lap at target pace returns about +89: PPO here does not normalise returns or
+values, and unscaled returns gave the critic nothing it could fit. `v*` is lap length over
+target lap time (202 km/h at 105 s), `v` is `progress_m / dt`, `dt` is 0.02 s:
 
 | Term | Per step | Purpose |
 |---|---|---|
-| `progress` | metres along the centreline | pays distance, as before |
-| `time` | `-0.25 * v* * dt` | makes time cost something, so below a quarter of target pace driving loses reward |
+| `pace` | `progress_m * max(clip(v / v*, 0, 2), 0.25)` forward, `progress_m` backwards | pays distance weighted by speed |
 | `track_limits` | `-v* * 1.7 * depth * dt` | charges running past the kerb, scaled by depth |
-| `crash` | `-(500 + 0.25 * v* * horizon_s)`, once | charged on a track-limit termination or a stall |
+| `crash` | `-crash_penalty_m`, once; 0 in v4 | charged on a track-limit termination or a stall |
 | `lap_bonus` | `2000 * target / lap_time`, plus 1000 if `lap_time <= target`, once | pays for a completed lap, more for a faster one |
 
-- **Pace beats distance.** Net income is `v - 0.25 v*` per second. At the v3 target
-  (105 s, `v*` = 202 km/h) that is negative below 50 km/h.
-- **Crashing is never a shortcut.** The crash term charges the time cost for a whole
-  episode (`horizon_s`, which defaults to `max_steps / 50 Hz` = 300 s) plus 500 m. No
-  continuation with non-negative progress can lose that much before truncation, so ending
-  the episode early never saves reward, discounted or not. It is a constant rather than
-  "time left" because the policy cannot see the clock.
+- **Pace beats distance.** A metre at target pace pays twice a metre at half of it.
+  Crawling at 28 km/h for the whole 300 s earns 583 m. Target pace for 20 s and then a
+  crash earns 1,121 m. The 0.25 floor keeps a gradient toward faster at crawling speeds.
+- **A crash costs only the reward it forfeits.** A first v4 smoke run with a 500 m crash
+  penalty slid from 17 to 4 km/h: discounted, a constant penalty is cheaper the later it
+  lands, so slowing down to delay a crash paid. Any penalty above 0 makes slow beat fast
+  for some crash distance. With none, every forward step pays at least 0, so ending the
+  episode early never pays and driving faster to a fixed crash always does.
 - **The kerb is track.** `depth` is `off_track_fraction`: the fraction of the car's width
   past the kerb's *outer* edge. Two wheels on the kerb read 0 and cost nothing. Past the
   kerb, each second costs the seconds the env's lap-time penalty adds
-  (`PenaltyWeights.time_weight` = 1.7 per unit depth), converted to metres at target pace:
-  9.5 m/s at depth 0.1, more than 10× the old lateral term. The existing termination at
-  `track_limit` (0.15) is unchanged.
+  (`PenaltyWeights.time_weight` = 1.7 per unit depth), converted to metres at target pace.
+  The existing termination at `track_limit` (0.15) is unchanged.
 - **Laps can't be farmed.** `info["lap_time"]` already includes off-track penalty seconds,
   and `LapTimer` counts a lap only after a full lap of forward progress from a crossing of
   the line, so rocking over the line or starting just behind it earns nothing.
 
-Every term is logged per episode as `reward_<term>` in `episodes.csv`. Each step's `info`
-also carries `crashed` and `stalled`.
+Every term is logged per episode as `reward_<term>` in `episodes.csv`, and `distance_m`
+keeps the raw metres whatever the reward pays. Each step's `info` also carries `crashed`
+and `stalled`.
 
 ### What the car can actually do
 
@@ -278,7 +286,7 @@ is 1:27.097). The simulated car cannot get there. Measured on the practice track
   100 km/h, and the full-throttle acceleration curve recorded on the `PerformanceBed`.
   This is a bound, not a lap anyone drove.
 
-v3 therefore sets `target_lap_time_s: 105.0`. That is 5% off the bound and 13% faster than
+v3 and v4 therefore set `target_lap_time_s: 105.0`. That is 5% off the bound and 13% faster than
 the scripted lap, so the target bonus can be earned. A 90 s target would make it
 unreachable.
 
@@ -291,15 +299,19 @@ after turn-in, 2–3 s after the brake point. Under 0.99 a crash 150 steps ahead
 pace) horizon, enough to see a braking zone and the corner after it without stretching
 credit assignment over a whole lap.
 
-### v3 runs
+### v4 runs
 
-10 seeds × 5M steps, checkpoints every 50 updates, eval every 25 (from the grid):
+An A/B on `pace_floor`, paired on seeds 0-4, 5M steps each. `train_flyvis_cx_v4b.yaml` is
+v4 with `pace_floor: 0.0`. Below the floor's speed (50 km/h at 0.25) a metre pays the same
+however slow it is driven, while slower driving survives further. Without it, a slow metre
+pays proportionally less. Whether the floor's early gradient or that incentive wins only
+shows once the policy can steer:
 
 ```bash
 # csds-pc-2
-python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v3.yaml --seed 0  # ... --seed 4
+python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4.yaml --seed 0   # ... --seed 4
 # csds-pc-1
-python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v3.yaml --seed 5  # ... --seed 9
+python scripts/train.py --config fly_driver/configs/train_flyvis_cx_v4b.yaml --seed 0  # ... --seed 4
 ```
 
 ## Adding an eye, a brain, an env

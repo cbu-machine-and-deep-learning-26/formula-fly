@@ -1,6 +1,8 @@
 # RQ2 condition: frozen pretrained flyvis eye -> central-complex brain -> policy head.
 # A copy of train_default.yaml with the brain in and the racing line off.
 # v3 (GH-27): the lap-time reward, stall termination, a longer discount horizon, 10 seeds.
+# Since v4 the lap_time reward pays pace, not progress less a time cost, so this file no
+# longer reproduces v3's reward. Kept so v3's runs/ still name their config.
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
 name: flyvis_cx_v3  # v3 = lap-time reward; v2 = random starts; flyvis_cx was grid-only
 output_dir: runs
@@ -43,7 +45,6 @@ env:
     stall_seconds: 2.5
     # fly_driver/envs/lap_time_reward.py. 105 s, not the 90 s default: the car's measured
     # limit is ~100 s (docs/training.md), so 90 s would be a bonus no lap can earn.
-    # horizon_s defaults to max_steps / 50 Hz = 300 s.
     reward:
       type: lap_time
       target_lap_time_s: 105.0

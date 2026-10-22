@@ -554,12 +554,11 @@ class TestOpticFlow:
 class TestBuildingTheRewardFromConfig:
     """``env.params.reward`` in YAML reaches the env as a mapping."""
 
-    def test_lap_time_takes_its_horizon_from_max_steps(self):
-        env = PracticeTrack(max_steps=500, reward={"type": "lap_time", "target_lap_time_s": 105})
+    def test_lap_time_is_built_with_its_params(self):
+        env = PracticeTrack(reward={"type": "lap_time", "target_lap_time_s": 105})
         try:
             assert isinstance(env.reward, LapTimeReward)
             assert env.reward.target_lap_time_s == 105
-            assert env.reward.horizon_s == pytest.approx(500 / FRAME_RATE_HZ)
         finally:
             env.close()
 
@@ -575,6 +574,10 @@ class TestBuildingTheRewardFromConfig:
             PracticeTrack(reward={"type": "vibes"})
 
 
+# The default crash penalty is 0. A non-zero one shows the env charges it on the right steps.
+PENALISED = {"type": "lap_time", "crash_penalty_m": 500.0}
+
+
 @pytest.mark.render
 class TestLapTimeRewardInTheEnv:
     def test_every_term_is_logged_on_a_real_drive(self):
@@ -584,14 +587,14 @@ class TestLapTimeRewardInTheEnv:
             for _ in range(50):
                 result = _step(env, FLAT_OUT)
                 terms = result.info["reward_terms"]
-                assert set(terms) == {"progress", "time", "track_limits", "crash", "lap_bonus"}
+                assert set(terms) == {"pace", "track_limits", "crash", "lap_bonus"}
                 assert sum(terms.values()) == pytest.approx(result.reward)
         finally:
             env.close()
 
     def test_a_stall_terminates_with_the_crash_penalty(self):
         """Stopping after having moved is a crash."""
-        env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
+        env = PracticeTrack(reward=PENALISED, stall_speed_mps=2.0, stall_seconds=1.0)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 25)
@@ -602,19 +605,19 @@ class TestLapTimeRewardInTheEnv:
                     break
             assert result.terminated and result.info["stalled"]
             assert not result.info["crashed"]
-            assert result.info["reward_terms"]["crash"] == -env.reward.crash_cost_m
+            assert result.info["reward_terms"]["crash"] == -env.reward.crash_penalty_m
         finally:
             env.close()
 
     def test_a_car_that_never_launches_does_not_stall(self):
-        """It pays the time cost instead, which keeps a learning signal for an untrained
-        policy that cannot yet pull away."""
+        """It earns nothing instead of ending the episode, so an untrained policy that cannot
+        yet pull away still has the rest of the episode to find the throttle."""
         env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
         try:
             _started(env)
             result = _drive(env, COASTING, 200)
             assert not result.terminated and not result.info["stalled"]
-            assert result.info["reward_terms"]["time"] < 0.0
+            assert result.info["reward_terms"]["crash"] == 0.0
         finally:
             env.close()
 
@@ -628,7 +631,7 @@ class TestLapTimeRewardInTheEnv:
             env.close()
 
     def test_leaving_the_circuit_still_terminates_and_costs_the_crash_penalty(self):
-        env = PracticeTrack(reward={"type": "lap_time"})
+        env = PracticeTrack(reward=PENALISED)
         try:
             _started(env)
             _drive(env, FLAT_OUT, 120)
@@ -638,7 +641,7 @@ class TestLapTimeRewardInTheEnv:
                     break
             assert result.terminated and result.info["crashed"]
             assert result.info["off_track_fraction"] > DEFAULT_TRACK_LIMIT
-            assert result.info["reward_terms"]["crash"] == -env.reward.crash_cost_m
+            assert result.info["reward_terms"]["crash"] == -env.reward.crash_penalty_m
         finally:
             env.close()
 
