@@ -55,6 +55,12 @@ away the car drives on with its last control, so a gap of more than `max_missed_
 the episode instead of crediting the policy with driving it did not do. **Every PPO update
 is such a gap**, so each rollout boundary costs one episode and one reset.
 
+**Black frames.** Upstream's capture reader strips trailing zero bytes, so an all-black frame
+(a camera change or fade) came back empty and the reshape error ended the env server.
+`AssettoCorsaCar` reads the capture whole instead (`CaptureReader` in
+`fly_driver/bridge/assetto.py`). A read that still comes back short reuses the last frame and
+logs `screen capture read ... reusing the last frame (N so far)`.
+
 **Periodic evaluation** opens a second connection while the training one sits idle. The
 server serves both under one lock. The evaluation's reset moves the car, so the training
 env's next step comes back `truncated` with `info["interrupted"]`, and training resets.
