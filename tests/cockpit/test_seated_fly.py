@@ -25,6 +25,7 @@ from fly_driver.cockpit.seated_fly import (
     hinges,
     level_gaze_pitch_deg,
     mujoco_from_ac,
+    pedal_pivots,
     pose_seated_fly,
 )
 
@@ -161,13 +162,8 @@ class TestThePose:
                 assert np.isfinite(piece.vertices).all()
                 assert piece.faces.max() < len(piece.vertices)
 
-    def test_the_head_pitch_levels_the_gaze(self, seated):
-        """The seated fly looks up and back; the pitch reads the gaze's elevation.
-
-        At rest the fly faces forward (0 degrees); pitched nose-up by a known angle about its
-        left it reads that angle. Seated along a reclined driver's line it looks past
-        straight up, which is why the GH-26 app turns the head bone (``HEAD_PITCH_DEG``).
-        """
+    def test_the_gaze_reads_the_head_s_elevation(self, seated):
+        """At rest the fly faces forward (0 degrees); pitched nose-up 30 degrees, it reads 30."""
         model = seated.model
         rest = mujoco.MjData(model)
         mujoco.mj_forward(model, rest)
@@ -179,13 +175,49 @@ class TestThePose:
         rest.qpos[root + 3 : root + 7] = nose_up
         mujoco.mj_forward(model, rest)
         assert level_gaze_pitch_deg(resting) == pytest.approx(30.0, abs=1e-6)
-        assert level_gaze_pitch_deg(seated) > 90.0
+
+    def test_the_fly_faces_forward_like_a_driver(self, seated):
+        """Level gaze from a neck inside its range, body pointing to the front of the car.
+
+        Laid along the driver's reclined line (the first build) it looked 141 degrees up and
+        back, which no neck pose in flybody's range fixes.
+        """
+        model, data = seated.model, seated.data
+        assert level_gaze_pitch_deg(seated) == pytest.approx(0.0, abs=0.5)
+        neck = model.joint("head").id
+        low, high = model.jnt_range[neck]
+        assert low <= data.qpos[model.jnt_qposadr[neck]] <= high
+        tail = ac_from_mujoco(seated_fly._abdomen_tip(model, data)) * seated.scale
+        head = ac_from_mujoco(data.xpos[model.body("head").id]) * seated.scale
+        assert head[2] > tail[2]  # head to the front, abdomen behind
 
     def test_the_wings_are_folded(self, seated):
         model, data = seated.model, seated.data
         for joint in ("wing_yaw_left", "wing_roll_left", "wing_pitch_left"):
             address = model.jnt_qposadr[model.joint(joint).id]
             assert data.qpos[address] == pytest.approx(model.qpos_spring[address])
+
+
+@needs_flybody
+class TestThePedalPivots:
+    """GH-26: the app turns a foot bone about the fly's hind ankle, not the driver's."""
+
+    def test_each_pivot_is_on_its_foot_bone_at_the_hind_ankle(self, seated):
+        model, data = seated.model, seated.data
+        found = {pivot.name: pivot for pivot in pedal_pivots(seated)}
+        assert set(found) == {"FLY:PEDAL_L", "FLY:PEDAL_R"}
+        for name, joint in seated_fly.PEDAL_PIVOTS.items():
+            assert found[name].bone == f"DRIVER:RIG_Foot_{name[-1]}"
+            anchor = ac_from_mujoco(data.xanchor[model.joint(joint).id]) * seated.scale
+            np.testing.assert_allclose(found[name].world[3, :3], anchor, atol=1e-9)
+
+    def test_the_legs_on_the_foot_bone_stay_near_the_pivot(self, seated):
+        """About the driver's ankle they were 0.5 to 1.1 m out and swung out of the car."""
+        pivots = {pivot.bone: pivot.world[3, :3] for pivot in pedal_pivots(seated)}
+        for part in body_parts(seated):
+            if part.bone in pivots:
+                vertices = np.concatenate([piece.vertices for piece in part.pieces])
+                assert np.linalg.norm(vertices - pivots[part.bone], axis=1).max() < 0.4
 
 
 @needs_flybody

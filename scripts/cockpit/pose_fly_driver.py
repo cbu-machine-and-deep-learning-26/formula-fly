@@ -17,11 +17,17 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fly_driver.cockpit import body_parts, pose_seated_fly, read_knh, world_matrices  # noqa: E402
 from fly_driver.cockpit.export import write_parts  # noqa: E402
-from fly_driver.cockpit.seated_fly import hinges, level_gaze_pitch_deg  # noqa: E402
+from fly_driver.cockpit.seated_fly import (  # noqa: E402
+    hinges,
+    level_gaze_pitch_deg,
+    pedal_pivots,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_AC_ROOT = Path(r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa")
@@ -39,7 +45,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--size", type=float, default=1.3, help="times the hips-to-head fit; 1.3 reaches the wheel"
     )
     parser.add_argument(
-        "--recline", type=float, default=30.0, help="degrees further back than the driver's line"
+        "--body-pitch", type=float, default=30.0, help="degrees nose-up from level, about the head"
     )
     return parser.parse_args(argv)
 
@@ -74,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     rig = read_knh(knh_path)
     seated = pose_seated_fly(
-        args.fruitfly_xml, world_matrices(rig), size=args.size, recline_deg=args.recline
+        args.fruitfly_xml, world_matrices(rig), size=args.size, body_pitch_deg=args.body_pitch
     )
     parts = body_parts(seated)
     manifest = write_parts(
@@ -86,15 +92,15 @@ def main(argv: list[str] | None = None) -> int:
             "car": args.car,
             "fruitfly_xml": str(args.fruitfly_xml),
             "size": args.size,
-            "recline_deg": args.recline,
+            "body_pitch_deg": args.body_pitch,
         },
-        hinges=hinges(seated),
+        hinges=hinges(seated) + pedal_pivots(seated),
     )
     print(f"scale {seated.scale:.3f} m per MuJoCo unit; {len(parts)} parts -> {manifest}")
     for element, miss in seated.target_misses.items():
         print(f"  {element:16s} misses its joint by {miss * 100:5.1f} cm")
-    pitch = level_gaze_pitch_deg(seated)
-    print(f"head pitch for a level gaze: {pitch:.0f} deg (HEAD_PITCH_DEG in fly_pose.lua)")
+    neck = np.degrees(seated.data.qpos[seated.model.jnt_qposadr[seated.model.joint("head").id]])
+    print(f"gaze {level_gaze_pitch_deg(seated):+.1f} deg from level ahead, neck {neck:+.0f} deg")
     if args.preview is not None:
         _render_preview(seated, args.preview)
         print(f"preview: {args.preview}")

@@ -28,21 +28,23 @@ head bone. The car's own animations then move the fly, and nothing in the car's 
 The head gets the helmet's name on purpose. Cars hide `DRIVER:HELMET` in the cockpit camera,
 and that keeps the camera from sitting inside the fly's head.
 
-The fly's head goes on the stock driver's head, and its body runs from there along the
-driver's hips-to-head line, leaned 30 degrees further back and 1.3 times as long. An F1
-driver lies almost flat. Seated that way the front legs reach the wheel, with the claws about
-5 cm from the stock knuckles, and the abdomen and folded wings lie inside the tub. In the
-SF70H the whole fly sits between 7 cm and 78 cm off the road. `--size` and `--recline` on the
-pose script change the fit.
+The fly faces forward like a driver. Its head goes on the stock driver's head, where the
+helmet is, and it is 1.3 times the driver's hips-to-head long. A fly looks along its body, so
+the body points to the front of the car, tilted 30 degrees nose-up, and flybody's neck joint
+(`head`, -29 to +17 degrees) bends to -16 degrees to bring the gaze level. The front legs
+reach forward to the wheel, the claws 4 to 6 cm from the stock knuckles, and the abdomen goes
+back into the bodywork behind the seat. In the SF70H the fly sits between 25 cm and 76 cm off
+the road. `--size` and `--body-pitch` on the pose script change the fit, and the script prints
+the gaze (0 is level ahead) and the neck angle.
 
-A fly looks along its body, so seated this way it looks up and back: 141 degrees above level
-ahead in the SF70H. Its neck cannot fix that (flybody's `head` joint bends -29 to +17
-degrees), and reclining less does not either: at 15 degrees it still looks 126 degrees up and
-the fly reaches 4 cm below the road, at 10 degrees 121 degrees up and 7 cm below. So the body
-keeps its 30-degree recline and the GH-26 app turns the head bone forward by a fixed 141
-degrees about the car's side axis, past a real fly's neck on purpose. The pose script prints
-the angle for the car it posed (`seated_fly.level_gaze_pitch_deg`); it is `HEAD_PITCH_DEG` in
-`fly_pose.lua`.
+The first two builds laid the body along the driver's reclined hips-to-head line, 30 degrees
+further back. That fly looked 141 degrees above level ahead, up and back, past anything its
+neck can do, and reclining less put it through the floor before the gaze came down. #88 then
+turned the head bone 141 degrees in the game, past a real fly's neck; this pose replaces that.
+
+The IK is damped least squares (`_IK_DAMPING = 1e-2` in `seated_fly.py`). At 1e-4 the many
+redundant targets were ill-conditioned enough that the same pose, built on macOS and on
+Windows, put the front claws 4 and 17 cm from the knuckles.
 
 The first fit scaled the fly so its thorax-to-head matched the driver's chest-to-head. That
 made it 1.65 m long, with the abdomen and wings hanging a metre through the floor. In the game
@@ -143,9 +145,8 @@ copy. The pose comes from the `ControlVector` and the brain's activity instead
 | Pose | From | Bone in the game | Range |
 |---|---|---|---|
 | front legs on the wheel | `steer` | `RIG_Arm`, `RIG_ForeArm`, `RIG_HAND`, turned by the car's own `steer.ksanim` | ±90° wheel, sent but not applied |
-| right hind leg on the throttle | `throttle` | `DRIVER:RIG_Foot_R`, about the car's side axis | 0 to 25° |
-| left hind leg on the brake | `brake` | `DRIVER:RIG_Foot_L`, about the car's side axis | 0 to 25° |
-| head pitch | fixed, `HEAD_PITCH_DEG` in `fly_pose.lua` | `DRIVER:RIG_Head`, about the car's side axis | 141°, always applied |
+| right hind leg on the throttle | `throttle` | `DRIVER:RIG_Foot_R`, about the car's side axis through `FLY:PEDAL_R` | 0 to 25° |
+| left hind leg on the brake | `brake` | `DRIVER:RIG_Foot_L`, about the car's side axis through `FLY:PEDAL_L` | 0 to 25° |
 | head yaw | compass ring bump, `30° × sin(heading)` | `DRIVER:RIG_Head`, about the car's up axis | ±30° |
 | wings | mean \|activity\| of each half of the 32 descending neurons | `FLY:WING_L`, `FLY:WING_R`, about their x (wing yaw joint) | 0 to 10°, positive spreads the wing out |
 | antennae | signed mean of each half | `FLY:ANTENNA_L`, `FLY:ANTENNA_R`, about their x (antenna extend joint) | ±15° |
@@ -157,6 +158,13 @@ The heading is the angle of the activation-weighted mean over the 812 compass ne
 The wheel angle is not applied because Assetto Corsa already turns the arm bones from the
 car's real steering, which is the policy's `steer` after the bridge. The middle legs share
 the hind legs' bones (the bone table under "How it works"), so they press with the pedals too.
+
+The foot bones turn about the fly's hind ankles, the `FLY:PEDAL_L` and `FLY:PEDAL_R` empty nodes
+the build puts on them (`seated_fly.PEDAL_PIVOTS`), not about the bones' own origins. Those are
+the driver's ankles, in the car's nose, 0.5 to 1.1 m from the fly leg parts on the bones, and a
+press swung those parts up to 48 cm out of the car. About the fly's ankle the foot tips move
+at most 9 cm and the middle legs' at most 14. A KN5 without the nodes falls back to the old
+pivot.
 
 The antennae used to be inside `DRIVER:HELMET`, which cars hide in the cockpit camera. On
 their own nodes they are not, so the app hides them itself in the cockpit camera.
@@ -222,10 +230,8 @@ head, which keeps its fixed pitch so the fly still looks ahead.
    `PEDAL_SIGN = -1` in `fly_pose.lua`.
 3. A positive head yaw (bump past a quarter of the ring) turns the head to the driver's
    right. If it turns left, set `HEAD_SIGN = -1`.
-4. With the app running, even with no poses, the fly's face (the red eyes) looks towards the
-   front of the car, not up and back. If the head sinks into the tub instead, set
-   `HEAD_PITCH_SIGN = -1`. For another car, set `HEAD_PITCH_DEG` to what
-   `pose_fly_driver.py` prints.
+4. Pressing a pedal moves only the fly's feet, inside the car. If legs swing up out of it,
+   the KN5 predates the pedal pivots: rebuild it.
 5. The front legs still follow the wheel while the app runs. If the head and feet do not
    move at all, try `HOLD_DRIVER_MODEL = true`, then check the front legs again.
 6. The head and antennae stay hidden in the cockpit camera, and show in the chase and TV
@@ -249,10 +255,10 @@ pytest tests/cockpit tests/scripts/test_install_fly_driver.py
 
 For #26 they cover the hinge nodes (each wing and antenna on its own node at its joint,
 x along the joint axis, a positive wing angle spreading the wing, the rest pose unchanged),
-the pose's limits, the steer sign, the pedals, a head that follows a
+the pose's limits, the steer sign, the pedals and their pivots at the fly's hind ankles, a head that follows a
 synthetic compass bump, the UDP round trip, one pose per step from each wrapper, and the app
 install. For #25 they cover the `.knh` reader and writer on synthetic trees, the fly-to-bone map, the axis
 conversion, mesh welding, the manifest and OBJ writer, and install and restore. With flybody's
-model files present, they also check the head pitch that levels the gaze, that the pose
-reaches the knuckles, that every fly body is
+model files present, they also check that the fly faces forward with a level gaze and its
+neck in range, that the pose reaches the knuckles, that every fly body is
 mapped and every mesh exported, and that the wings are folded.
