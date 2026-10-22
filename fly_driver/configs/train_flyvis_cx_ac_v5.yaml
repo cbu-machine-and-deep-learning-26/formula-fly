@@ -47,8 +47,10 @@ env:
     # Off track is AC's own tyre count: three tyres out ends the episode (the default 0.5).
     # A reset leaves the car where it stopped, so starts spread round the lap on their own
     # (docs/assetto-corsa-training.md); there is no random_start to set.
-    stall_speed_mps: 8.3  # v5's slow rule: under 30 km/h for 3 s ends the episode
-    stall_s: 3.0
+    stall_speed_mps: 8.3  # v5's slow rule: under 30 km/h for stall_s ends the episode
+    # 8 s, not MuJoCo's 3 s: AC launches are slower, and the warm-started policy needs time
+    # to adapt to AC's frames before it finds enough throttle to launch the SF70H.
+    stall_s: 8.0
     # v5's reward, built by the same builder as the practice track's.
     reward:
       type: lap_time
