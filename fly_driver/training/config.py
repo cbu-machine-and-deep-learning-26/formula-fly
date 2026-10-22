@@ -65,8 +65,9 @@ KNOWN_EYE_TYPES: tuple[str, ...] = (
 KNOWN_BRAINS: tuple[str, ...] = ("none", "central_complex")
 
 #: Environments. ``practice_track`` is the MuJoCo circuit; ``dummy`` is the numpy stand-in
-#: the harness and the tests use.
-KNOWN_ENV_TYPES: tuple[str, ...] = ("practice_track", "dummy")
+#: the harness and the tests use; ``assetto_corsa`` connects to ``scripts/ac_env_server.py``
+#: (``host``, ``port``, ``track``, ``car`` and AssettoCorsaTrack's keyword arguments).
+KNOWN_ENV_TYPES: tuple[str, ...] = ("practice_track", "dummy", "assetto_corsa")
 
 KNOWN_ACTIVATIONS: tuple[str, ...] = ("tanh", "relu")
 
