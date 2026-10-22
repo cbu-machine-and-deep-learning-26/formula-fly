@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import mujoco
 import numpy as np
 import pytest
 
@@ -17,10 +18,12 @@ from fly_driver.cockpit import seated_fly
 from fly_driver.cockpit.seated_fly import (
     HEAD_OBJECT,
     HINGE_NODES,
+    SeatedFly,
     ac_from_mujoco,
     body_parts,
     driver_bone_for,
     hinges,
+    level_gaze_pitch_deg,
     mujoco_from_ac,
     pose_seated_fly,
 )
@@ -157,6 +160,26 @@ class TestThePose:
             for piece in part.pieces:
                 assert np.isfinite(piece.vertices).all()
                 assert piece.faces.max() < len(piece.vertices)
+
+    def test_the_head_pitch_levels_the_gaze(self, seated):
+        """The seated fly looks up and back; the pitch reads the gaze's elevation.
+
+        At rest the fly faces forward (0 degrees); pitched nose-up by a known angle about its
+        left it reads that angle. Seated along a reclined driver's line it looks past
+        straight up, which is why the GH-26 app turns the head bone (``HEAD_PITCH_DEG``).
+        """
+        model = seated.model
+        rest = mujoco.MjData(model)
+        mujoco.mj_forward(model, rest)
+        resting = SeatedFly(model=model, data=rest, scale=1.0, target_misses={})
+        assert level_gaze_pitch_deg(resting) == pytest.approx(0.0, abs=1e-6)
+        root = model.jnt_qposadr[model.joint("free").id]
+        nose_up = np.zeros(4)
+        mujoco.mju_axisAngle2Quat(nose_up, [0.0, 1.0, 0.0], np.radians(-30.0))  # about the left
+        rest.qpos[root + 3 : root + 7] = nose_up
+        mujoco.mj_forward(model, rest)
+        assert level_gaze_pitch_deg(resting) == pytest.approx(30.0, abs=1e-6)
+        assert level_gaze_pitch_deg(seated) > 90.0
 
     def test_the_wings_are_folded(self, seated):
         model, data = seated.model, seated.data
