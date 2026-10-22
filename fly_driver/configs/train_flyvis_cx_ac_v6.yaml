@@ -104,4 +104,6 @@ logging:
     entity: null
     mode: online
     tags: []
-  checkpoint_every_updates: 50  # ~102k steps, with each eval: ~10 checkpoints over 1M steps
+  # v6: every 10 updates (20k steps). Round 5's best 50-episode windows all ended before
+  # its first checkpoint at update 50, so no seed's true best could be kept. ~2.6 MB each.
+  checkpoint_every_updates: 10
