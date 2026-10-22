@@ -273,8 +273,12 @@ ourselves and render the frames from the replay.
    - **Timing.** AC draws a held replay instant 20 ms ahead of the one asked for. The
      builder fits that shift from the car's pose (`fit_render_offset`: AC's reference point
      sits a fixed 0.58 m from the replay's, so on time the gap is constant in size) and
-     reads the inputs at the instant actually drawn. A frame whose gap strays more than
-     0.5 m from the median is refused.
+     reads the inputs at the instant actually drawn. Every frame must report the replay
+     frame it asked for, and above 30 m/s (where the pose resolves time) a frame whose gap
+     strays from the median by more than 10 ms of travel, half a step, is refused. On the first drive
+     AC's frame index matched on all 11,468 frames, the fitted shift was +19 ms, and the
+     worst frame was 6.7 ms off: AC blends between replay frames a little differently from
+     linear interpolation, most visibly at 300 km/h.
    - **Sidebar.** Training frames carry AC's collapsed app sidebar down the right edge
      (columns 89-95 at 96×96, the scene at 0.117 × its brightness, a red marker at the
      bottom); the replay shows no UI, so `add_ac_sidebar` draws it, as measured on a
