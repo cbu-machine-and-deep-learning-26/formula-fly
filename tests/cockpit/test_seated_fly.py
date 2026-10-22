@@ -161,13 +161,8 @@ class TestThePose:
                 assert np.isfinite(piece.vertices).all()
                 assert piece.faces.max() < len(piece.vertices)
 
-    def test_the_head_pitch_levels_the_gaze(self, seated):
-        """The seated fly looks up and back; the pitch reads the gaze's elevation.
-
-        At rest the fly faces forward (0 degrees); pitched nose-up by a known angle about its
-        left it reads that angle. Seated along a reclined driver's line it looks past
-        straight up, which is why the GH-26 app turns the head bone (``HEAD_PITCH_DEG``).
-        """
+    def test_the_gaze_reads_the_head_s_elevation(self, seated):
+        """At rest the fly faces forward (0 degrees); pitched nose-up 30 degrees, it reads 30."""
         model = seated.model
         rest = mujoco.MjData(model)
         mujoco.mj_forward(model, rest)
@@ -179,7 +174,21 @@ class TestThePose:
         rest.qpos[root + 3 : root + 7] = nose_up
         mujoco.mj_forward(model, rest)
         assert level_gaze_pitch_deg(resting) == pytest.approx(30.0, abs=1e-6)
-        assert level_gaze_pitch_deg(seated) > 90.0
+
+    def test_the_fly_faces_forward_like_a_driver(self, seated):
+        """Level gaze from a neck inside its range, body pointing to the front of the car.
+
+        Laid along the driver's reclined line (the first build) it looked 141 degrees up and
+        back, which no neck pose in flybody's range fixes.
+        """
+        model, data = seated.model, seated.data
+        assert level_gaze_pitch_deg(seated) == pytest.approx(0.0, abs=0.5)
+        neck = model.joint("head").id
+        low, high = model.jnt_range[neck]
+        assert low <= data.qpos[model.jnt_qposadr[neck]] <= high
+        tail = ac_from_mujoco(seated_fly._abdomen_tip(model, data)) * seated.scale
+        head = ac_from_mujoco(data.xpos[model.body("head").id]) * seated.scale
+        assert head[2] > tail[2]  # head to the front, abdomen behind
 
     def test_the_wings_are_folded(self, seated):
         model, data = seated.model, seated.data

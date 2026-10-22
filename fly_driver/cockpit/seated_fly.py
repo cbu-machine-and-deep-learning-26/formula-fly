@@ -1,11 +1,13 @@
 """Pose flybody's fly as a seated Formula 1 driver and cut it into bone-sized parts (GH-25).
 
 The fly is the model that produces the controls (flybody, Vaxenburg et al. 2025). Its head
-goes on the stock driver's head and its body axis (abdomen tip to head) along the driver's
-hips-to-head line, leaned 30 degrees further back and 1.3 times as long: an F1 driver lies
-almost flat, and that is what lets the front legs reach the wheel while the abdomen and
-folded wings stay inside the tub. Measured in the SF70H: the whole fly sits between 7 cm and
-78 cm off the road, inside the bodywork, with the front claws about 5 cm from the knuckles.
+goes on the stock driver's head, where a driver's helmet is, and it faces forward like a
+driver: a fly looks along its body, so its body axis (abdomen tip to head) points to the front
+of the car, tilted 30 degrees nose-up, and its neck bends to bring the gaze level
+(:func:`level_gaze_pitch_deg` reads 0). It is 1.3 times the driver's hips-to-head long, and
+its abdomen goes back into the bodywork behind the seat. Measured in the SF70H: the fly sits
+between 25 cm and 76 cm off the road, the neck at -16 degrees (flybody's range is -29 to
++17), the front claws about 4 cm from the knuckles.
 It is then posed by inverse kinematics against the stock driver's joints, read from the
 car's ``driver_base_pos.knh`` (:data:`IK_TARGETS` says how hard each one pulls):
 
@@ -227,7 +229,7 @@ def pose_seated_fly(
     *,
     iterations: int = 800,
     size: float = 1.3,
-    recline_deg: float = 30.0,
+    body_pitch_deg: float = 30.0,
 ) -> SeatedFly:
     """Scale, place and pose the fly on the stock driver's skeleton.
 
@@ -238,8 +240,9 @@ def pose_seated_fly(
         iterations: Damped least-squares steps. Joint limits are enforced after each one.
         size: Multiplies the fitted scale. ``1.0`` makes abdomen-tip-to-head equal the
             driver's hips-to-head; larger reaches the wheel more easily but sits lower.
-        recline_deg: Leans the fly further back than the driver's hips-to-head line, about
-            its head, so a larger fly's abdomen goes back under the seat instead of down.
+        body_pitch_deg: Tilts the fly's body nose-up from level, about its head, so the
+            abdomen goes down behind the seat. The neck takes the tilt back out of the gaze,
+            within flybody's ``head`` joint range (-29 to +17 degrees).
 
     Raises:
         KeyError: If the rig lacks a bone the pose needs.
@@ -251,19 +254,19 @@ def pose_seated_fly(
     def joint_position(bone: str) -> Vector:
         return mujoco_from_ac(np.asarray(driver_rig[bone])[3, :3])
 
-    # The fly's body axis -- abdomen tip to head -- goes where the driver's body is: hips to
-    # head, reclined along the seat. Matching that length sets the scale. Matching
+    # Abdomen-tip-to-head matches the driver's hips-to-head, times `size`. Matching
     # thorax-to-head to chest-to-head instead made a 1.65 m fly whose abdomen and folded
     # wings hung through the floor of the car and whose thorax filled the cockpit camera.
     hips, head = joint_position("DRIVER:RIG_Hips"), joint_position("DRIVER:RIG_Head")
     fly_head = data.xpos[model.body("head").id].copy()
     fly_tail = _abdomen_tip(model, data)
     scale = size * float(np.linalg.norm(head - hips) / np.linalg.norm(fly_head - fly_tail))
-    lean = np.radians(recline_deg)  # about the driver's left (+y): head stays, tail swings back
-    tilt = np.array(
-        [[np.cos(lean), 0.0, -np.sin(lean)], [0.0, 1.0, 0.0], [np.sin(lean), 0.0, np.cos(lean)]]
-    )
-    rotation = tilt @ _frame(head - hips) @ _frame(fly_head - fly_tail).T
+    # A fly looks along its body, so the body points forward. Lying along the driver's
+    # reclined line (the first build) it looked 141 degrees up and back, past what any neck
+    # pose fixes.
+    pitch = np.radians(body_pitch_deg)
+    forward = mujoco_from_ac(np.array([0.0, np.sin(pitch), np.cos(pitch)]))
+    rotation = _frame(forward) @ _frame(fly_head - fly_tail).T
     quaternion = np.zeros(4)
     mujoco.mju_mat2Quat(quaternion, rotation.flatten())
     root = model.jnt_qposadr[model.joint("free").id]
@@ -272,14 +275,21 @@ def pose_seated_fly(
     data.qpos[root : root + 3] = head / scale - rotation @ (fly_head - thorax)
     data.qpos[root + 3 : root + 7] = quaternion
 
-    # Wings folded along the back: their spring reference is flybody's resting pose.
-    wing_dofs = set()
+    # Wings folded along the back: their spring reference is flybody's resting pose. The head
+    # joints are set, not solved: twist and abduction at 0, the neck to level the gaze.
+    fixed_dofs = set()
     for joint in range(model.njnt):
-        if model.joint(joint).name.startswith("wing_"):
+        name = model.joint(joint).name
+        if name.startswith("wing_"):
             data.qpos[model.jnt_qposadr[joint]] = model.qpos_spring[model.jnt_qposadr[joint]]
-            wing_dofs.add(int(model.jnt_dofadr[joint]))
+        elif name in ("head_twist", "head_abduct"):
+            data.qpos[model.jnt_qposadr[joint]] = 0.0
+        elif name != "head":
+            continue
+        fixed_dofs.add(int(model.jnt_dofadr[joint]))
+    _level_the_neck(model, data)
     free_start = int(model.jnt_dofadr[model.joint("free").id])
-    fixed = wing_dofs | set(range(free_start, free_start + 6))  # the root stays where it was put
+    fixed = fixed_dofs | set(range(free_start, free_start + 6))  # the root stays where it was put
     movable = [dof for dof in range(model.nv) if dof not in fixed]
     targets = [
         (element, kind, joint_position(bone) / scale, weight)
@@ -398,26 +408,37 @@ def hinges(seated: SeatedFly) -> list[Hinge]:
 
 
 def level_gaze_pitch_deg(seated: SeatedFly) -> float:
-    """Degrees to turn the head about the car's side axis so the fly looks level ahead.
+    """The fly's gaze above the car's forward axis, in degrees; 0 is level and ahead.
 
-    A fly looks along its body axis, and the seat lays that axis along the driver's reclined
-    hips-to-head line, so the seated fly looks up and back (about 141 degrees above level
-    ahead in the SF70H). Its neck cannot fix that: flybody's ``head`` joint bends -29 to +17
-    degrees, and reclining less pushes the fly through the floor. The GH-26 app turns the
-    ``DRIVER:RIG_Head`` bone by this angle instead (``HEAD_PITCH_DEG`` in ``fly_pose.lua``).
-
-    Returns:
-        The gaze's elevation above the car's forward axis. Turning the head by this much
-        about +x (the driver's left), right-handed, brings the gaze level and forward.
+    The gaze is the direction the fly faces at rest (+x), carried along with its head.
     """
-    model = seated.model
+    return _gaze_elevation_deg(seated.model, seated.data)
+
+
+def _gaze_elevation_deg(model: mujoco.MjModel, data: mujoco.MjData) -> float:
     rest = mujoco.MjData(model)
     mujoco.mj_forward(model, rest)
     head = model.body("head").id
-    # At rest the fly faces +x; carry that direction with the head into the seated pose.
     gaze_local = rest.xmat[head].reshape(3, 3).T @ np.array([1.0, 0.0, 0.0])
-    gaze = ac_from_mujoco(seated.data.xmat[head].reshape(3, 3) @ gaze_local)
+    gaze = ac_from_mujoco(data.xmat[head].reshape(3, 3) @ gaze_local)
     return float(np.degrees(np.arctan2(gaze[1], gaze[2])))  # AC: +y up, +z forward
+
+
+def _level_the_neck(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """Set flybody's ``head`` (neck) joint so the gaze is level, or as close as its range allows.
+
+    The gaze rises as the joint angle rises, so bisect over the joint's range.
+    """
+    joint = model.joint("head").id
+    address = model.jnt_qposadr[joint]
+    low, high = model.jnt_range[joint]
+    for _ in range(40):
+        data.qpos[address] = (low + high) / 2
+        mujoco.mj_forward(model, data)
+        if _gaze_elevation_deg(model, data) < 0.0:
+            low = data.qpos[address]
+        else:
+            high = data.qpos[address]
 
 
 def _outward_sign(

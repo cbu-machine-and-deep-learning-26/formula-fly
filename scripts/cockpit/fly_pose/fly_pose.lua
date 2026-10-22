@@ -4,8 +4,6 @@
 --   FLY1 <seq> wheel throttle brake head_yaw wing_l wing_r antenna_l antenna_r   (degrees)
 --
 -- Applied here:
---   * a fixed head pitch on DRIVER:RIG_Head, about the car's side axis, so the fly looks
---     ahead instead of up and back along its reclined body; applied every frame, pose or not;
 --   * head yaw on DRIVER:RIG_Head, about the car's up axis;
 --   * throttle on DRIVER:RIG_Foot_R and brake on DRIVER:RIG_Foot_L, about the car's side axis;
 --   * wings on FLY:WING_L / FLY:WING_R and antennae on FLY:ANTENNA_L / FLY:ANTENNA_R, about
@@ -23,18 +21,12 @@
 local socket = require('shared/socket')
 
 local PORT = 9871          -- pose_stream.DEFAULT_PORT
-local STALE_SECONDS = 1.0  -- no pose for this long: back to the rest pose
+local STALE_SECONDS = 1.0  -- no pose for this long: put the bones back
 
 -- Calibration, checked in the game (docs/fly-driver.md, "What to check in the game"):
 local HEAD_SIGN = -1       -- +yaw must turn the head to the driver's right
 local PEDAL_SIGN = 1       -- +press must push the foot forward, onto the pedal
 local HINGE_SIGN = 1       -- +wing angle must spread the folded wings out from the body
--- The seated fly looks along its body, up and back. Turning the head this far about the car's
--- side axis levels its gaze: seated_fly.level_gaze_pitch_deg, which pose_fly_driver.py prints
--- for the car it posed (141 for the SF70H). It is past a real fly's neck (flybody's head joint
--- bends -29 to +17 degrees) on purpose; reclining the body less put the fly through the floor.
-local HEAD_PITCH_DEG = 141
-local HEAD_PITCH_SIGN = 1  -- +pitch must turn the face forward and down, towards the road ahead
 -- Ask AC to skip its own driver-model update for a frame, as CSP's VR rig does. Only turn
 -- this on if the head and feet do not move with it off: it may also hold the steering arms.
 local HOLD_DRIVER_MODEL = false
@@ -72,17 +64,15 @@ local function findJoints()
   local found = {}
   local function joint(name, field, sign, axisOf)
     local node = carRoot:findNodes(name)
-    if #node == 0 then return nil end
+    if #node == 0 then return false end
     node:storeCurrentTransformation()  -- restored if the app reloads
     found[#found + 1] = { node = node, base = node:getTransformationRaw():clone(),
       field = field, sign = sign, axisOf = axisOf }
-    return found[#found]
+    return true
   end
   local up = function (car) return car.up end
   local side = function (car) return car.side end
-  local head = joint('DRIVER:RIG_Head', 'head_yaw', HEAD_SIGN, up)
-  if head then head.pitchDeg = HEAD_PITCH_SIGN * HEAD_PITCH_DEG end
-  local ok = head
+  local ok = joint('DRIVER:RIG_Head', 'head_yaw', HEAD_SIGN, up)
     and joint('DRIVER:RIG_Foot_R', 'throttle', PEDAL_SIGN, side)
     and joint('DRIVER:RIG_Foot_L', 'brake', PEDAL_SIGN, side)
     and joint('FLY:WING_L', 'wing_left', HINGE_SIGN, nil)
@@ -99,20 +89,19 @@ local function apply(joint, angleDeg, car)
   local posed
   if joint.axisOf then
     -- In the parent's frame, after the stored local transform (row vectors); keep the pivot.
-    local toParent = joint.node:getParent():getWorldTransformationRaw():inverse()
-    local axis = toParent:transformVector(joint.axisOf(car)):normalize()
-    posed = joint.base
-    if joint.pitchDeg then
-      local sideAxis = toParent:transformVector(car.side):normalize()
-      posed = posed:mul(mat4x4.rotation(math.rad(joint.pitchDeg), sideAxis))
-    end
-    posed = posed:mul(mat4x4.rotation(angle, axis))
+    local parentWorld = joint.node:getParent():getWorldTransformationRaw()
+    local axis = parentWorld:inverse():transformVector(joint.axisOf(car)):normalize()
+    posed = joint.base:mul(mat4x4.rotation(angle, axis))
     posed.position:set(joint.base.position)
   else
     -- In the node's own frame, before the stored local transform: about its hinge.
     posed = mat4x4.rotation(angle, vec3(1, 0, 0)):mul(joint.base)
   end
   joint.node:getTransformationRaw():set(posed)
+end
+
+local function restore()
+  for _, joint in ipairs(joints) do joint.node:getTransformationRaw():set(joint.base) end
 end
 
 function script.update(dt)
@@ -132,10 +121,7 @@ function script.update(dt)
 
   local car = ac.getCar(0)
   if pose == nil or os.preciseClock() - lastPacket > STALE_SECONDS then
-    -- Rest pose, with the head still sat up: every joint at 0, which is its base except the
-    -- head's fixed pitch. Every frame, because the game resets the head bone from the .knh.
-    pose = nil
-    for _, joint in ipairs(joints) do apply(joint, 0, car) end
+    if pose ~= nil then restore(); pose = nil end
     return
   end
   for _, joint in ipairs(joints) do apply(joint, pose[joint.field], car) end
@@ -151,6 +137,6 @@ function windowMain(dt)
     ui.text(string.format('wings %.1f %.1f  antennae %+.1f %+.1f', pose.wing_left,
       pose.wing_right, pose.antenna_left, pose.antenna_right))
   else
-    ui.text('no live pose: bones at rest, head sat up')
+    ui.text('no live pose: bones at rest')
   end
 end
