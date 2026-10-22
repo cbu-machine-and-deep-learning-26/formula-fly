@@ -32,6 +32,7 @@ What differs from the practice track, because AC differs:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -39,7 +40,7 @@ from fly_driver.bridge.env_link import AcCar, RemoteCar
 from fly_driver.bridge.wire import DEFAULT_ENV_PORT, Telemetry
 from fly_driver.envs.centerline import Centerline
 from fly_driver.envs.lap import LapTimer
-from fly_driver.envs.practice_track import ProgressReward, RewardFunction
+from fly_driver.envs.practice_track import ProgressReward, RewardFunction, _build_reward
 from fly_driver.interface import FRAME_RATE_HZ, FRAME_SHAPE, ControlVector, Frame, validate_frame
 
 __all__ = ["DEFAULT_CAR", "DEFAULT_TRACK", "AssettoCorsaTrack"]
@@ -86,7 +87,9 @@ class AssettoCorsaTrack:
         max_missed_ticks: Truncate the episode when one step missed more ticks than this;
             ``None`` only counts them.
         reward: Scores each step. Defaults to
-            :class:`~fly_driver.envs.practice_track.ProgressReward`.
+            :class:`~fly_driver.envs.practice_track.ProgressReward`. A mapping builds one the
+            way :class:`~fly_driver.envs.practice_track.PracticeTrack` does, so a run config's
+            ``env.params.reward`` (e.g. ``{type: lap_time, ...}``) means the same in both.
     """
 
     def __init__(
@@ -101,7 +104,7 @@ class AssettoCorsaTrack:
         stall_s: float | None = None,
         stall_speed_mps: float = 1.0,
         max_missed_ticks: int | None = 5,
-        reward: RewardFunction | None = None,
+        reward: RewardFunction | Mapping[str, Any] | None = None,
     ) -> None:
         if max_steps is not None and max_steps <= 0:
             raise ValueError(f"max_steps must be positive or None, got {max_steps}")
@@ -112,6 +115,8 @@ class AssettoCorsaTrack:
         if max_missed_ticks is not None and max_missed_ticks < 0:
             raise ValueError(f"max_missed_ticks must be >= 0 or None, got {max_missed_ticks}")
         self.car = car
+        if isinstance(reward, Mapping):
+            reward = _build_reward(reward)
         self.reward = reward or ProgressReward()
         self.frame_shape = tuple(int(size) for size in frame_shape)
         self.frame_rate_hz = float(frame_rate_hz)
@@ -192,7 +197,7 @@ class AssettoCorsaTrack:
         self._slow_s = 0.0
         self._done = False
         info = self._info(telemetry, progress_m=0.0, missed=0, lap_time=None)
-        info.update(stalled=False, interrupted=False)
+        info.update(crashed=False, stalled=False, interrupted=False)
         return self._frame, info
 
     def step(self, action: object) -> tuple[Frame, float, bool, bool, dict[str, Any]]:
@@ -227,15 +232,16 @@ class AssettoCorsaTrack:
         stalled = self._stall_s is not None and self._slow_s >= self._stall_s
 
         info = self._info(telemetry, progress_m=progress_m, missed=missed, lap_time=lap_time)
-        info.update(stalled=stalled, interrupted=interrupted)
-        reward, terms = self.reward(info, self.dt)
-        info["reward_terms"] = terms
-
+        # `crashed` is PracticeTrack's key for ending the episode at the track limit; rewards
+        # such as LapTimeReward read it.
         off_limit = (
             self._terminate_off_track
             and self._track_limit > 0.0
             and info["off_track_fraction"] > self._track_limit
         )
+        info.update(crashed=off_limit, stalled=stalled, interrupted=interrupted)
+        reward, terms = self.reward(info, self.dt)
+        info["reward_terms"] = terms
         terminated = off_limit or stalled
         late = self._max_missed_ticks is not None and missed > self._max_missed_ticks
         capped = self._max_steps is not None and self._steps >= self._max_steps

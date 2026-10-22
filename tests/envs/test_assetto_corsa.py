@@ -131,6 +131,27 @@ def test_a_custom_reward_plugs_in_unchanged() -> None:
         assert key in seen[0]
 
 
+def test_a_reward_mapping_builds_the_practice_track_reward() -> None:
+    """The same YAML reward block as the MuJoCo runs, e.g. v4's pace reward."""
+    env, _ = make_env(
+        reward={
+            "type": "lap_time",
+            "target_lap_time_s": 105.0,
+            "pace_floor": 0.25,
+            "crash_penalty_m": 0.0,
+            "scale": 0.01,
+        },
+        stall_s=2.5,
+        stall_speed_mps=2.0,
+    )
+    _, info = env.reset()
+    assert info["crashed"] is False
+    *_, (_, reward, terminated, _, info) = drive(env, ControlVector(1.0, 0.5, 0.0), 2000)
+    assert type(env.reward).__name__ == "LapTimeReward"
+    assert terminated and info["crashed"] and set(info["reward_terms"]) >= {"crash"}
+    assert reward == pytest.approx(sum(info["reward_terms"].values()))
+
+
 def test_env_type_assetto_corsa_builds_from_yaml(tmp_path: Path) -> None:
     pytest.importorskip("torch")
     from fly_driver.training.config import TrainConfig
