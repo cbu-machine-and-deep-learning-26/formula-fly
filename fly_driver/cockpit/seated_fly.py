@@ -7,7 +7,7 @@ of the car, tilted 30 degrees nose-up, and its neck bends to bring the gaze leve
 (:func:`level_gaze_pitch_deg` reads 0). It is 1.3 times the driver's hips-to-head long, and
 its abdomen goes back into the bodywork behind the seat. Measured in the SF70H: the fly sits
 between 25 cm and 76 cm off the road, the neck at -16 degrees (flybody's range is -29 to
-+17), the front claws about 4 cm from the knuckles.
++17), the front claws 4 to 6 cm from the knuckles.
 It is then posed by inverse kinematics against the stock driver's joints, read from the
 car's ``driver_base_pos.knh`` (:data:`IK_TARGETS` says how hard each one pulls):
 
@@ -65,6 +65,11 @@ Vector = npt.NDArray[np.float64]
 #: on the stock head bone. Cars hide ``DRIVER:HELMET`` in the cockpit camera
 #: (``[HIDE_OBJECT_0]`` in ``driver3d.ini``), which keeps the camera out of the fly's head.
 HEAD_OBJECT = "DRIVER:HELMET"
+
+#: Damped least squares damping. At 1e-4 the many redundant targets were so ill-conditioned
+#: that macOS and Windows numpy rounded the same pose into different minima, the front claws
+#: 4 and 17 cm from the knuckles; at 1e-2 they land 4 and 6 cm away.
+_IK_DAMPING = 1e-2
 
 _HEAD_BODIES = ("head", "rostrum", "haustellum", "labrum_left", "labrum_right")
 _HEAD_PREFIXES = ("antenna_",)
@@ -312,7 +317,9 @@ def pose_seated_fly(
             rows.append(weight * jacobian[:, movable])
             errors.append(weight * (target - position))
         stacked, error = np.vstack(rows), np.concatenate(errors)
-        step = stacked.T @ np.linalg.solve(stacked @ stacked.T + 1e-4 * np.eye(error.size), error)
+        step = stacked.T @ np.linalg.solve(
+            stacked @ stacked.T + _IK_DAMPING * np.eye(error.size), error
+        )
         velocity = np.zeros(model.nv)
         velocity[movable] = step
         mujoco.mj_integratePos(model, data.qpos, velocity, 0.5)
