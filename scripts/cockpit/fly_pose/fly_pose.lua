@@ -3,15 +3,17 @@
 -- The sender is fly_driver/cockpit/pose_stream.py. A datagram is ASCII:
 --   FLY1 <seq> wheel throttle brake head_yaw wing_l wing_r antenna_l antenna_r   (degrees)
 --
--- Applied here: head yaw on DRIVER:RIG_Head, throttle on DRIVER:RIG_Foot_R, brake on
--- DRIVER:RIG_Foot_L. Not applied:
---   * wheel: the car's own steer.ksanim already turns the arm bones, and so the front legs,
---     with the car's real steering, which is the policy's steer;
---   * wings and antennae: the GH-25 build has no node of their own to turn (wings ride on
---     RIG_Cest with the thorax, antennae are inside DRIVER:HELMET). See docs/fly-driver.md.
+-- Applied here:
+--   * head yaw on DRIVER:RIG_Head, about the car's up axis;
+--   * throttle on DRIVER:RIG_Foot_R and brake on DRIVER:RIG_Foot_L, about the car's side axis;
+--   * wings on FLY:WING_L / FLY:WING_R and antennae on FLY:ANTENNA_L / FLY:ANTENNA_R, about
+--     each node's own x axis, which the build puts along the flybody hinge joint
+--     (fly_driver/cockpit/seated_fly.py, HINGE_NODES).
+-- Not applied: the wheel. The car's own steer.ksanim already turns the arm bones, and so the
+-- front legs, with the car's real steering, which is the policy's steer.
 --
 -- CSP API used (acc-lua-sdk, lib_scene.lua and ac_matrices.d.lua): ac.findNodes('carRoot:0'),
--- :findNodes, :getTransformationRaw, :getParent, :getWorldTransformationRaw,
+-- :findNodes, :getTransformationRaw, :getParent, :getWorldTransformationRaw, :setVisible,
 -- :storeCurrentTransformation, mat4x4.rotation, mat4x4:mul. UDP is LuaSocket, shipped with
 -- CSP as require('shared/socket') (acc-lua-internal README, "lua-shared"). Posing driver
 -- bones live is what CSP's own VR rig does (acc-lua-internal, lua-module/src/vr_rig_base.lua).
@@ -24,19 +26,24 @@ local STALE_SECONDS = 1.0  -- no pose for this long: put the bones back
 -- Calibration, checked in the game (docs/fly-driver.md, "What to check in the game"):
 local HEAD_SIGN = -1       -- +yaw must turn the head to the driver's right
 local PEDAL_SIGN = 1       -- +press must push the foot forward, onto the pedal
+local HINGE_SIGN = 1       -- +wing angle must spread the folded wings out from the body
 -- Ask AC to skip its own driver-model update for a frame, as CSP's VR rig does. Only turn
 -- this on if the head and feet do not move with it off: it may also hold the steering arms.
 local HOLD_DRIVER_MODEL = false
 
 local FIELDS = { 'wheel', 'throttle', 'brake', 'head_yaw', 'wing_left', 'wing_right',
   'antenna_left', 'antenna_right' }
+-- live_pose.LIMITS_DEG: the sender clips already; this guards against any other sender.
+local LIMITS = { throttle = { 0, 25 }, brake = { 0, 25 }, head_yaw = { -30, 30 },
+  wing_left = { 0, 10 }, wing_right = { 0, 10 }, antenna_left = { -15, 15 },
+  antenna_right = { -15, 15 } }
 
 local udp = assert(socket.udp())
 assert(udp:setsockname('0.0.0.0', PORT))
 udp:settimeout(0)
 
 local pose, lastSeq, packets, lastPacket = nil, nil, 0, -math.huge
-local joints = nil  -- built once the car's driver is in the scene
+local joints, antennae = nil, nil  -- found once the car's driver is in the scene
 
 local function decode(datagram)
   local tokens = {}
@@ -50,32 +57,46 @@ local function decode(datagram)
   return tonumber(tokens[2]), values
 end
 
+-- A joint turns about a world axis (`axisOf(car)`) through its pivot, or, with `axisOf`
+-- nil, about its own local x.
 local function findJoints()
   local carRoot = ac.findNodes('carRoot:0')
+  local found = {}
   local function joint(name, field, sign, axisOf)
     local node = carRoot:findNodes(name)
-    if #node == 0 then return nil end
+    if #node == 0 then return false end
     node:storeCurrentTransformation()  -- restored if the app reloads
-    return { node = node, base = node:getTransformationRaw():clone(), field = field,
-      sign = sign, axisOf = axisOf }
+    found[#found + 1] = { node = node, base = node:getTransformationRaw():clone(),
+      field = field, sign = sign, axisOf = axisOf }
+    return true
   end
   local up = function (car) return car.up end
   local side = function (car) return car.side end
-  local head = joint('DRIVER:RIG_Head', 'head_yaw', HEAD_SIGN, up)
-  local throttle = joint('DRIVER:RIG_Foot_R', 'throttle', PEDAL_SIGN, side)
-  local brake = joint('DRIVER:RIG_Foot_L', 'brake', PEDAL_SIGN, side)
-  if not (head and throttle and brake) then return nil end
-  return { head, throttle, brake }
+  local ok = joint('DRIVER:RIG_Head', 'head_yaw', HEAD_SIGN, up)
+    and joint('DRIVER:RIG_Foot_R', 'throttle', PEDAL_SIGN, side)
+    and joint('DRIVER:RIG_Foot_L', 'brake', PEDAL_SIGN, side)
+    and joint('FLY:WING_L', 'wing_left', HINGE_SIGN, nil)
+    and joint('FLY:WING_R', 'wing_right', HINGE_SIGN, nil)
+    and joint('FLY:ANTENNA_L', 'antenna_left', 1, nil)
+    and joint('FLY:ANTENNA_R', 'antenna_right', 1, nil)
+  if not ok then return nil end
+  return found
 end
 
--- Turn a joint by `angle` about a world axis through its own pivot: the rotation is
--- applied in the parent's frame after the stored local transform (row vectors), and the
--- position is kept.
 local function apply(joint, angleDeg, car)
-  local parentWorld = joint.node:getParent():getWorldTransformationRaw()
-  local axis = parentWorld:inverse():transformVector(joint.axisOf(car)):normalize()
-  local posed = joint.base:mul(mat4x4.rotation(math.rad(joint.sign * angleDeg), axis))
-  posed.position:set(joint.base.position)
+  local limit = LIMITS[joint.field]
+  local angle = math.rad(joint.sign * math.clamp(angleDeg, limit[1], limit[2]))
+  local posed
+  if joint.axisOf then
+    -- In the parent's frame, after the stored local transform (row vectors); keep the pivot.
+    local parentWorld = joint.node:getParent():getWorldTransformationRaw()
+    local axis = parentWorld:inverse():transformVector(joint.axisOf(car)):normalize()
+    posed = joint.base:mul(mat4x4.rotation(angle, axis))
+    posed.position:set(joint.base.position)
+  else
+    -- In the node's own frame, before the stored local transform: about its hinge.
+    posed = mat4x4.rotation(angle, vec3(1, 0, 0)):mul(joint.base)
+  end
   joint.node:getTransformationRaw():set(posed)
 end
 
@@ -93,6 +114,11 @@ function script.update(dt)
 
   joints = joints or findJoints()
   if not joints then return end
+  -- The antennae used to be inside DRIVER:HELMET, which cars hide in the cockpit camera.
+  -- On their own nodes they need hiding here, or they sit in front of the lens.
+  antennae = antennae or ac.findNodes('carRoot:0'):findNodes('{ FLY:ANTENNA_L, FLY:ANTENNA_R }')
+  antennae:setVisible(ac.getSim().cameraMode ~= ac.CameraMode.Cockpit)
+
   local car = ac.getCar(0)
   if pose == nil or os.preciseClock() - lastPacket > STALE_SECONDS then
     if pose ~= nil then restore(); pose = nil end
@@ -104,10 +130,12 @@ end
 
 function windowMain(dt)
   ui.text(string.format('UDP %d: %d poses', PORT, packets))
-  ui.text(joints and 'fly bones found' or 'waiting for the driver model')
+  ui.text(joints and 'fly bones and hinges found' or 'waiting for the driver model')
   if pose then
     ui.text(string.format('seq %d  head %+.1f  throttle %.1f  brake %.1f', lastSeq,
       pose.head_yaw, pose.throttle, pose.brake))
+    ui.text(string.format('wings %.1f %.1f  antennae %+.1f %+.1f', pose.wing_left,
+      pose.wing_right, pose.antenna_left, pose.antenna_right))
   else
     ui.text('no live pose: bones at rest')
   end

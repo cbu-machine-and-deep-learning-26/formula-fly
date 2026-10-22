@@ -15,7 +15,9 @@ car's ``driver_base_pos.knh`` (:data:`IK_TARGETS` says how hard each one pulls):
 - hind legs (T3) tuck towards the hip joints.
 
 Every fly body is then assigned to the driver bone it should ride on
-(:func:`driver_bone_for`). Assetto Corsa moves those bones with the car's own steering and
+(:func:`driver_bone_for`). The wings and antennae go one level deeper, each under its own
+empty node at its hinge (:data:`HINGE_NODES`, :func:`hinges`), so the GH-26 app can turn
+them live. Assetto Corsa moves those bones with the car's own steering and
 shift animations, so the parts follow rigidly -- the same way the stock helmet rides on the
 head bone -- and nothing in the car's data has to change.
 
@@ -40,20 +42,23 @@ import numpy.typing as npt
 __all__ = [
     "DRIVER_BONE_FOR_BODY",
     "HEAD_OBJECT",
+    "HINGE_NODES",
     "IK_TARGETS",
     "BodyPart",
+    "Hinge",
     "MeshPiece",
     "SeatedFly",
     "ac_from_mujoco",
     "body_parts",
     "driver_bone_for",
+    "hinges",
     "mujoco_from_ac",
     "pose_seated_fly",
 ]
 
 Vector = npt.NDArray[np.float64]
 
-#: The fly's head, mouthparts and antennae become one object with the stock helmet's name,
+#: The fly's head and mouthparts become one object with the stock helmet's name,
 #: on the stock head bone. Cars hide ``DRIVER:HELMET`` in the cockpit camera
 #: (``[HIDE_OBJECT_0]`` in ``driver3d.ini``), which keeps the camera out of the fly's head.
 HEAD_OBJECT = "DRIVER:HELMET"
@@ -77,6 +82,19 @@ DRIVER_BONE_FOR_BODY: dict[str, str] = {
     "haltere_left": "DRIVER:RIG_Cest",
     "haltere_right": "DRIVER:RIG_Cest",
 }
+
+#: Hinge node -> ``(fly body, flybody joint whose axis it turns about, sign)``. Each node hangs
+#: from the stock bone its body rode on in GH-25 (``RIG_Cest`` for the wings, ``RIG_Head``
+#: for the antennae), at the joint's anchor, with its local +x along the joint axis times
+#: ``sign``. The wings turn about their yaw (stroke) joint, signed so a positive angle swings
+#: each folded wing out from the body; the antennae about their extend joint.
+HINGE_NODES: dict[str, tuple[str, str, float]] = {
+    "FLY:WING_L": ("wing_left", "wing_yaw_left", 1.0),
+    "FLY:WING_R": ("wing_right", "wing_yaw_right", 1.0),
+    "FLY:ANTENNA_L": ("antenna_left", "antenna_left", 1.0),
+    "FLY:ANTENNA_R": ("antenna_right", "antenna_right", 1.0),
+}
+_HINGE_FOR_BODY = {body: node for node, (body, _, _) in HINGE_NODES.items()}
 
 #: ``(fly element, kind, driver bone, weight)``. ``kind`` is ``site`` or ``body`` (the body's
 #: origin, which is the joint it hangs from).
@@ -118,8 +136,10 @@ def ac_from_mujoco(points: npt.ArrayLike) -> Vector:
 def driver_bone_for(body: str) -> str | None:
     """The stock driver bone a fly body rides on, or ``None`` for the head group.
 
-    The head group (head, mouthparts, antennae) is one object, :data:`HEAD_OBJECT`, on
-    ``DRIVER:RIG_Head``; :func:`body_parts` handles it.
+    The head group (head, mouthparts, antennae) rides on ``DRIVER:RIG_Head``: head and
+    mouthparts as one object, :data:`HEAD_OBJECT`, the antennae on their hinge nodes
+    (:data:`HINGE_NODES`). This returns ``None`` for all of them; :func:`body_parts` and
+    :func:`hinges` place them.
 
     Raises:
         KeyError: For a body this mapping does not know, so a new flybody release cannot
@@ -164,6 +184,23 @@ class BodyPart:
     bone: str
     bodies: tuple[str, ...]
     pieces: tuple[MeshPiece, ...]
+
+
+@dataclass(frozen=True)
+class Hinge:
+    """An empty node a wing or antenna hangs from, so it can turn about its joint.
+
+    Args:
+        name: Node name, a key of :data:`HINGE_NODES`.
+        bone: The stock driver bone it hangs from.
+        world: 4x4 world matrix in Assetto Corsa axes, Direct3D layout like a ``.knh``
+            node: rows 0-2 are the node's x, y and z axes (x is the hinge axis), row 3 the
+            pivot, in metres.
+    """
+
+    name: str
+    bone: str
+    world: npt.NDArray[np.float64]
 
 
 @dataclass
@@ -285,6 +322,9 @@ def pose_seated_fly(
 def body_parts(seated: SeatedFly) -> list[BodyPart]:
     """The fly as FBX objects: one per body, plus the head group as :data:`HEAD_OBJECT`.
 
+    Wings and antennae ride on their :data:`HINGE_NODES` node, not on a stock bone; the
+    antennae are therefore no longer part of the head group.
+
     Vertices are in Assetto Corsa coordinates, in metres. Object names are unique, as the
     game requires (Kunos car pipeline guide, section 1.B).
     """
@@ -317,7 +357,7 @@ def body_parts(seated: SeatedFly) -> list[BodyPart]:
     head_bodies: list[str] = []
     head_pieces: list[MeshPiece] = []
     for body in sorted(pieces_by_body):
-        bone = driver_bone_for(body)
+        bone = _HINGE_FOR_BODY.get(body) or driver_bone_for(body)
         if bone is None:
             head_bodies.append(body)
             head_pieces.extend(pieces_by_body[body])
@@ -337,6 +377,50 @@ def body_parts(seated: SeatedFly) -> list[BodyPart]:
             )
         )
     return parts
+
+
+def hinges(seated: SeatedFly) -> list[Hinge]:
+    """The :data:`HINGE_NODES` nodes in the seated pose, in Assetto Corsa axes and metres."""
+    model, data = seated.model, seated.data
+    found = []
+    for name, (body, joint, sign) in HINGE_NODES.items():
+        index = model.joint(joint).id
+        if model.jnt_bodyid[index] != model.body(body).id:
+            raise ValueError(f"joint {joint!r} does not move body {body!r}")
+        pivot = data.xanchor[index]
+        axis = sign * data.xaxis[index]
+        if body.startswith("wing_"):
+            axis = axis * _outward_sign(model, data, body, pivot, axis)
+        bone = driver_bone_for(body) or "DRIVER:RIG_Head"
+        found.append(Hinge(name=name, bone=bone, world=_hinge_world(pivot * seated.scale, axis)))
+    return found
+
+
+def _outward_sign(
+    model: mujoco.MjModel, data: mujoco.MjData, body: str, pivot: Vector, axis: Vector
+) -> float:
+    """``1`` if turning ``body`` a little about ``axis`` moves its mesh away from the fly's
+    midline (the thorax's x-z plane), else ``-1``."""
+    thorax = model.body("thorax").id
+    left = data.xmat[thorax].reshape(3, 3)[:, 1]
+    centre = data.xpos[thorax]
+    geoms = np.flatnonzero(model.geom_bodyid == model.body(body).id)
+    tip = np.mean([data.geom_xpos[geom] for geom in geoms], axis=0)
+    arm = tip - pivot
+    turned = pivot + arm + 1e-3 * np.cross(axis / np.linalg.norm(axis), arm)
+    return 1.0 if abs((turned - centre) @ left) > abs((tip - centre) @ left) else -1.0
+
+
+def _hinge_world(pivot_mujoco: Vector, axis_mujoco: Vector) -> npt.NDArray[np.float64]:
+    """Direct3D world matrix with +x along ``axis`` and its origin at ``pivot`` (AC axes)."""
+    x_axis = ac_from_mujoco(axis_mujoco / np.linalg.norm(axis_mujoco))
+    helper = np.array([0.0, 1.0, 0.0]) if abs(x_axis[1]) < 0.9 else np.array([0.0, 0.0, 1.0])
+    z_axis = np.cross(x_axis, helper)
+    z_axis /= np.linalg.norm(z_axis)
+    world = np.eye(4)
+    world[0, :3], world[1, :3], world[2, :3] = x_axis, np.cross(z_axis, x_axis), z_axis
+    world[3, :3] = ac_from_mujoco(pivot_mujoco)
+    return world
 
 
 def _frame(axis: Vector) -> npt.NDArray[np.float64]:

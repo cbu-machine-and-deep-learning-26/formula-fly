@@ -10,7 +10,7 @@ import pytest
 
 from fly_driver.cockpit.export import MANIFEST_NAME, is_skeleton_node, write_parts
 from fly_driver.cockpit.knh import KnhNode
-from fly_driver.cockpit.seated_fly import BodyPart, MeshPiece
+from fly_driver.cockpit.seated_fly import BodyPart, Hinge, MeshPiece
 
 
 def _translation(x: float, y: float, z: float) -> np.ndarray:
@@ -72,6 +72,27 @@ def test_duplicate_names_and_missing_bones_are_refused(tmp_path: Path) -> None:
         write_parts(twice, _rig(), tmp_path, scale=1.0)
     with pytest.raises(ValueError, match="RIG_Arm_L"):
         write_parts([_part("FLY:a", "DRIVER:RIG_Arm_L")], _rig(), tmp_path, scale=1.0)
+
+
+def test_hinges_follow_the_skeleton_and_carry_their_parts(tmp_path: Path) -> None:
+    hinge_world = _translation(0.02, 0.55, 0.1)
+    hinge_world[:3, :3] = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]  # local x along the car's front
+    hinge = Hinge("FLY:ANTENNA_L", "DRIVER:RIG_Head", hinge_world)
+    parts = [_part("FLY:antenna_left", "FLY:ANTENNA_L")]
+    manifest = json.loads(
+        write_parts(parts, _rig(), tmp_path, scale=1.0, hinges=[hinge]).read_text("utf-8")
+    )
+
+    row = manifest["bones"][-1]
+    assert (row["name"], row["parent"]) == ("FLY:ANTENNA_L", "DRIVER:RIG_Head")
+    np.testing.assert_allclose(row["world"], hinge_world)
+    assert manifest["parts"][0]["bone"] == "FLY:ANTENNA_L"
+    with pytest.raises(ValueError, match="FLY:ANTENNA_L"):  # a part on a hinge nobody made
+        write_parts(parts, _rig(), tmp_path, scale=1.0)
+    with pytest.raises(ValueError, match="RIG_Cest"):
+        write_parts(
+            [], _rig(), tmp_path, scale=1.0, hinges=[Hinge("FLY:W", "DRIVER:RIG_Cest", hinge_world)]
+        )
 
 
 @pytest.mark.parametrize(

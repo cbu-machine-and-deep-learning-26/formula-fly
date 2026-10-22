@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fly_driver.cockpit import body_parts, pose_seated_fly, read_knh, world_matrices  # noqa: E402
 from fly_driver.cockpit.export import write_parts  # noqa: E402
+from fly_driver.cockpit.seated_fly import hinges  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_AC_ROOT = Path(r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa")
@@ -87,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
             "size": args.size,
             "recline_deg": args.recline,
         },
+        hinges=hinges(seated),
     )
     print(f"scale {seated.scale:.3f} m per MuJoCo unit; {len(parts)} parts -> {manifest}")
     for element, miss in seated.target_misses.items():

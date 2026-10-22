@@ -17,9 +17,11 @@ head bone. The car's own animations then move the fly, and nothing in the car's 
 
 | Fly | Driver bone |
 |---|---|
-| thorax, wings, halteres | `RIG_Cest` (chest) |
+| thorax, halteres | `RIG_Cest` (chest) |
+| left and right wing | `FLY:WING_L`, `FLY:WING_R`, empty nodes on `RIG_Cest` at the wing hinges |
 | abdomen | `RIG_Hips` |
-| head, mouthparts, antennae | one object named `DRIVER:HELMET` on `RIG_Head` |
+| head, mouthparts | one object named `DRIVER:HELMET` on `RIG_Head` |
+| left and right antenna | `FLY:ANTENNA_L`, `FLY:ANTENNA_R`, empty nodes on `RIG_Head` at the antenna hinges |
 | front legs: coxa and femur, tibia, tarsus and claw | `RIG_Arm`, `RIG_ForeArm`, `RIG_HAND` |
 | middle and hind legs: coxa and femur, tibia, tarsus and claw | `RIG_Leg`, `RIG_Shin`, `RIG_Foot` |
 
@@ -36,6 +38,12 @@ pose script change the fit.
 The first fit scaled the fly so its thorax-to-head matched the driver's chest-to-head. That
 made it 1.65 m long, with the abdomen and wings hanging a metre through the floor. In the game
 only its head showed.
+
+The wing and antenna nodes are for #26, which turns them live. Each sits at its flybody
+joint's anchor (the wing's yaw joint, the antenna's extend joint) with its local x along
+that joint's axis, so turning a node about its x turns the part about its hinge. At rest the
+nodes change nothing: in a Blender round trip of the FBX every vertex stays within 0.3 µm of
+the GH-25 position. The nodes are not in the `.knh`, so the game keeps their transform.
 
 Every part's shape is stored relative to its bone, with an identity transform. Assetto Corsa
 resets each node named in the car's `.knh`, including `DRIVER:HELMET`, to the transform stored
@@ -128,8 +136,8 @@ copy. The pose comes from the `ControlVector` and the brain's activity instead
 | right hind leg on the throttle | `throttle` | `DRIVER:RIG_Foot_R`, about the car's side axis | 0 to 25° |
 | left hind leg on the brake | `brake` | `DRIVER:RIG_Foot_L`, about the car's side axis | 0 to 25° |
 | head yaw | compass ring bump, `30° × sin(heading)` | `DRIVER:RIG_Head`, about the car's up axis | ±30° |
-| wings | mean \|activity\| of each half of the 32 descending neurons | none yet | 0 to 10° |
-| antennae | signed mean of each half | none yet | ±15° |
+| wings | mean \|activity\| of each half of the 32 descending neurons | `FLY:WING_L`, `FLY:WING_R`, about their x (wing yaw joint) | 0 to 10°, positive spreads the wing out |
+| antennae | signed mean of each half | `FLY:ANTENNA_L`, `FLY:ANTENNA_R`, about their x (antenna extend joint) | ±15° |
 
 The heading is the angle of the activation-weighted mean over the 812 compass neurons, cell
 `i` at `2πi/812`, counting only positive activity. Successive poses are smoothed
@@ -139,11 +147,8 @@ The wheel angle is not applied because Assetto Corsa already turns the arm bones
 car's real steering, which is the policy's `steer` after the bridge. The middle legs share
 the hind legs' bones (the bone table under "How it works"), so they press with the pedals too.
 
-**Wings and antennae do not move in the game yet.** The GH-25 build gives them no node of
-their own: the wings are meshes on `RIG_Cest` with the thorax, and the antennae are inside
-`DRIVER:HELMET`. Turning `RIG_Cest` would swing the whole thorax. To animate them,
-`build_fly_driver_fbx.py` has to put each wing and antenna under its own null at its hinge,
-and the app has to turn those nulls. The angles are already in the stream.
+The antennae used to be inside `DRIVER:HELMET`, which cars hide in the cockpit camera. On
+their own nodes they are not, so the app hides them itself in the cockpit camera.
 
 ### How CSP poses the bones
 
@@ -199,14 +204,18 @@ bar to see poses arriving. With no pose for a second, the bones go back to rest.
 
 ### What to check in the game
 
-1. The Fly Pose window counts poses and says "fly bones found".
+1. The Fly Pose window counts poses and says "fly bones and hinges found". If it waits for
+   the driver model forever, the installed KN5 predates the hinge nodes: rebuild it.
 2. Throttle presses the right hind leg forward and brake the left. If they lift instead, set
    `PEDAL_SIGN = -1` in `fly_pose.lua`.
 3. A positive head yaw (bump past a quarter of the ring) turns the head to the driver's
    right. If it turns left, set `HEAD_SIGN = -1`.
 4. The front legs still follow the wheel while the app runs. If the head and feet do not
    move at all, try `HOLD_DRIVER_MODEL = true`, then check the front legs again.
-5. The head stays hidden in the cockpit camera when it turns.
+5. The head and antennae stay hidden in the cockpit camera, and show in the chase and TV
+   cameras.
+6. The wings spread out from the back with descending activity, and the antennae swing
+   about their bases. If a wing folds into the body instead, set `HINGE_SIGN = -1`.
 
 ## Known limits
 
@@ -215,7 +224,6 @@ bar to see poses arriving. With no pose for a second, the bones go back to rest.
   that shows, the next step is skinning the parts to the same bones with blended weights.
 - **Assetto Corsa does not animate the driver's feet** (Kunos car pipeline guide, "Driver
   animations"). The CSP app above presses them.
-- **Wings and antennae need their own nodes** before they can move. See above.
 
 ## Tests
 
@@ -223,7 +231,9 @@ bar to see poses arriving. With no pose for a second, the bones go back to rest.
 pytest tests/cockpit tests/scripts/test_install_fly_driver.py
 ```
 
-For #26 they cover the pose's limits, the steer sign, the pedals, a head that follows a
+For #26 they cover the hinge nodes (each wing and antenna on its own node at its joint,
+x along the joint axis, a positive wing angle spreading the wing, the rest pose unchanged),
+the pose's limits, the steer sign, the pedals, a head that follows a
 synthetic compass bump, the UDP round trip, one pose per step from each wrapper, and the app
 install. For #25 they cover the `.knh` reader and writer on synthetic trees, the fly-to-bone map, the axis
 conversion, mesh welding, the manifest and OBJ writer, and install and restore. With flybody's

@@ -5,9 +5,12 @@ and writes an FBX that ksEditor can turn into a driver KN5:
 
 - the stock driver's skeleton as nulls, named exactly as in the car's ``driver_base_pos.knh``
   and with its orientations, so the car's own ``steer.ksanim`` moves them;
-- every fly part as a rigid mesh parented to its bone with an identity transform and its
-  shape in the bone's frame -- the way the stock helmet rides on the head bone (Kunos car
-  pipeline guide, "Skinned mesh": a non-skinned object may be a child of a null). The game
+- the wing and antenna hinge nodes (``FLY:WING_L`` and so on, GH-26) as more nulls, listed
+  in the manifest after the skeleton with their parent bone, so the app can turn them;
+- every fly part as a rigid mesh parented to its bone or hinge node with an identity
+  transform and its shape in that node's frame -- the way the stock helmet rides on the head
+  bone (Kunos car pipeline guide, "Skinned mesh": a non-skinned object may be a child of a
+  null). The game
   resets nodes named in the ``.knh`` to their stored transform, so parts must not carry one;
 - decimated to about 36k vertices (the stock driver KN5 is 11 MB), one UV set per mesh and a
   4x4 colour texture per material, because every mesh must have a UV set and ksPerPixel

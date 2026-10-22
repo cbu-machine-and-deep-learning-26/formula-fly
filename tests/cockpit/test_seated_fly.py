@@ -16,9 +16,11 @@ import pytest
 from fly_driver.cockpit import seated_fly
 from fly_driver.cockpit.seated_fly import (
     HEAD_OBJECT,
+    HINGE_NODES,
     ac_from_mujoco,
     body_parts,
     driver_bone_for,
+    hinges,
     mujoco_from_ac,
     pose_seated_fly,
 )
@@ -161,3 +163,67 @@ class TestThePose:
         for joint in ("wing_yaw_left", "wing_roll_left", "wing_pitch_left"):
             address = model.jnt_qposadr[model.joint(joint).id]
             assert data.qpos[address] == pytest.approx(model.qpos_spring[address])
+
+
+@needs_flybody
+class TestTheHinges:
+    """GH-26: each wing and antenna under its own node at its hinge, rest pose unchanged."""
+
+    def test_each_wing_and_antenna_rides_on_its_own_hinge(self, seated):
+        found = {hinge.name: hinge for hinge in hinges(seated)}
+        assert set(found) == set(HINGE_NODES)
+        assert found["FLY:WING_L"].bone == found["FLY:WING_R"].bone == "DRIVER:RIG_Cest"
+        assert found["FLY:ANTENNA_L"].bone == found["FLY:ANTENNA_R"].bone == "DRIVER:RIG_Head"
+        parts = {part.name: part for part in body_parts(seated)}
+        for node, (body, _, _) in HINGE_NODES.items():
+            assert parts[f"FLY:{body}"].bone == node
+        head = parts[HEAD_OBJECT].bodies
+        assert "head" in head and not any(body.startswith("antenna") for body in head)
+
+    def test_the_hinge_sits_on_the_joint_with_x_along_its_axis(self, seated):
+        model, data = seated.model, seated.data
+        parts = {part.name: part for part in body_parts(seated)}
+        for hinge in hinges(seated):
+            body, joint, _ = HINGE_NODES[hinge.name]
+            index = model.joint(joint).id
+            pivot = ac_from_mujoco(data.xanchor[index]) * seated.scale
+            np.testing.assert_allclose(hinge.world[3, :3], pivot, atol=1e-9)
+            rotation = hinge.world[:3, :3]
+            np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=1e-9)
+            assert np.linalg.det(rotation) == pytest.approx(1.0)
+            axis = ac_from_mujoco(data.xaxis[index])
+            assert abs(rotation[0] @ axis) == pytest.approx(1.0)
+            # The pivot is at the root of its own mesh, not somewhere on the body.
+            vertices = np.concatenate([piece.vertices for piece in parts[f"FLY:{body}"].pieces])
+            reach = np.linalg.norm(vertices - pivot, axis=1)
+            assert reach.min() < 0.1 * reach.max()
+
+    def test_a_positive_wing_angle_spreads_the_wing_out(self, seated):
+        parts = {part.name: part for part in body_parts(seated)}
+        for hinge in hinges(seated):
+            if not hinge.name.startswith("FLY:WING"):
+                continue
+            body = HINGE_NODES[hinge.name][0]
+            vertices = np.concatenate([piece.vertices for piece in parts[f"FLY:{body}"].pieces])
+            turned = _turn(vertices, hinge.world, np.radians(10))
+            outward = 1.0 if hinge.name.endswith("_L") else -1.0  # AC +x is the driver's left
+            assert outward * (turned[:, 0].mean() - vertices[:, 0].mean()) > 0.005
+
+    def test_the_rest_pose_is_unchanged(self, seated):
+        """Baking a part into its hinge's frame and back is the identity, so with the
+        nodes at rest every vertex is where the GH-25 build put it."""
+        parts = {part.name: part for part in body_parts(seated)}
+        for hinge in hinges(seated):
+            body = HINGE_NODES[hinge.name][0]
+            for piece in parts[f"FLY:{body}"].pieces:
+                np.testing.assert_allclose(
+                    _turn(piece.vertices, hinge.world, 0.0), piece.vertices, atol=1e-6
+                )
+
+
+def _turn(vertices: np.ndarray, world: np.ndarray, angle: float) -> np.ndarray:
+    """Vertices baked into ``world``'s frame, turned ``angle`` about its local x, and back."""
+    local = (vertices - world[3, :3]) @ world[:3, :3].T
+    cos, sin = np.cos(angle), np.sin(angle)
+    turn_x = np.array([[1.0, 0.0, 0.0], [0.0, cos, sin], [0.0, -sin, cos]])  # row vectors
+    return local @ turn_x @ world[:3, :3] + world[3, :3]

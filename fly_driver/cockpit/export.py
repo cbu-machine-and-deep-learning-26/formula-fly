@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 
 from fly_driver.cockpit.knh import KnhNode, world_matrices
-from fly_driver.cockpit.seated_fly import BodyPart
+from fly_driver.cockpit.seated_fly import BodyPart, Hinge
 
 __all__ = ["MANIFEST_NAME", "is_skeleton_node", "write_parts"]
 
@@ -39,6 +39,7 @@ def write_parts(
     *,
     scale: float,
     source: dict[str, Any] | None = None,
+    hinges: Sequence[Hinge] = (),
 ) -> Path:
     """Write ``parts`` as OBJ/MTL pairs and a manifest next to them.
 
@@ -50,17 +51,27 @@ def write_parts(
         output_dir: Created if missing. Existing files with the same names are replaced.
         scale: Metres per MuJoCo unit, recorded for reference.
         source: Anything worth recording about where the inputs came from.
+        hinges: From :func:`~fly_driver.cockpit.seated_fly.hinges`. Each becomes a node
+            after the skeleton, parented to its bone, that wing and antenna parts ride on.
 
     Returns:
         The manifest's path.
 
     Raises:
-        ValueError: If two parts share a name, or a part rides on a bone the rig lacks.
+        ValueError: If two parts share a name, a part rides on a bone the rig lacks, or a
+            hinge hangs from one.
     """
     target = Path(output_dir)
     target.mkdir(parents=True, exist_ok=True)
     driver_root = _find(rig, "DRIVER:DRIVER")
     bones = _bone_table(driver_root)
+    skeleton = {bone["name"] for bone in bones}
+    for hinge in hinges:
+        if hinge.bone not in skeleton:
+            raise ValueError(f"hinge {hinge.name} hangs from {hinge.bone}, not in the rig")
+        bones.append(
+            {"name": hinge.name, "parent": hinge.bone, "world": np.round(hinge.world, 7).tolist()}
+        )
     names = [part.name for part in parts]
     if len(set(names)) != len(names):
         raise ValueError("part names must be unique; Assetto Corsa crashes on duplicates")
