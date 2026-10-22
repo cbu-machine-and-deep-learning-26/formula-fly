@@ -49,6 +49,7 @@ import torch
 from fly_driver.brains.blank import blank_trainable_parameter_count
 from fly_driver.brains.central_complex import CentralComplexBrain
 from fly_driver.drivers import DirectDriveAgent
+from fly_driver.envs.assetto_corsa import AssettoCorsaTrack
 from fly_driver.envs.dummy_track import DummyTrackEnv
 from fly_driver.envs.practice_track import PracticeTrack
 from fly_driver.envs.scene import SceneConfig
@@ -122,6 +123,10 @@ def _build_dummy_track(config: EnvConfig) -> DummyTrackEnv:
     return DummyTrackEnv(max_steps=config.max_steps, **config.params)
 
 
+def _build_assetto_corsa(config: EnvConfig) -> AssettoCorsaTrack:
+    return AssettoCorsaTrack.connect(max_steps=config.max_steps, **config.params)
+
+
 def _build_flyvis_eye(config: EyeConfig, env: Any) -> Eye:
     return FlyvisEye(
         frame_shape=tuple(env.frame_shape),
@@ -154,6 +159,7 @@ def _build_pixel_eye(config: EyeConfig, env: Any) -> Eye:
 ENV_BUILDERS: dict[str, Callable[[EnvConfig], Any]] = {
     "practice_track": _build_practice_track,
     "dummy": _build_dummy_track,
+    "assetto_corsa": _build_assetto_corsa,
 }
 
 #: Eye type name → builder taking the env, which supplies ``frame_shape`` and

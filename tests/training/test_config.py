@@ -93,7 +93,7 @@ class TestTheConditionFields:
     def test_the_known_names_are_what_the_default_yaml_documents(self):
         assert KNOWN_EYE_TYPES == ("flyvis", "cnn", "random_projection", "shuffled", "pixels")
         assert KNOWN_BRAINS == ("none", "central_complex")
-        assert set(KNOWN_ENV_TYPES) == {"practice_track", "dummy"}
+        assert set(KNOWN_ENV_TYPES) == {"practice_track", "dummy", "assetto_corsa"}
 
 
 class TestSeeds:

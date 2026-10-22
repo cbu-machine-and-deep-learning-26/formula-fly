@@ -7,6 +7,8 @@ Spark, so the two halves talk over the LAN (or localhost when they share a machi
 - :mod:`fly_driver.bridge.fly_side`: serves any :class:`~fly_driver.interface.Driver`.
 - :mod:`fly_driver.bridge.car_side`: the real-time loop next to AC, with the deadline rule.
 - :mod:`fly_driver.bridge.assetto`: AssettoCorsaGym behind the car side's env protocol.
+- :mod:`fly_driver.bridge.env_link`: the training env's lockstep server and client (GH-29).
+- :mod:`fly_driver.bridge.fake_ac`: AC's behaviour without AC, for tests and dry runs.
 
 None of these import AssettoCorsaGym at module scope, so the package and its tests run
 where AC is not installed. See ``docs/assetto-corsa-bridge.md`` for the procedure.
