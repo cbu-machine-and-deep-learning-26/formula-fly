@@ -122,9 +122,14 @@ class MlpPolicy(nn.Module):
         activation: ``"tanh"`` or ``"relu"``.
         normalize_features: Standardise inputs with a :class:`RunningNormalizer`.
         init_log_std: Initial log standard deviation of the raw action Gaussian.
+        init_action_mean: Initial raw action mean ``(steer, throttle, brake)``, set as the
+            actor's output bias. Zeros leave throttle and brake clipped to 0 half the time,
+            which can leave an untrained car parked; e.g. ``(0.0, 0.4, -0.6)`` launches it.
+            Only the initial weights depend on it, so checkpoints do not store it.
 
     Raises:
-        ValueError: On a non-positive ``feature_dim`` or an unknown activation.
+        ValueError: On a non-positive ``feature_dim``, an unknown activation, or an
+            ``init_action_mean`` that is not three numbers.
     """
 
     def __init__(
@@ -134,18 +139,25 @@ class MlpPolicy(nn.Module):
         activation: str = "tanh",
         normalize_features: bool = True,
         init_log_std: float = 0.0,
+        init_action_mean: Sequence[float] = (0.0, 0.0, 0.0),
     ) -> None:
         super().__init__()
         if int(feature_dim) < 1:
             raise ValueError(f"feature_dim must be positive, got {feature_dim}")
         if activation not in ACTIVATIONS:
             raise ValueError(f"unknown activation {activation!r}; choose from {list(ACTIVATIONS)}")
+        if len(init_action_mean) != ACTION_DIM:
+            raise ValueError(
+                f"init_action_mean must have {ACTION_DIM} values, got {init_action_mean}"
+            )
         self._feature_dim = int(feature_dim)
         self.hidden_sizes = tuple(int(size) for size in hidden_sizes)
         self.activation = activation
         self.init_log_std = float(init_log_std)
         self.normalizer = RunningNormalizer(self._feature_dim) if normalize_features else None
         self.actor = _mlp(self._feature_dim, self.hidden_sizes, ACTION_DIM, activation, 0.01)
+        with torch.no_grad():
+            self.actor[-1].bias.copy_(torch.tensor(init_action_mean, dtype=torch.float32))
         self.critic = _mlp(self._feature_dim, self.hidden_sizes, 1, activation, 1.0)
         self.log_std = nn.Parameter(torch.full((ACTION_DIM,), self.init_log_std))
 

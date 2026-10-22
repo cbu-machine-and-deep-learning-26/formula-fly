@@ -227,6 +227,7 @@ def build_policy(config: PolicyConfig, feature_dim: int) -> MlpPolicy:
         activation=config.activation,
         normalize_features=config.normalize_features,
         init_log_std=config.init_log_std,
+        init_action_mean=config.init_action_mean,
     )
 
 
