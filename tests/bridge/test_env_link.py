@@ -158,14 +158,16 @@ def test_a_dropped_server_ends_the_episode_and_the_next_reset_carries_on(server)
     remote.close()
 
 
-def test_a_server_that_does_not_come_back_raises() -> None:
-    listener = open_listener("127.0.0.1", 0)
-    threading.Thread(
-        target=serve_env, args=(FakeAc(realtime=False), listener, HELLO), daemon=True
-    ).start()
-    remote = RemoteCar("127.0.0.1", listener.getsockname()[1], timeout_s=5.0, reconnect_s=0.3)
+def test_a_server_that_does_not_come_back_raises(server) -> None:
+    _, port = server
+    remote = RemoteCar("127.0.0.1", port, timeout_s=5.0, reconnect_s=0.3)
     remote.reset()
-    listener.close()
+    # A port nothing listens on. Closing a listener whose serve_env thread is blocked in
+    # accept() does not stop it accepting on Linux, so the server's own port won't do.
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    remote._address = probe.getsockname()
+    probe.close()
     _drop(remote)
     with pytest.raises(ConnectionError, match="not back"):
         remote.step()
