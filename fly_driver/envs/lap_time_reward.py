@@ -5,12 +5,15 @@ was the cheapest policy: all 10 seeds learned to stall. Round 4 paid pace with n
 penalty, so an early end cost only the reward it forfeited. Its best seeds drove 2.8 km at up
 to 140 km/h, but the off-track cost made a run of kerb clipping worth less than ending it, so
 creeping off the track paid, and a car that never passed 2 m/s parked for the whole episode.
-Round 5 adds a real penalty for every early end and keeps every step on track worth >= 0:
+Round 5 adds a real penalty for every early end and keeps every step on track worth >= 0.
+Round 6 then sped up into the braking zones after straights and crashed there: braking costs
+pace, so braking and crashing scored about the same. Round 7 pays for getting through:
 
     reward = progress_m * clip(v / v_target, pace_floor, pace_cap)   forward; v = progress_m / dt
            = progress_m                                              backwards
            - min(v_target * time_weight * depth * dt, pace)          past the kerb's outer edge
            - crash_penalty_m                                         once: crash, off track, stall
+           + corner_bonus_m                                          once per corner per lap
            + lap_bonus_m * target / lap_time                         once, per completed lap
            + target_bonus_m                                          once, if under the target
 
@@ -26,6 +29,17 @@ while ``dG/dv > 0``, that is while ``P < S'(v) / E'(v)``.
 The bound is tightest at the slowest speed the env allows and the shortest distance: at
 gamma 0.997, a 105 s target, 30 km/h (the slow rule's limit) and D = 50 m it is 18.44 m, so
 v5 uses ``crash_penalty_m: 18``. Below 30 km/h the env's slow rule ends the episode anyway.
+
+**Braking for a corner beats crashing at speed.** Take a braking zone of 103 m: 250 to
+120 km/h over 2 s. Carrying 250 km/h through it and crashing at the apex returns 99.9 m at
+gamma 0.997 (pace at 250 km/h for 1.5 s, less P = 18). Braking returns 100.2 m of pace to a
+corner exit 30 m past the apex, which the bonus reaches discounted by 0.647. Even if the car
+crashes straight after the exit, braking ties at a 17.6 m bonus. ``corner_bonus_m: 50`` wins
+by 21 m, more than a crash costs, and wins by more for any longer exit. The bonus is never
+negative and is paid only for completing a corner, so the guarantees below still hold. The
+env pays it once per corner per lap (``info["corner_complete"]``, see
+:class:`~fly_driver.envs.practice_track.PracticeTrack`): forward exits only, not the corner
+an episode starts inside, and not again until the car has driven half a lap net forward.
 
 **An exit never pays.** The cost past the kerb is capped at the step's own pace, so a step
 on or off the track is worth >= 0 while the car moves forward. Steering back on, or riding
@@ -68,6 +82,9 @@ class LapTimeReward:
         target_lap_time_s: The lap time the reward is calibrated to.
         pace_cap: Most a forward metre can be weighted, as a multiple of target pace.
         pace_floor: Least a forward metre is weighted, however slow the car.
+        corner_bonus_m: Paid once each time the env reports ``info["corner_complete"]``: the car
+            drove out of a corner, once per corner per lap. 0 turns it off. See the module
+            docstring for its size.
         crash_penalty_m: Cost of every early end: a crash, an off-track termination or a
             stall. See the module docstring for the largest that keeps faster better.
         lap_bonus_m: Bonus for a lap at exactly the target time, scaled by
@@ -86,6 +103,7 @@ class LapTimeReward:
     pace_cap: float = 2.0
     pace_floor: float = 0.25
     crash_penalty_m: float = 0.0
+    corner_bonus_m: float = 0.0
     lap_bonus_m: float = 2000.0
     target_bonus_m: float = 1000.0
     penalty_weights: PenaltyWeights = field(default_factory=lambda: DEFAULT_PENALTY_WEIGHTS)
@@ -96,7 +114,13 @@ class LapTimeReward:
         for name in ("target_lap_time_s", "pace_cap", "lap_length_m", "scale"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
-        for name in ("pace_floor", "crash_penalty_m", "lap_bonus_m", "target_bonus_m"):
+        for name in (
+            "pace_floor",
+            "crash_penalty_m",
+            "corner_bonus_m",
+            "lap_bonus_m",
+            "target_bonus_m",
+        ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative, got {getattr(self, name)}")
 
@@ -122,6 +146,7 @@ class LapTimeReward:
             # Capped at the step's pace, so no step that moves forward is worth less than 0.
             "track_limits": -min(track_limits, max(pace, 0.0)),
             "crash": -self.crash_penalty_m if info["crashed"] or info["stalled"] else 0.0,
+            "corner_bonus": self.corner_bonus_m if info.get("corner_complete") else 0.0,
             "lap_bonus": 0.0,
         }
         if info["lap_complete"]:
