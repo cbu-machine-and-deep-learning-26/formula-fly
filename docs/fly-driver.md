@@ -113,15 +113,109 @@ Check it with the SF70H at Silverstone. A chase or TV camera shows the fly in th
 the cockpit camera shows the front legs on the wheel. Steer to watch the car's steering
 animation move them.
 
+## Animate it from the live brain
+
+Issue #26: the fly in the seat moves with what the brain is doing. The loop is direct drive
+(frozen flyvis eye, 4,096-neuron central complex, policy head), so there is no MuJoCo body to
+copy. The pose comes from the `ControlVector` and the brain's activity instead
+(`fly_driver/cockpit/live_pose.py`), goes out as one UDP datagram per frame
+(`fly_driver/cockpit/pose_stream.py`), and a Custom Shaders Patch app turns the bones
+(`scripts/cockpit/fly_pose/`).
+
+| Pose | From | Bone in the game | Range |
+|---|---|---|---|
+| front legs on the wheel | `steer` | `RIG_Arm`, `RIG_ForeArm`, `RIG_HAND`, turned by the car's own `steer.ksanim` | ±90° wheel, sent but not applied |
+| right hind leg on the throttle | `throttle` | `DRIVER:RIG_Foot_R`, about the car's side axis | 0 to 25° |
+| left hind leg on the brake | `brake` | `DRIVER:RIG_Foot_L`, about the car's side axis | 0 to 25° |
+| head yaw | compass ring bump, `30° × sin(heading)` | `DRIVER:RIG_Head`, about the car's up axis | ±30° |
+| wings | mean \|activity\| of each half of the 32 descending neurons | none yet | 0 to 10° |
+| antennae | signed mean of each half | none yet | ±15° |
+
+The heading is the angle of the activation-weighted mean over the 812 compass neurons, cell
+`i` at `2πi/812`, counting only positive activity. Successive poses are smoothed
+(`alpha = 0.5`, settled in about 0.1 s at 50 Hz).
+
+The wheel angle is not applied because Assetto Corsa already turns the arm bones from the
+car's real steering, which is the policy's `steer` after the bridge. The middle legs share
+the hind legs' bones (the bone table under "How it works"), so they press with the pedals too.
+
+**Wings and antennae do not move in the game yet.** The GH-25 build gives them no node of
+their own: the wings are meshes on `RIG_Cest` with the thorax, and the antennae are inside
+`DRIVER:HELMET`. Turning `RIG_Cest` would swing the whole thorax. To animate them,
+`build_fly_driver_fbx.py` has to put each wing and antenna under its own null at its hinge,
+and the app has to turn those nulls. The angles are already in the stream.
+
+### How CSP poses the bones
+
+The app runs in CSP's Lua and uses only documented scene calls, from the
+[acc-lua-sdk](https://github.com/ac-custom-shaders-patch/acc-lua-sdk) at commit `7cf60f5`
+(August 2026):
+
+- `ac.findNodes('carRoot:0'):findNodes('DRIVER:RIG_Head')` finds a driver bone
+  (`lib_scene.lua`, `ac.findNodes`);
+- `:getTransformationRaw()` returns the bone's local matrix by reference, "if you need to
+  move something often, accessing its matrix directly might be the best way"
+  (`lib_scene.lua`);
+- `mat4x4.rotation(angle, axis)` and `mat4x4:mul` build the turned matrix
+  (`common/ac_matrices.d.lua`);
+- UDP is LuaSocket, which CSP ships for every script as `require('shared/socket')`
+  ([acc-lua-internal README](https://github.com/ac-custom-shaders-patch/acc-lua-internal),
+  "lua-shared").
+
+Moving driver bones live from Lua is what CSP itself does: its VR rig turns
+`DRIVER:RIG_Arm_L` and the neck every frame (`lua-module/src/vr_rig_base.lua` in
+acc-lua-internal). That rig also calls `ac.updateDriverModel(carIndex, true)` so the game
+does not overwrite the change. That call is not in the public SDK, and it may also stop the
+steering animation, so the app leaves it off (`HOLD_DRIVER_MODEL` in `fly_pose.lua`). No
+minimum CSP version is documented for these calls. Install the current CSP release.
+
+### Install
+
+You need Custom Shaders Patch, installed through Content Manager (Settings → Custom Shaders
+Patch → Install) or from [acstuff.club/patch](https://acstuff.club/patch/). Then, on the
+game box:
+
+```bash
+python scripts/cockpit/install_fly_driver.py --app
+```
+
+This copies the app to `apps/lua/fly_pose`. `--app --restore` removes it. Install the fly's
+KN5 first, as above.
+
+### Run it with driving or training
+
+Wrap whatever drives the car. Nothing else changes:
+
+```python
+from fly_driver.cockpit.pose_stream import PoseStream, PoseStreamDriver, PoseStreamEnv
+
+stream = PoseStream(host="127.0.0.1")         # the game box's address if the fly runs elsewhere
+driver = PoseStreamDriver(driver, stream)      # any Driver; reads driver.brain if it has one
+env = PoseStreamEnv(env, stream, brain=brain)  # or any env with reset/step, e.g. PracticeTrack
+```
+
+Each `act` or `step` sends one pose to UDP port 9871. Open **Fly Pose** in the game's app
+bar to see poses arriving. With no pose for a second, the bones go back to rest.
+
+### What to check in the game
+
+1. The Fly Pose window counts poses and says "fly bones found".
+2. Throttle presses the right hind leg forward and brake the left. If they lift instead, set
+   `PEDAL_SIGN = -1` in `fly_pose.lua`.
+3. A positive head yaw (bump past a quarter of the ring) turns the head to the driver's
+   right. If it turns left, set `HEAD_SIGN = -1`.
+4. The front legs still follow the wheel while the app runs. If the head and feet do not
+   move at all, try `HOLD_DRIVER_MODEL = true`, then check the front legs again.
+5. The head stays hidden in the cockpit camera when it turns.
+
 ## Known limits
 
 - **Rigid parts can open small gaps at the leg joints at large steering angles.** The fly's
   joints don't sit exactly on the human ones, and each part turns about its bone's pivot. If
   that shows, the next step is skinning the parts to the same bones with blended weights.
-- **Pedals are not animated.** Assetto Corsa does not animate the driver's feet (Kunos car
-  pipeline guide, "Driver animations"), so the middle legs stay still.
-- **Moving with the physics body is #26,** a live pose from MuJoCo through Custom Shaders
-  Patch. It waits for the Assetto Corsa bridge in #24.
+- **Assetto Corsa does not animate the driver's feet** (Kunos car pipeline guide, "Driver
+  animations"). The CSP app above presses them.
+- **Wings and antennae need their own nodes** before they can move. See above.
 
 ## Tests
 
@@ -129,7 +223,9 @@ animation move them.
 pytest tests/cockpit tests/scripts/test_install_fly_driver.py
 ```
 
-They cover the `.knh` reader and writer on synthetic trees, the fly-to-bone map, the axis
+For #26 they cover the pose's limits, the steer sign, the pedals, a head that follows a
+synthetic compass bump, the UDP round trip, one pose per step from each wrapper, and the app
+install. For #25 they cover the `.knh` reader and writer on synthetic trees, the fly-to-bone map, the axis
 conversion, mesh welding, the manifest and OBJ writer, and install and restore. With flybody's
 model files present, they also check that the pose reaches the knuckles, that every fly body is
 mapped and every mesh exported, and that the wings are folded.

@@ -8,9 +8,14 @@ same driver model gets the fly too.
 
 Steam's "Verify integrity of game files" also restores the stock driver.
 
+``--app`` copies the Custom Shaders Patch app that animates the fly (GH-26,
+``scripts/cockpit/fly_pose/``) to ``apps/lua/fly_pose``; with ``--restore`` it removes it.
+
 Examples:
     python scripts/cockpit/install_fly_driver.py --driver 2016_Driver --kn5 fly_driver.kn5
     python scripts/cockpit/install_fly_driver.py --driver 2016_Driver --restore
+    python scripts/cockpit/install_fly_driver.py --app
+    python scripts/cockpit/install_fly_driver.py --app --restore
 """
 
 from __future__ import annotations
@@ -22,6 +27,8 @@ from pathlib import Path
 
 DEFAULT_AC_ROOT = Path(r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa")
 BACKUP_SUFFIX = ".stock-backup"
+APP_SOURCE = Path(__file__).resolve().parent / "fly_pose"
+APP_NAME = APP_SOURCE.name
 
 
 def install(kn5: Path, target: Path) -> Path:
@@ -48,24 +55,50 @@ def restore(target: Path) -> None:
     backup.unlink()
 
 
+def install_app(ac_root: Path) -> Path:
+    """Copy the fly-pose app into ``apps/lua``, replacing an older copy. Returns its folder."""
+    if not (ac_root / "apps").is_dir():
+        raise FileNotFoundError(f"{ac_root} is not an Assetto Corsa install (no apps folder)")
+    target = ac_root / "apps" / "lua" / APP_NAME
+    shutil.copytree(APP_SOURCE, target, dirs_exist_ok=True)
+    return target
+
+
+def remove_app(ac_root: Path) -> Path:
+    """Delete the fly-pose app folder. Returns the folder that was removed."""
+    target = ac_root / "apps" / "lua" / APP_NAME
+    if not (target / f"{APP_NAME}.lua").is_file():
+        raise FileNotFoundError(f"no fly-pose app at {target}; nothing to remove")
+    shutil.rmtree(target)
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point; returns the process exit code."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--driver", required=True, help="driver model name, e.g. 2016_Driver")
+    parser.add_argument("--driver", help="driver model name, e.g. 2016_Driver")
     parser.add_argument("--kn5", type=Path, help="the fly driver saved from ksEditor")
     parser.add_argument("--ac-root", type=Path, default=DEFAULT_AC_ROOT)
     parser.add_argument("--restore", action="store_true", help="put the stock driver back")
+    parser.add_argument("--app", action="store_true", help="the CSP app that animates the fly")
     args = parser.parse_args(argv)
-    target = args.ac_root / "content" / "driver" / f"{args.driver}.kn5"
+    if args.driver is None and not args.app:
+        parser.error("give --driver, --app, or both")
+    if args.driver is not None and not args.restore and args.kn5 is None:
+        parser.error("--kn5 is required unless --restore")
     try:
-        if args.restore:
-            restore(target)
-            print(f"restored the stock driver at {target}")
-        else:
-            if args.kn5 is None:
-                parser.error("--kn5 is required unless --restore")
-            backup = install(args.kn5, target)
-            print(f"installed {args.kn5} as {target}\nstock copy kept at {backup}")
+        if args.app and args.restore:
+            print(f"removed {remove_app(args.ac_root)}")
+        elif args.app:
+            print(f"installed the fly-pose app at {install_app(args.ac_root)}")
+        if args.driver is not None:
+            target = args.ac_root / "content" / "driver" / f"{args.driver}.kn5"
+            if args.restore:
+                restore(target)
+                print(f"restored the stock driver at {target}")
+            else:
+                backup = install(args.kn5, target)
+                print(f"installed {args.kn5} as {target}\nstock copy kept at {backup}")
     except (FileNotFoundError, ValueError, PermissionError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

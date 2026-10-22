@@ -47,3 +47,14 @@ def test_restore_without_a_backup_and_a_missing_kn5_are_errors(ac_root: Path) ->
     assert _run(ac_root, "--restore") == 1
     assert _run(ac_root, "--kn5", str(ac_root / "nope.kn5")) == 1
     assert (ac_root / "content" / "driver" / "2016_Driver.kn5").read_bytes() == b"stock driver"
+
+
+def test_app_install_copies_the_csp_app_and_restore_removes_it(ac_root: Path) -> None:
+    (ac_root / "apps" / "lua").mkdir(parents=True)
+    app = ac_root / "apps" / "lua" / "fly_pose"
+
+    assert install_fly_driver.main(["--ac-root", str(ac_root), "--app"]) == 0
+    assert (app / "fly_pose.lua").is_file() and (app / "manifest.ini").is_file()
+    assert install_fly_driver.main(["--ac-root", str(ac_root), "--app", "--restore"]) == 0
+    assert not app.exists()
+    assert install_fly_driver.main(["--ac-root", str(ac_root), "--app", "--restore"]) == 1
