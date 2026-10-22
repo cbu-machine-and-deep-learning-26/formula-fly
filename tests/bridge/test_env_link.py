@@ -131,3 +131,41 @@ def test_a_failing_car_closes_the_client_instead_of_answering() -> None:
     with pytest.raises((ConnectionError, socket.timeout)):
         remote.reset()
     listener.close()
+
+
+def _drop(remote: RemoteCar) -> None:
+    """Swap in a connection whose far end has gone, as when the server process dies."""
+    dead, far = socket.socketpair()
+    far.close()
+    remote._sock.close()
+    remote._sock = dead
+
+
+def test_a_dropped_server_ends_the_episode_and_the_next_reset_carries_on(server) -> None:
+    """One server restart must not end an hours-long real-time run (GH-29)."""
+    _, port = server
+    remote = RemoteCar("127.0.0.1", port, timeout_s=5.0, reconnect_s=5.0)
+    remote.reset()
+    remote.apply(FULL)
+    last, ended = remote.step()
+    assert not ended
+    _drop(remote)
+    frame, ended = remote.step()
+    assert ended and remote.reconnects == 1
+    np.testing.assert_array_equal(frame, last)
+    remote.reset()
+    assert not remote.step()[1]
+    remote.close()
+
+
+def test_a_server_that_does_not_come_back_raises() -> None:
+    listener = open_listener("127.0.0.1", 0)
+    threading.Thread(
+        target=serve_env, args=(FakeAc(realtime=False), listener, HELLO), daemon=True
+    ).start()
+    remote = RemoteCar("127.0.0.1", listener.getsockname()[1], timeout_s=5.0, reconnect_s=0.3)
+    remote.reset()
+    listener.close()
+    _drop(remote)
+    with pytest.raises(ConnectionError, match="not back"):
+        remote.step()
