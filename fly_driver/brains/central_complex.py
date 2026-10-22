@@ -39,7 +39,6 @@ from fly_driver.brains.constants import (
     DEFAULT_RECURRENT_IN_DEGREE,
     DEFAULT_TAU_SECONDS,
     MAX_TAU_SECONDS,
-    MIN_COMPASS_COUNT,
     MIN_NEURON_COUNT,
     MIN_TAU_SECONDS,
     RING_EXCITATION_FAR,
@@ -48,23 +47,14 @@ from fly_driver.brains.constants import (
     VOLTAGE_LIMIT,
     WEIGHT_SCALE,
 )
+from fly_driver.brains.populations import (
+    PopulationCounts,
+    default_output_dim,
+    split_populations,
+)
 from fly_driver.interface import FRAME_RATE_HZ, Features, validate_features
 
 __all__ = ["CentralComplexBrain", "ParameterComparison", "PopulationCounts"]
-
-
-@dataclass(frozen=True)
-class PopulationCounts:
-    """How ``neuron_count`` was split across the three synthetic compartments."""
-
-    compass: int
-    steering: int
-    descending: int
-
-    @property
-    def total(self) -> int:
-        """Sum of the three compartments."""
-        return self.compass + self.steering + self.descending
 
 
 @dataclass(frozen=True)
@@ -133,11 +123,11 @@ class CentralComplexBrain(nn.Module):
         self.dt = 1.0 / self.frame_rate_hz
 
         resolved_output = (
-            _default_output_dim(self.neuron_count)
+            default_output_dim(self.neuron_count)
             if output_dim is None
             else _positive_int("output_dim", output_dim, minimum=1)
         )
-        counts = _split_populations(self.neuron_count, resolved_output)
+        counts = split_populations(self.neuron_count, resolved_output)
         self.compass_count = counts.compass
         self.steering_count = counts.steering
         self.descending_count = counts.descending
@@ -376,26 +366,6 @@ def _edges(pres: list[int], posts: list[int], weights: list[float]) -> _Edges:
 def _in_degrees(post_index: torch.Tensor, neuron_count: int) -> np.ndarray:
     posts = post_index.detach().cpu().numpy()
     return np.bincount(posts, minlength=neuron_count).astype(np.int64)
-
-
-def _default_output_dim(neuron_count: int) -> int:
-    room = neuron_count - (MIN_COMPASS_COUNT + 1)
-    return min(max(4, neuron_count // 5), room)
-
-
-def _split_populations(neuron_count: int, output_dim: int) -> PopulationCounts:
-    remaining = neuron_count - output_dim
-    if remaining < MIN_COMPASS_COUNT + 1:
-        raise ValueError(
-            f"output_dim={output_dim} leaves {remaining} neurons for the compass and "
-            f"steering populations; neuron_count={neuron_count} needs at least "
-            f"{MIN_COMPASS_COUNT + 1} besides the descending readout"
-        )
-    compass = max(MIN_COMPASS_COUNT, remaining // 5)
-    if compass > remaining - 1:
-        compass = remaining - 1
-    steering = remaining - compass
-    return PopulationCounts(compass=compass, steering=steering, descending=output_dim)
 
 
 def _positive_int(name: str, value: int, *, minimum: int) -> int:
