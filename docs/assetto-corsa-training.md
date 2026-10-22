@@ -248,8 +248,11 @@ ourselves and render the frames from the replay.
    runs in (csds-pc-2's `student` console for the first drive). Copy `scripts/bc_replay_app/`
    to `<AC>\apps\lua\fly_bc_replay\` once, copy the replay to
    `Documents\Assetto Corsa\replay\`, set `race.ini`'s `[REPLAY] ACTIVE=1` and
-   `FILENAME=<replay file name>` (back it up first), and start AC as for training
-   (`fly_ac_start`: 640×480 windowed, 50 FPS, nose camera). The Lua app keeps the camera on
+   `FILENAME=<replay file name>`, set `video.ini`'s `SMOKE=0` (back both up first), and
+   start AC as for training (`fly_ac_start`: 640×480 windowed, 50 FPS, nose camera). Smoke
+   must be off: AC renders each held step several times, and its tyre-smoke emitters spawn
+   particles on every one, so with training's `SMOKE=3` the replay fills with a haze that
+   real driving never shows. The only frames that lose real smoke are lock-ups and spins. The Lua app keeps the camera on
    the F1 nose view (`DRIVABLE_MODE=4`), hides all of AC's UI in the replay (its playback
    bar would sit in every frame), and holds the replay wherever
    `scripts/bc_replay_capture.py` asks, so every frame is one 20 ms step of replay time
@@ -261,7 +264,8 @@ ourselves and render the frames from the replay.
    ```
 
    It runs at about 9 frames/s, so a 4-minute drive takes 20 minutes. Afterwards stop AC
-   (`fly_ac_stop`) and restore `race.ini`, or AC opens the replay again.
+   (`fly_ac_stop`) and restore `race.ini` and `video.ini`, or AC opens the replay again
+   and training runs without smoke.
 3. **Pair frames with inputs**, anywhere with the repo:
 
    ```bash
