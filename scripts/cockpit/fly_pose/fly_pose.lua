@@ -5,7 +5,10 @@
 --
 -- Applied here:
 --   * head yaw on DRIVER:RIG_Head, about the car's up axis;
---   * throttle on DRIVER:RIG_Foot_R and brake on DRIVER:RIG_Foot_L, about the car's side axis;
+--   * throttle on DRIVER:RIG_Foot_R and brake on DRIVER:RIG_Foot_L, about the car's side axis
+--     through the fly's hind ankle (the FLY:PEDAL_R / FLY:PEDAL_L node on each foot bone,
+--     seated_fly.PEDAL_PIVOTS), not the driver's ankle in the nose, which swung the legs on
+--     that bone out of the car;
 --   * wings on FLY:WING_L / FLY:WING_R and antennae on FLY:ANTENNA_L / FLY:ANTENNA_R, about
 --     each node's own x axis, which the build puts along the flybody hinge joint
 --     (fly_driver/cockpit/seated_fly.py, HINGE_NODES).
@@ -58,23 +61,29 @@ local function decode(datagram)
 end
 
 -- A joint turns about a world axis (`axisOf(car)`) through its pivot, or, with `axisOf`
--- nil, about its own local x.
+-- nil, about its own local x. The pivot is the node's origin, or a child node `pivotName` (a
+-- pedal pivot) when the KN5 has one.
 local function findJoints()
   local carRoot = ac.findNodes('carRoot:0')
   local found = {}
-  local function joint(name, field, sign, axisOf)
+  local function joint(name, field, sign, axisOf, pivotName)
     local node = carRoot:findNodes(name)
     if #node == 0 then return false end
     node:storeCurrentTransformation()  -- restored if the app reloads
+    local pivot = nil
+    if pivotName then
+      local pivotNode = carRoot:findNodes(pivotName)
+      if #pivotNode > 0 then pivot = pivotNode:getTransformationRaw().position:clone() end
+    end
     found[#found + 1] = { node = node, base = node:getTransformationRaw():clone(),
-      field = field, sign = sign, axisOf = axisOf }
+      field = field, sign = sign, axisOf = axisOf, pivot = pivot }
     return true
   end
   local up = function (car) return car.up end
   local side = function (car) return car.side end
   local ok = joint('DRIVER:RIG_Head', 'head_yaw', HEAD_SIGN, up)
-    and joint('DRIVER:RIG_Foot_R', 'throttle', PEDAL_SIGN, side)
-    and joint('DRIVER:RIG_Foot_L', 'brake', PEDAL_SIGN, side)
+    and joint('DRIVER:RIG_Foot_R', 'throttle', PEDAL_SIGN, side, 'FLY:PEDAL_R')
+    and joint('DRIVER:RIG_Foot_L', 'brake', PEDAL_SIGN, side, 'FLY:PEDAL_L')
     and joint('FLY:WING_L', 'wing_left', HINGE_SIGN, nil)
     and joint('FLY:WING_R', 'wing_right', HINGE_SIGN, nil)
     and joint('FLY:ANTENNA_L', 'antenna_left', 1, nil)
@@ -91,8 +100,15 @@ local function apply(joint, angleDeg, car)
     -- In the parent's frame, after the stored local transform (row vectors); keep the pivot.
     local parentWorld = joint.node:getParent():getWorldTransformationRaw()
     local axis = parentWorld:inverse():transformVector(joint.axisOf(car)):normalize()
-    posed = joint.base:mul(mat4x4.rotation(angle, axis))
-    posed.position:set(joint.base.position)
+    if joint.pivot then
+      -- About the pivot, given in the node's own frame: move it to the origin, turn, move back.
+      local p = joint.base:transformPoint(joint.pivot)
+      posed = joint.base:mul(mat4x4.translation(vec3(-p.x, -p.y, -p.z)))
+        :mul(mat4x4.rotation(angle, axis)):mul(mat4x4.translation(p))
+    else
+      posed = joint.base:mul(mat4x4.rotation(angle, axis))
+      posed.position:set(joint.base.position)
+    end
   else
     -- In the node's own frame, before the stored local transform: about its hinge.
     posed = mat4x4.rotation(angle, vec3(1, 0, 0)):mul(joint.base)

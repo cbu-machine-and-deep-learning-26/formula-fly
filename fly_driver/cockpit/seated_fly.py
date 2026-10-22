@@ -46,6 +46,7 @@ __all__ = [
     "HEAD_OBJECT",
     "HINGE_NODES",
     "IK_TARGETS",
+    "PEDAL_PIVOTS",
     "BodyPart",
     "Hinge",
     "MeshPiece",
@@ -55,6 +56,7 @@ __all__ = [
     "driver_bone_for",
     "hinges",
     "level_gaze_pitch_deg",
+    "pedal_pivots",
     "mujoco_from_ac",
     "pose_seated_fly",
 ]
@@ -103,6 +105,12 @@ HINGE_NODES: dict[str, tuple[str, str, float]] = {
     "FLY:ANTENNA_R": ("antenna_right", "antenna_right", 1.0),
 }
 _HINGE_FOR_BODY = {body: node for node, (body, _, _) in HINGE_NODES.items()}
+
+#: GH-26 pedal pivots: empty nodes on the driver's foot bones at the fly's hind ankles (the
+#: ``tarsus_T3`` joints), holding no parts. The app presses a pedal by turning the foot bone
+#: about this point. About the bone's own origin, the driver's ankle in the car's nose, the fly
+#: leg parts on that bone, 0.5 to 1.1 m away, swung up to 48 cm out of the car.
+PEDAL_PIVOTS: dict[str, str] = {"FLY:PEDAL_L": "tarsus_T3_left", "FLY:PEDAL_R": "tarsus_T3_right"}
 
 #: ``(fly element, kind, driver bone, weight)``. ``kind`` is ``site`` or ``body`` (the body's
 #: origin, which is the joint it hangs from).
@@ -196,7 +204,8 @@ class BodyPart:
 
 @dataclass(frozen=True)
 class Hinge:
-    """An empty node a wing or antenna hangs from, so it can turn about its joint.
+    """An empty node at a fly joint: a wing or antenna hangs from it and turns about it, or a
+    foot bone turns about it (:data:`PEDAL_PIVOTS`).
 
     Args:
         name: Node name, a key of :data:`HINGE_NODES`.
@@ -411,6 +420,18 @@ def hinges(seated: SeatedFly) -> list[Hinge]:
             axis = axis * _outward_sign(model, data, body, pivot, axis)
         bone = driver_bone_for(body) or "DRIVER:RIG_Head"
         found.append(Hinge(name=name, bone=bone, world=_hinge_world(pivot * seated.scale, axis)))
+    return found
+
+
+def pedal_pivots(seated: SeatedFly) -> list[Hinge]:
+    """The :data:`PEDAL_PIVOTS` nodes: on each foot bone, at the fly's hind ankle joint."""
+    model, data = seated.model, seated.data
+    found = []
+    for name, joint in PEDAL_PIVOTS.items():
+        index = model.joint(joint).id
+        bone = driver_bone_for(model.body(model.jnt_bodyid[index]).name)
+        world = _hinge_world(data.xanchor[index] * seated.scale, data.xaxis[index])
+        found.append(Hinge(name=name, bone=bone, world=world))
     return found
 
 

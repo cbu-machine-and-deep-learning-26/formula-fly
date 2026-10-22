@@ -25,6 +25,7 @@ from fly_driver.cockpit.seated_fly import (
     hinges,
     level_gaze_pitch_deg,
     mujoco_from_ac,
+    pedal_pivots,
     pose_seated_fly,
 )
 
@@ -195,6 +196,28 @@ class TestThePose:
         for joint in ("wing_yaw_left", "wing_roll_left", "wing_pitch_left"):
             address = model.jnt_qposadr[model.joint(joint).id]
             assert data.qpos[address] == pytest.approx(model.qpos_spring[address])
+
+
+@needs_flybody
+class TestThePedalPivots:
+    """GH-26: the app turns a foot bone about the fly's hind ankle, not the driver's."""
+
+    def test_each_pivot_is_on_its_foot_bone_at_the_hind_ankle(self, seated):
+        model, data = seated.model, seated.data
+        found = {pivot.name: pivot for pivot in pedal_pivots(seated)}
+        assert set(found) == {"FLY:PEDAL_L", "FLY:PEDAL_R"}
+        for name, joint in seated_fly.PEDAL_PIVOTS.items():
+            assert found[name].bone == f"DRIVER:RIG_Foot_{name[-1]}"
+            anchor = ac_from_mujoco(data.xanchor[model.joint(joint).id]) * seated.scale
+            np.testing.assert_allclose(found[name].world[3, :3], anchor, atol=1e-9)
+
+    def test_the_legs_on_the_foot_bone_stay_near_the_pivot(self, seated):
+        """About the driver's ankle they were 0.5 to 1.1 m out and swung out of the car."""
+        pivots = {pivot.bone: pivot.world[3, :3] for pivot in pedal_pivots(seated)}
+        for part in body_parts(seated):
+            if part.bone in pivots:
+                vertices = np.concatenate([piece.vertices for piece in part.pieces])
+                assert np.linalg.norm(vertices - pivots[part.bone], axis=1).max() < 0.4
 
 
 @needs_flybody
