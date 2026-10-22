@@ -97,6 +97,7 @@ import numpy as np
 from fly_driver.envs.car import CarConfig, CarDynamics, assemble_model_xml
 from fly_driver.envs.centerline import Centerline, Projection, off_track_fraction
 from fly_driver.envs.lap import LapTimer
+from fly_driver.envs.lap_time_reward import LapTimeReward
 from fly_driver.envs.penalty import OffTrackPenalty, PenaltyWeights
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segments import SegmentTimer, SegmentTiming, find_segments
@@ -172,6 +173,23 @@ class ProgressReward:
         return float(sum(terms.values())), terms
 
 
+def _build_reward(spec: Mapping[str, Any], horizon_s: float | None) -> RewardFunction:
+    """A reward from its config mapping, e.g. ``{"type": "lap_time", "target_lap_time_s": 90}``.
+
+    Raises:
+        ValueError: If ``type`` is missing or unknown.
+    """
+    params = dict(spec)
+    kind = params.pop("type", None)
+    if kind == "progress":
+        return ProgressReward(**params)
+    if kind == "lap_time":
+        if horizon_s is not None:
+            params.setdefault("horizon_s", horizon_s)
+        return LapTimeReward(**params)
+    raise ValueError(f"unknown reward type {kind!r}; choose 'progress' or 'lap_time'")
+
+
 class PracticeTrack:
     """Silverstone, one car, one head camera, stepped at the optic lobe's frame rate.
 
@@ -203,7 +221,11 @@ class PracticeTrack:
         penalty_weights: What an excursion costs in seconds. Defaults to
             :data:`~fly_driver.envs.penalty.DEFAULT_PENALTY_WEIGHTS`.
         camera: Name of the MJCF camera to render from.
-        reward: Scores each step. Defaults to :class:`ProgressReward`.
+        reward: Scores each step. Defaults to :class:`ProgressReward`. A mapping builds one
+            from config: ``{"type": "lap_time", **kwargs}`` gives a
+            :class:`~fly_driver.envs.lap_time_reward.LapTimeReward` whose ``horizon_s``
+            defaults to ``max_steps`` in seconds, and ``{"type": "progress", **kwargs}`` a
+            :class:`ProgressReward`.
         random_start: Start each episode at a uniformly random arclength round the lap,
             on the centreline, facing along the track, at rest. Off, every episode starts
             on the grid. Training turns it on so corners appear from the first update;
@@ -211,6 +233,11 @@ class PracticeTrack:
             assumes the grid: the lap timer waits for the first crossing of the line
             (the out lap), segments re-anchor at the start, and progress is a per-step
             delta that is safe across the seam.
+        stall_speed_mps: End the episode once the car has been slower than this for more
+            than ``stall_seconds``, and report ``info["stalled"]``. ``None``, the default,
+            never stalls. For rewards with a time cost, so sitting still cannot run out the
+            clock.
+        stall_seconds: How long below ``stall_speed_mps`` counts as a stall.
 
     Raises:
         ValueError: If any argument is out of range, if the frame does not fit the
@@ -231,8 +258,10 @@ class PracticeTrack:
         terminate_off_track: bool = True,
         penalty_weights: PenaltyWeights | None = None,
         camera: str = DEFAULT_CAMERA,
-        reward: RewardFunction | None = None,
+        reward: RewardFunction | Mapping[str, Any] | None = None,
         random_start: bool = False,
+        stall_speed_mps: float | None = None,
+        stall_seconds: float = 2.5,
     ) -> None:
         shape = tuple(int(value) for value in frame_shape)
         if len(shape) != 3 or shape[2] != 3:
@@ -245,10 +274,20 @@ class PracticeTrack:
             raise ValueError(f"track_limit must be in [0, 1], got {track_limit}")
         if max_steps is not None and max_steps <= 0:
             raise ValueError(f"max_steps must be positive or None, got {max_steps}")
+        if stall_speed_mps is not None and stall_speed_mps <= 0:
+            raise ValueError(f"stall_speed_mps must be positive or None, got {stall_speed_mps}")
+        if stall_seconds <= 0:
+            raise ValueError(f"stall_seconds must be positive, got {stall_seconds}")
 
         self.car = car or CarConfig()
         self.scene = scene or SceneConfig()
+        if isinstance(reward, Mapping):
+            horizon_s = None if max_steps is None else max_steps / float(frame_rate_hz)
+            reward = _build_reward(reward, horizon_s)
         self.reward = reward or ProgressReward()
+        self._stall_speed_mps = stall_speed_mps
+        self._stall_seconds = float(stall_seconds)
+        self._slow_steps = 0
         self._frame_shape: tuple[int, int, int] = (shape[0], shape[1], 3)
         self._frame_rate_hz = float(frame_rate_hz)
         self._track_limit = float(track_limit)
@@ -421,6 +460,7 @@ class PracticeTrack:
         self._dynamics.reset()
         self._surface.reset()
         self._steps = 0
+        self._slow_steps = 0
         self._done = False
 
         projection = self._project()
@@ -509,9 +549,15 @@ class PracticeTrack:
             lap_penalty = self._penalty.finish_lap()
             self._penalty.reset()
 
-        terminated = (
+        crashed = (
             self._terminate_off_track and self._track_limit > 0.0 and beyond > self._track_limit
         )
+        stalled = False
+        if self._stall_speed_mps is not None:
+            slow = self._dynamics.speed_mps(self._data) < self._stall_speed_mps
+            self._slow_steps = self._slow_steps + 1 if slow else 0
+            stalled = self._slow_steps * self.dt > self._stall_seconds
+        terminated = crashed or stalled
 
         info = self._info(
             projection=projection,
@@ -523,6 +569,8 @@ class PracticeTrack:
             lap_time=completed,
             lap_penalty_s=lap_penalty,
             segment=segment,
+            crashed=crashed,
+            stalled=stalled,
         )
         reward, terms = self.reward(info, self.dt)
         info["reward_terms"] = terms
@@ -629,6 +677,8 @@ class PracticeTrack:
         lap_time: float | None = None,
         lap_penalty_s: float | None = None,
         segment: SegmentTiming | None = None,
+        crashed: bool = False,
+        stalled: bool = False,
     ) -> dict[str, Any]:
         """Raw signals, plus the two keys the evaluation harness reads by name.
 
@@ -660,6 +710,8 @@ class PracticeTrack:
             "speed_mps": 0.0 if diverged else self._dynamics.speed_mps(self._data),
             "lateral_m": 0.0 if projection is None else projection.lateral,
             "off_track_fraction": float(beyond),
+            "crashed": crashed,  # this step ended the episode at the track limit
+            "stalled": stalled,  # this step ended the episode for being too slow too long
             # telemetry
             "steps": self._steps,
             "sim_time": float(self._data.time),

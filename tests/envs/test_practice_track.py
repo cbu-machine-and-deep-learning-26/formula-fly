@@ -23,8 +23,9 @@ import mujoco
 import numpy as np
 import pytest
 
+from fly_driver.envs.lap_time_reward import LapTimeReward
 from fly_driver.envs.penalty import PenaltyWeights
-from fly_driver.envs.practice_track import PracticeTrack, ProgressReward
+from fly_driver.envs.practice_track import DEFAULT_TRACK_LIMIT, PracticeTrack, ProgressReward
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segment_log import SegmentLog
 from fly_driver.interface import FRAME_DTYPE, FRAME_RATE_HZ, FRAME_SHAPE, ControlVector
@@ -547,6 +548,84 @@ class TestOpticFlow:
             finally:
                 env.close()
         assert shifts["right"] < shifts["straight"] < shifts["left"], shifts
+
+
+class TestBuildingTheRewardFromConfig:
+    """``env.params.reward`` in YAML reaches the env as a mapping."""
+
+    def test_lap_time_takes_its_horizon_from_max_steps(self):
+        env = PracticeTrack(max_steps=500, reward={"type": "lap_time", "target_lap_time_s": 105})
+        try:
+            assert isinstance(env.reward, LapTimeReward)
+            assert env.reward.target_lap_time_s == 105
+            assert env.reward.horizon_s == pytest.approx(500 / FRAME_RATE_HZ)
+        finally:
+            env.close()
+
+    def test_the_default_is_still_progress_reward(self):
+        env = PracticeTrack()
+        try:
+            assert env.reward == ProgressReward()
+        finally:
+            env.close()
+
+    def test_an_unknown_type_is_an_error(self):
+        with pytest.raises(ValueError, match="unknown reward type"):
+            PracticeTrack(reward={"type": "vibes"})
+
+
+@pytest.mark.render
+class TestLapTimeRewardInTheEnv:
+    def test_every_term_is_logged_on_a_real_drive(self):
+        env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0)
+        try:
+            _started(env)
+            for _ in range(50):
+                result = _step(env, FLAT_OUT)
+                terms = result.info["reward_terms"]
+                assert set(terms) == {"progress", "time", "track_limits", "crash", "lap_bonus"}
+                assert sum(terms.values()) == pytest.approx(result.reward)
+        finally:
+            env.close()
+
+    def test_a_stall_terminates_with_the_crash_penalty(self):
+        env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
+        try:
+            _started(env)
+            for _ in range(200):
+                result = _step(env, COASTING)
+                if result.terminated:
+                    break
+            assert result.terminated and result.info["stalled"]
+            assert not result.info["crashed"]
+            assert env.steps == round(1.0 * FRAME_RATE_HZ) + 1, "just over stall_seconds"
+            assert result.info["reward_terms"]["crash"] == -env.reward.crash_cost_m
+        finally:
+            env.close()
+
+    def test_stalling_is_off_by_default(self):
+        env = PracticeTrack()
+        try:
+            _started(env)
+            result = _drive(env, COASTING, 200)
+            assert not result.terminated and not result.info["stalled"]
+        finally:
+            env.close()
+
+    def test_leaving_the_circuit_still_terminates_and_costs_the_crash_penalty(self):
+        env = PracticeTrack(reward={"type": "lap_time"})
+        try:
+            _started(env)
+            _drive(env, FLAT_OUT, 120)
+            for _ in range(200):
+                result = _step(env, _FULL_LOCK)
+                if result.terminated:
+                    break
+            assert result.terminated and result.info["crashed"]
+            assert result.info["off_track_fraction"] > DEFAULT_TRACK_LIMIT
+            assert result.info["reward_terms"]["crash"] == -env.reward.crash_cost_m
+        finally:
+            env.close()
 
 
 @pytest.mark.render
