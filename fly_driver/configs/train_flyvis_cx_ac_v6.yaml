@@ -1,0 +1,107 @@
+# GH-29: the v6 condition trained in Assetto Corsa: the SF70H at Silverstone GP, through
+# scripts/ac_env_server.py (docs/assetto-corsa-training.md). A copy of train_flyvis_cx_ac.yaml
+# with v5's reward and slow rule (train_flyvis_cx_v5.yaml says why) and an 8 s slow window,
+# warm-started from the same checkpoint as the practice track's v6: the designed MuJoCo -> AC
+# transfer.
+# v6 (GH-27): v5's reward, with PPO set for fine-tuning a warm start. In round 5 the updates
+# were far too big for it: approx_kl 0.02-0.04 and clip_fraction 0.24-0.36 from update 1,
+# against 0.007-0.015 in rounds 3 and 4. Entropy collapsed (seed 1 2.6 -> 1.4, seed 3
+# 2.6 -> 1.0 in ~250k steps) and the policy overwrote what it knew: seed 1 forgot how to
+# launch (~80% of episodes 186-558 ended on the slow rule), seed 3 slid 706 -> 325 -> 148 m
+# per episode. v6 lowers the learning rate to 1e-4, stops an update's epochs past
+# approx_kl 0.015, and adds a little entropy (0.001) to keep exploring.
+# Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
+name: flyvis_cx_ac_v6
+output_dir: runs
+# v5 seed 3 at update 50: 579 m over the 50 episodes after it and 577 m from the grid, the
+# best saved round-5 checkpoint. Not in git: copied into weights/ (git-ignored).
+init_from: weights/round5_best/policy_update_00050.pt
+seeds: [0]  # one AC instance, so one seed at a time
+total_env_steps: 1000000
+device: auto
+
+eye:
+  type: flyvis          # flyvis | pixels (GH-15 adds the CNN, random-projection and shuffled controls)
+  frozen: true          # false fine-tunes the eye with the policy; needs a feed-forward eye
+  params: {}            # e.g. readouts: [T4a, T4b, T4c, T4d, T5a, T5b, T5c, T5d], checkpoint: flow/0000/000
+
+# 4096 neurons: scripts/brain_frame_time.py at the flyvis T4/T5 width (5768 inputs) puts the
+# brain step at ~1.4 ms on a Mac CPU. Render, eye and policy already take ~14-16 ms of the
+# 20 ms frame (docs/training.md), and 16384 neurons (~4.1 ms) would use all of what is left.
+# output_dim 32 is the sweep's readout width, so the head stays small next to the brain.
+brain:
+  type: central_complex
+  params:
+    neuron_count: 4096
+    output_dim: 32
+
+policy:
+  hidden_sizes: [64, 64]
+  activation: tanh
+  normalize_features: true
+  init_log_std: 0.0
+  # Throttle starts at +0.4 and brake at -0.6 (clipped to 0 most of the time), so the
+  # untrained car pulls away. Zeros left it parked: every 20k-step episode stalled.
+  init_action_mean: [0.0, 0.4, -0.6]
+
+env:
+  type: assetto_corsa   # scripts/ac_env_server.py next to AC, in AC's desktop session
+  max_steps: 15000      # 5 minutes at 50 Hz, as on the practice track
+  params:
+    host: 127.0.0.1
+    port: 2351
+    track: ks_silverstone-gp
+    car: ks_ferrari_sf70h
+    # Off track is AC's own tyre count: three tyres out ends the episode (the default 0.5).
+    # A reset leaves the car where it stopped, so starts spread round the lap on their own
+    # (docs/assetto-corsa-training.md); there is no random_start to set.
+    stall_speed_mps: 8.3  # v5's slow rule: under 30 km/h for stall_s ends the episode
+    # 8 s, not MuJoCo's 3 s: AC launches are slower, and the warm-started policy needs time
+    # to adapt to AC's frames before it finds enough throttle to launch the SF70H.
+    stall_s: 8.0
+    # v5's reward, built by the same builder as the practice track's.
+    reward:
+      type: lap_time
+      target_lap_time_s: 105.0
+      pace_cap: 2.0
+      pace_floor: 0.0
+      crash_penalty_m: 18.0
+      scale: 0.01
+
+ppo:
+  rollout_steps: 2048
+  minibatches: 32
+  epochs: 10
+  learning_rate: 1.0e-4  # v6: a third of v5's, for a warm start
+  anneal_learning_rate: true
+  # 0.99 is a 2 s horizon (1 / (1 - gamma) = 100 steps at 50 Hz). Braking from 300 to
+  # 100 km/h takes ~1.3 s and 78 m, and the crash it avoids lands after the turn-in, 2-3 s
+  # after the brake point: 0.99 weights a crash 150 steps away by 0.22. 0.997 is a 333-step
+  # (6.7 s, ~400 m at target pace) horizon that weights it by 0.64, enough to see a braking
+  # zone and the corner after it without stretching credit assignment over a whole lap.
+  gamma: 0.997
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  clip_value_loss: true
+  entropy_coef: 0.001  # v6: keeps entropy from collapsing
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  normalize_advantages: true
+  target_kl: 0.015  # v6: stop the update's epochs past this approx_kl
+
+# Evaluation runs in real time and moves the car (the training episode it interrupts ends),
+# so it is rarer and shorter than on the practice track: ~102k steps apart, 2 minutes each.
+eval:
+  every_updates: 50
+  episodes: 1
+  max_steps: 6000
+  record_video: false
+
+logging:
+  wandb:
+    enabled: false      # CSV is always written; this only adds a W&B mirror
+    project: formula-fly
+    entity: null
+    mode: online
+    tags: []
+  checkpoint_every_updates: 50  # ~102k steps, with each eval: ~10 checkpoints over 1M steps
