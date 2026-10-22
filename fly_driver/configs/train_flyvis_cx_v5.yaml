@@ -1,0 +1,97 @@
+# RQ2 condition: frozen pretrained flyvis eye -> central-complex brain -> policy head.
+# v5 (GH-27): round 4's best seeds drove 2.8 km at up to 140 km/h, but seeds collapsed into
+# two leaks: creeping off track ended a run of costly kerb clipping for free, and a car that
+# never passed 2 m/s parked for the whole episode. v5 makes every early end (crash, off-track
+# termination, stall) cost 18 m, the largest penalty for which slowing down to delay a crash
+# never pays (fly_driver/envs/lap_time_reward.py), caps the off-track cost at the step's pace
+# so an exit never pays, and ends any episode under 30 km/h for 3 s from the first step.
+# Warm-started from round 4's best checkpoint: each round starts from the last one's best
+# weights (docs/training.md). Everything else is v4.
+# Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
+name: flyvis_cx_v5  # v5 = early-end penalty, warm start; v4 = pace reward; v3 = lap-time
+output_dir: runs
+# v4 seed 0 at update 250, before its collapse, at its best 50-drive window (623 m average).
+# Not in git: copied into each training checkout's weights/ (git-ignored).
+init_from: weights/round4_best/policy_update_00250.pt
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+total_env_steps: 5000000
+device: auto
+
+eye:
+  type: flyvis          # flyvis | pixels (GH-15 adds the CNN, random-projection and shuffled controls)
+  frozen: true          # false fine-tunes the eye with the policy; needs a feed-forward eye
+  params: {}            # e.g. readouts: [T4a, T4b, T4c, T4d, T5a, T5b, T5c, T5d], checkpoint: flow/0000/000
+
+# 4096 neurons: scripts/brain_frame_time.py at the flyvis T4/T5 width (5768 inputs) puts the
+# brain step at ~1.4 ms on a Mac CPU. Render, eye and policy already take ~14-16 ms of the
+# 20 ms frame (docs/training.md), and 16384 neurons (~4.1 ms) would use all of what is left.
+# output_dim 32 is the sweep's readout width, so the head stays small next to the brain.
+brain:
+  type: central_complex
+  params:
+    neuron_count: 4096
+    output_dim: 32
+
+policy:
+  hidden_sizes: [64, 64]
+  activation: tanh
+  normalize_features: true
+  init_log_std: 0.0
+  # Throttle starts at +0.4 and brake at -0.6 (clipped to 0 most of the time), so the
+  # untrained car pulls away. Zeros left it parked: every 20k-step episode stalled.
+  init_action_mean: [0.0, 0.4, -0.6]
+
+env:
+  type: practice_track  # practice_track | dummy
+  max_steps: 15000      # 5 minutes of simulated time at 50 Hz: room for a slow, clean lap
+  params:
+    racing_line: false  # off, as for the RQ1 comparisons
+    track_limit: 0.15
+    random_start: true  # training episodes start anywhere round the lap; eval stays on the grid
+    stall_speed_mps: 8.3  # under 30 km/h for over stall_seconds, from the first step, is a stall
+    stall_seconds: 3.0    # flat out from rest passes 30 km/h in 0.7 s
+    # fly_driver/envs/lap_time_reward.py. 105 s, not the 90 s default: the car's measured
+    # limit is ~100 s (docs/training.md), so 90 s would be a bonus no lap can earn.
+    reward:
+      type: lap_time
+      target_lap_time_s: 105.0
+      pace_cap: 2.0  # a forward metre is weighted by speed / target speed, up to 2
+      pace_floor: 0.0  # the slow rule now does the floor's job of making the car move
+      crash_penalty_m: 18.0  # every early end; the largest that keeps faster better
+      scale: 0.01  # target-pace lap ~+89: unnormalised PPO needs small returns
+
+ppo:
+  rollout_steps: 2048
+  minibatches: 32
+  epochs: 10
+  learning_rate: 3.0e-4
+  anneal_learning_rate: true
+  # 0.99 is a 2 s horizon (1 / (1 - gamma) = 100 steps at 50 Hz). Braking from 300 to
+  # 100 km/h takes ~1.3 s and 78 m, and the crash it avoids lands after the turn-in, 2-3 s
+  # after the brake point: 0.99 weights a crash 150 steps away by 0.22. 0.997 is a 333-step
+  # (6.7 s, ~400 m at target pace) horizon that weights it by 0.64, enough to see a braking
+  # zone and the corner after it without stretching credit assignment over a whole lap.
+  gamma: 0.997
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  clip_value_loss: true
+  entropy_coef: 0.0
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  normalize_advantages: true
+  target_kl: null
+
+eval:
+  every_updates: 25     # deterministic evaluation every N updates; 0 disables it
+  episodes: 1
+  max_steps: null       # null = the env's own cap
+  record_video: false
+
+logging:
+  wandb:
+    enabled: false      # CSV is always written; this only adds a W&B mirror
+    project: formula-fly
+    entity: null
+    mode: online
+    tags: []
+  checkpoint_every_updates: 50  # ~102k steps, every other eval: ~49 checkpoints over 5M steps

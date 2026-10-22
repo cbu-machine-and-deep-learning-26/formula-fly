@@ -6,6 +6,8 @@ directly rather than through the env, so a failure points at the formula and not
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -16,7 +18,11 @@ from fly_driver.envs.practice_track import DEFAULT_TRACK_LIMIT, ProgressReward
 from fly_driver.interface import FRAME_RATE_HZ
 
 DT = 1.0 / FRAME_RATE_HZ
-REWARD = LapTimeReward()
+GAMMA = 0.997
+#: v5's reward (train_flyvis_cx_v5.yaml): no floor, every early end costs 18 m.
+REWARD = LapTimeReward(target_lap_time_s=105.0, pace_floor=0.0, crash_penalty_m=18.0)
+#: v5's slow rule: under 30 km/h for 3 s ends the episode.
+MIN_SPEED_MPS = 8.3
 
 
 def _info(
@@ -48,64 +54,90 @@ def _drive(
     return sum(step * gamma**t for t in range(round(seconds / DT)))
 
 
-def _crash_after(
-    speed_mps: float, seconds: float, reward: LapTimeReward = REWARD, gamma: float = 1.0
+def _excursion(
+    speed_mps: float, depths: list[float], reward: LapTimeReward = REWARD, *, exits: bool
 ) -> float:
-    """Return of driving at ``speed_mps`` for ``seconds``, then crashing on the next step."""
-    crash = reward(_info(speed_mps=speed_mps, crashed=True), DT)[0]
-    return _drive(speed_mps, seconds, reward, gamma) + crash * gamma ** round(seconds / DT)
+    """Discounted return of an off-track excursion through ``depths``, one per step, that
+    either ends in an off-track termination or steers back onto the track."""
+    total = 0.0
+    for step, depth in enumerate(depths):
+        crashed = exits and step == len(depths) - 1
+        info = _info(speed_mps=speed_mps, depth=depth, crashed=crashed)
+        total += GAMMA**step * reward(info, DT)[0]
+    return total
 
 
-SPEEDS_MPS = [0.1, 28.0 / 3.6, REWARD.target_speed_mps, 3.0 * REWARD.target_speed_mps]
+#: From the slow rule's limit to twice target pace, the range the bound on P covers.
+SPEEDS_MPS = np.linspace(MIN_SPEED_MPS, 2.0 * REWARD.target_speed_mps, 60)
 
 
-FLOORS = [pytest.param(LapTimeReward(pace_floor=f), id=f"floor_{f}") for f in (0.0, 0.25)]
+def _crash_at(speed_mps: float, crash_at_m: float, reward: LapTimeReward = REWARD) -> float:
+    """Discounted return of driving ``crash_at_m`` at one speed and then crashing.
+
+    The step count ``D / (v * dt)`` is kept fractional: rounding it to whole steps moves the
+    crash by up to a step's distance, which at 100 m/s and 50 m is a 4% change in D and
+    swamps the effect under test.
+    """
+    steps = crash_at_m / (speed_mps * DT)
+    per_step = reward(_info(speed_mps=speed_mps), DT)[0]
+    crash = reward(_info(crashed=True), DT)[0]
+    return per_step * (1.0 - GAMMA**steps) / (1.0 - GAMMA) + GAMMA**steps * crash
 
 
-@pytest.mark.parametrize("reward", FLOORS)
-class TestNoEarlyExitPays:
-    @pytest.mark.parametrize("gamma", [1.0, 0.997])
-    @pytest.mark.parametrize("speed_mps", SPEEDS_MPS)
-    @pytest.mark.parametrize("crash_at_s", [0.02, 1.0, 30.0, 299.0])
-    def test_crashing_now_is_worse_than_driving_on_and_crashing_later(
-        self, reward, gamma, speed_mps, crash_at_s
-    ):
-        now = reward(_info(speed_mps=speed_mps, crashed=True), DT)[0]
-        assert now < _crash_after(speed_mps, crash_at_s, reward, gamma)
-
-    @pytest.mark.parametrize("gamma", [1.0, 0.997])
-    @pytest.mark.parametrize("speed_mps", SPEEDS_MPS)
-    def test_stalling_never_beats_driving(self, reward, gamma, speed_mps):
-        """Parked until the stall ends the episode, against any forward drive that crashes."""
-        stall_s = 2.5
-        parked = (
-            _drive(0.0, stall_s, reward, gamma)
-            + gamma ** round(stall_s / DT) * reward(_info(stalled=True), DT)[0]
-        )
-        assert parked < _crash_after(speed_mps, stall_s, reward, gamma)
-
-    @pytest.mark.parametrize("crash_at_m", [30.0, 100.0, 300.0, 1000.0])
-    def test_slowing_down_to_delay_a_crash_never_pays(self, reward, crash_at_m):
-        """With a crash a fixed distance ahead, discounting must not make slower better."""
-        speeds = np.linspace(2.0, 80.0, 40)
-        returns = [_crash_after(v, crash_at_m / v, reward, 0.997) for v in speeds]
+class TestSlowingDownNeverPays:
+    @pytest.mark.parametrize("crash_at_m", [50.0, 100.0, 300.0, 1000.0])
+    def test_slowing_down_to_delay_a_crash_never_pays(self, crash_at_m):
+        """With a crash a fixed distance ahead, the discounted return rises with speed."""
+        returns = [_crash_at(v, crash_at_m) for v in SPEEDS_MPS]
         assert np.all(np.diff(returns) > 0.0)
 
+    def test_the_penalty_is_the_largest_whole_metre_that_keeps_it_so(self):
+        """One metre more and, 50 m from a crash, 30 km/h beats 30.4 km/h."""
+        for penalty_m, is_faster_better in ((18.0, True), (19.0, False)):
+            reward = replace(REWARD, crash_penalty_m=penalty_m)
+            slow = _crash_at(MIN_SPEED_MPS, 50.0, reward)
+            faster = _crash_at(MIN_SPEED_MPS + 0.1, 50.0, reward)
+            assert (faster > slow) is is_faster_better, penalty_m
 
-class TestPaceBeatsDistance:
-    def test_crawling_the_whole_horizon_earns_less_than_target_pace_then_a_crash(self):
-        crawl = _drive(28.0 / 3.6, 300.0)  # round 2's kerb-hugger, to truncation
-        sprint = _crash_after(REWARD.target_speed_mps, 20.0)
-        assert crawl < sprint
+    def test_every_early_end_costs_the_same(self):
+        crash = REWARD(_info(crashed=True), DT)[1]["crash"]
+        stall = REWARD(_info(stalled=True), DT)[1]["crash"]
+        assert crash == stall == -REWARD.crash_penalty_m < 0.0
 
-    def test_a_faster_metre_pays_more_between_the_floor_and_the_cap(self):
+
+class TestAnExitNeverPays:
+    @pytest.mark.parametrize("speed_mps", [MIN_SPEED_MPS, 20.0, REWARD.target_speed_mps, 100.0])
+    @pytest.mark.parametrize("seconds", [0.5, 2.0, 10.0])
+    @pytest.mark.parametrize("depth", [0.02, 0.1, 0.149])
+    def test_exiting_off_track_never_beats_steering_back_on(self, speed_mps, seconds, depth):
+        """At ``depth`` past the kerb, the car either carries on out past the 0.15 limit
+        and is terminated, or steers back to the kerb, each over ``seconds``. Steering back
+        wins even with nothing earned afterwards."""
+        steps = round(seconds / DT)
+        exits = list(np.linspace(depth, 0.16, steps))
+        recovers = list(np.linspace(depth, 0.0, steps))
+        back_on = _excursion(speed_mps, recovers, exits=False)
+        assert back_on >= 0.0
+        assert _excursion(speed_mps, exits, exits=True) < back_on
+
+    @pytest.mark.parametrize("speed_mps", [MIN_SPEED_MPS, 20.0, REWARD.target_speed_mps])
+    @pytest.mark.parametrize("depth", [0.05, 0.1, 0.149])
+    def test_no_step_forward_is_worth_less_than_zero(self, speed_mps, depth):
+        """The cost past the kerb is capped at the step's pace, so riding it out never
+        loses reward and ending it never saves any."""
+        reward, terms = REWARD(_info(speed_mps=speed_mps, depth=depth), DT)
+        assert reward >= 0.0 and terms["track_limits"] <= 0.0
+
+
+class TestPace:
+    def test_a_faster_metre_pays_more_up_to_the_cap(self):
         def per_metre(speed_mps: float) -> float:
             return REWARD(_info(speed_mps=speed_mps), DT)[0] / (speed_mps * DT)
 
         target = REWARD.target_speed_mps
-        assert per_metre(0.5 * target) < per_metre(target) < per_metre(2.0 * target)
+        assert per_metre(0.1 * target) < per_metre(target) < per_metre(2.0 * target)
+        assert per_metre(0.1 * target) == pytest.approx(0.1)
         assert per_metre(3.0 * target) == pytest.approx(REWARD.pace_cap)
-        assert per_metre(0.1 * target) == pytest.approx(REWARD.pace_floor)
 
 
 class TestReversing:
@@ -155,7 +187,7 @@ class TestTheLapIsThePrize:
 
 
 class TestTrackLimits:
-    """The kerb is track. Only the part of the car past the kerb's outer edge costs."""
+    """The kerb is free. Only the part of the car past the kerb's outer edge costs."""
 
     HALF_WIDTH_M = 5.0
     KERB_M = 1.0
@@ -172,7 +204,8 @@ class TestTrackLimits:
         return off_track_fraction(projection, car_width_m=self.CAR_M, kerb_width_m=self.KERB_M)
 
     def _cost(self, lateral_m: float) -> float:
-        return REWARD(_info(depth=self._depth(lateral_m)), DT)[1]["track_limits"]
+        info = _info(speed_mps=REWARD.target_speed_mps, depth=self._depth(lateral_m))
+        return REWARD(info, DT)[1]["track_limits"]
 
     def test_two_wheels_on_the_kerb_cost_nothing(self):
         inner_wheels_on_the_edge = self.HALF_WIDTH_M  # outer wheels span the whole kerb
@@ -186,7 +219,8 @@ class TestTrackLimits:
 
     def test_it_costs_more_than_the_old_lateral_term(self):
         lateral = self.HALF_WIDTH_M + 0.2
-        old = ProgressReward()(_info(depth=self._depth(lateral)) | {"lateral_m": lateral}, DT)
+        info = _info(speed_mps=REWARD.target_speed_mps, depth=self._depth(lateral))
+        old = ProgressReward()(info | {"lateral_m": lateral}, DT)
         assert self._cost(lateral) < 10.0 * old[1]["lateral"]
 
     def test_the_kerb_never_reaches_the_termination_limit(self):
@@ -203,7 +237,7 @@ class TestTerms:
 
 
 class TestScale:
-    SCALED = LapTimeReward(scale=0.01)
+    SCALED = replace(REWARD, scale=0.01)
 
     def test_it_multiplies_every_term(self):
         info = _info(speed_mps=50.0, depth=0.1, crashed=True, lap_time=110.0)
@@ -215,7 +249,7 @@ class TestScale:
     def test_a_lap_at_target_pace_lands_in_a_range_the_critic_can_fit(self):
         """Unnormalised PPO needs small returns: a target-pace lap should be roughly +60 to
         +150 at the scale the configs use."""
-        reward = LapTimeReward(target_lap_time_s=105.0, scale=0.01)
+        reward = replace(REWARD, scale=0.01)
         driving = _drive(reward.target_speed_mps, reward.target_lap_time_s, reward)
         bonus = reward(_info(lap_time=reward.target_lap_time_s), DT)[1]["lap_bonus"]
         assert 60.0 < driving + bonus < 150.0

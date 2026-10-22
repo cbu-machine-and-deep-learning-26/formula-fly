@@ -32,6 +32,8 @@ outputs/
 runs/
 wandb/
 checkpoints/
+# Warm-start weights (init_from:), copied in by hand between rounds.
+weights/
 *.mp4
 *.npz
 !tests/data/**
@@ -45,6 +47,8 @@ wandb_api_key
 
 # Jupyter
 .ipynb_checkpoints/
+# Warm-start weights (init_from:), copied in by hand between rounds.
+weights/
 
 # MuJoCo writes this wherever it is run from; it is a warning log, not source.
 MUJOCO_LOG.TXT

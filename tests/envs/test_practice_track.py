@@ -576,6 +576,14 @@ class TestBuildingTheRewardFromConfig:
 
 # The default crash penalty is 0. A non-zero one shows the env charges it on the right steps.
 PENALISED = {"type": "lap_time", "crash_penalty_m": 500.0}
+#: train_flyvis_cx_v5.yaml's reward.
+V5_REWARD = {
+    "type": "lap_time",
+    "target_lap_time_s": 105.0,
+    "pace_floor": 0.0,
+    "crash_penalty_m": 18.0,
+    "scale": 0.01,
+}
 
 
 @pytest.mark.render
@@ -593,7 +601,6 @@ class TestLapTimeRewardInTheEnv:
             env.close()
 
     def test_a_stall_terminates_with_the_crash_penalty(self):
-        """Stopping after having moved is a crash."""
         env = PracticeTrack(reward=PENALISED, stall_speed_mps=2.0, stall_seconds=1.0)
         try:
             _started(env)
@@ -609,15 +616,37 @@ class TestLapTimeRewardInTheEnv:
         finally:
             env.close()
 
-    def test_a_car_that_never_launches_does_not_stall(self):
-        """It earns nothing instead of ending the episode, so an untrained policy that cannot
-        yet pull away still has the rest of the episode to find the throttle."""
-        env = PracticeTrack(reward={"type": "lap_time"}, stall_speed_mps=2.0, stall_seconds=1.0)
+    @pytest.mark.parametrize("crawl_mps", [0.0, 4.0])
+    def test_parked_or_crawling_ends_within_the_slow_window_and_costs_the_penalty(self, crawl_mps):
+        """v5's rule runs from the first step, so a car that never pulls away stalls too."""
+        env = PracticeTrack(reward=V5_REWARD, stall_speed_mps=8.3, stall_seconds=3.0)
         try:
             _started(env)
-            result = _drive(env, COASTING, 200)
-            assert not result.terminated and not result.info["stalled"]
-            assert result.info["reward_terms"]["crash"] == 0.0
+            total, steps = 0.0, 0
+            while True:
+                fast = env.dynamics.speed_mps(env.data) >= crawl_mps
+                control = COASTING if fast else ControlVector(steer=0.0, throttle=1.0, brake=0.0)
+                result = _step(env, control)
+                total += 0.997**steps * result.reward
+                steps += 1
+                if result.terminated or result.truncated:
+                    break
+            assert result.terminated and result.info["stalled"]
+            assert steps <= round(3.0 * FRAME_RATE_HZ) + 1
+            assert result.info["reward_terms"]["crash"] == pytest.approx(-0.18)
+            assert total < 0.0
+            if crawl_mps == 0.0:
+                assert total == pytest.approx(-0.18 * 0.997 ** (steps - 1), abs=1e-5)
+        finally:
+            env.close()
+
+    def test_flat_out_from_rest_clears_the_slow_rule(self):
+        """Measured: 30 km/h in 0.7 s, well inside the 3 s window."""
+        env = PracticeTrack(reward=V5_REWARD, stall_speed_mps=8.3, stall_seconds=3.0)
+        try:
+            _started(env)
+            result = _drive(env, FLAT_OUT, round(1.0 * FRAME_RATE_HZ))
+            assert not result.terminated and env.dynamics.speed_mps(env.data) > 8.3
         finally:
             env.close()
 

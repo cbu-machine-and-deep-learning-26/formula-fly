@@ -16,6 +16,7 @@ torch = pytest.importorskip("torch")
 from fly_driver.brains.blank import blank_trainable_parameter_count  # noqa: E402
 from fly_driver.brains.central_complex import CentralComplexBrain  # noqa: E402
 from fly_driver.brains.constants import VOLTAGE_LIMIT  # noqa: E402
+from fly_driver.drivers import DirectDriveAgent  # noqa: E402
 from fly_driver.training import (  # noqa: E402
     BrainConfig,
     EnvConfig,
@@ -27,6 +28,7 @@ from fly_driver.training import (  # noqa: E402
     TrainConfig,
     evaluate,
 )
+from fly_driver.training import train as train_module  # noqa: E402
 from fly_driver.training.loggers import EPISODES_FILENAME  # noqa: E402
 from fly_driver.training.ppo import PPOLearner  # noqa: E402
 from fly_driver.training.train import (  # noqa: E402
@@ -212,3 +214,48 @@ class TestTheRun:
         assert result.returncode == 0, result.stderr
         assert "actions_digest:" in result.stdout
         assert (tmp_path / "eval" / "summary.json").exists()
+
+
+class TestWarmStart:
+    """Each round starts from the previous round's checkpoint (docs/training.md)."""
+
+    def _started(self, config: TrainConfig, monkeypatch) -> dict:
+        """What train_seed hands the loop: the stages after the warm start, before PPO."""
+        captured: dict = {}
+
+        def capture(config, seed, **stages):
+            captured.update(stages)
+            raise _Stop
+
+        monkeypatch.setattr(train_module, "_run", capture)
+        with pytest.raises(_Stop):
+            train_seed(config, 0)
+        return captured
+
+    def test_the_first_actions_match_the_checkpoints(self, run, tmp_path, monkeypatch):
+        checkpoint = run["result"].run_dir / FINAL_CHECKPOINT
+        config = _config(tmp_path, name="warm", init_from=str(checkpoint))
+        started = self._started(config, monkeypatch)
+        warm = DirectDriveAgent(started["eye"], started["policy"].eval(), brain=started["brain"])
+        env = build_env(config.env)
+        saved = load_driver(run["config"], checkpoint, env)
+        frame, _ = env.reset(seed=0)
+        warm.reset(seed=0)
+        saved.reset(seed=0)
+        for _ in range(20):
+            action = saved.act(frame)
+            assert warm.act(frame) == action
+            frame, *_ = env.step(action)
+        env.close()
+
+    def test_a_policy_of_another_shape_is_refused(self, run, tmp_path, monkeypatch):
+        checkpoint = run["result"].run_dir / FINAL_CHECKPOINT
+        config = _config(
+            tmp_path, init_from=str(checkpoint), policy=PolicyConfig(hidden_sizes=(16,))
+        )
+        with pytest.raises(ValueError, match="hidden_sizes"):
+            self._started(config, monkeypatch)
+
+
+class _Stop(Exception):
+    """Ends train_seed once the stages are built."""

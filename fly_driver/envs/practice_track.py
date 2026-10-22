@@ -232,10 +232,10 @@ class PracticeTrack:
             delta that is safe across the seam.
         stall_speed_mps: End the episode once the car has been slower than this for more
             than ``stall_seconds``, and report ``info["stalled"]``. ``None``, the default,
-            never stalls. For rewards with a time cost, so sitting still cannot run out the
-            clock. The clock starts only once the car has first gone faster than this: a
-            car that never launches is not stopped, it just pays the time cost, which keeps
-            a learning signal for an untrained policy that cannot yet pull away.
+            never stalls. The clock runs from the first step, so a car that never pulls away
+            stalls too: in round 4 a car that never passed the threshold parked for the
+            whole episode. A start is at rest, so this also sets how fast the car must get
+            going.
         stall_seconds: How long below ``stall_speed_mps`` counts as a stall.
 
     Raises:
@@ -286,7 +286,6 @@ class PracticeTrack:
         self._stall_speed_mps = stall_speed_mps
         self._stall_seconds = float(stall_seconds)
         self._slow_steps = 0
-        self._has_launched = False
         self._frame_shape: tuple[int, int, int] = (shape[0], shape[1], 3)
         self._frame_rate_hz = float(frame_rate_hz)
         self._track_limit = float(track_limit)
@@ -460,7 +459,6 @@ class PracticeTrack:
         self._surface.reset()
         self._steps = 0
         self._slow_steps = 0
-        self._has_launched = False
         self._done = False
 
         projection = self._project()
@@ -555,8 +553,7 @@ class PracticeTrack:
         stalled = False
         if self._stall_speed_mps is not None:
             slow = self._dynamics.speed_mps(self._data) < self._stall_speed_mps
-            self._has_launched = self._has_launched or not slow
-            self._slow_steps = self._slow_steps + 1 if slow and self._has_launched else 0
+            self._slow_steps = self._slow_steps + 1 if slow else 0
             stalled = self._slow_steps * self.dt > self._stall_seconds
         terminated = crashed or stalled
 
