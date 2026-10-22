@@ -32,6 +32,16 @@ The server checks every reset: the car must come back with its centre on the tra
 four tyres in, or it resets again, up to three times. After that the trainer's connection
 closes and its env raises. Each reset is logged with its duration and position.
 
+**Gear after a reset.** `ac.ext_resetCar()` leaves the SF70H in neutral (AC gear 1; 2 is
+first). The auto-shifter only engages first under enough throttle: 0.5 or more takes
+0.5-1 s, 0.33 takes 5.6 s, and 0.15 never makes it inside the 8 s slow window. In
+`flyvis_cx_ac_v6`, all 177 episodes started in neutral and 34 never left it. So after a
+reset lands on the road, the server presses upstream's shift-up (vJoy button 0) for 0.1 s
+with the pedals released, checks `actualGear`, and presses once more if the car is still
+not in first. A car still out of gear is logged as a warning, not a failed reset. The log
+counts gear-ups and failures: `in gear 2 after a reset (N gear-ups so far)` and `still in
+gear 1 after two gear-ups (N gear-ups, M failures so far)`.
+
 Getting chosen starts would need a CSP **Lua** app (`physics.setCarPosition`) next to the
 plugin. That is new plugin code and not part of this task.
 

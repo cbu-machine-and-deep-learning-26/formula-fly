@@ -165,6 +165,27 @@ class AssettoCorsaCar:
         self._env.reset()
         return self._frame()
 
+    def gear(self) -> int:
+        """AC's gear at the last tick: 0 reverse, 1 neutral, 2 first."""
+        return int(self._env.state["actualGear"])
+
+    def shift_up(self, hold_ticks: int = 5, settle_ticks: int = 10) -> None:
+        """Press upstream's shift-up (vJoy button 0) for ``hold_ticks``, release, and wait.
+
+        Pedals released and wheel straight throughout, so the car stays at rest.
+        """
+        controls, client = self._env.client.controls, self._env.client
+        controls.set_controls(
+            steer=0.0, acc=-1.0, brake=-1.0, enable_gear_shift=True, shift_up=True
+        )
+        client.respond_to_server()
+        for _ in range(hold_ticks):
+            self._env.step(action=None)
+        controls.set_controls(steer=0.0, acc=-1.0, brake=-1.0)
+        client.respond_to_server()
+        for _ in range(settle_ticks):
+            self._env.step(action=None)
+
     def apply(self, control: ControlVector) -> None:
         """Send the control to vJoy now."""
         self._env.set_actions(to_ac_action(control, self._max_steer))

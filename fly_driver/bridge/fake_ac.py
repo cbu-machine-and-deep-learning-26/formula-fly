@@ -12,6 +12,9 @@ AC's behaviour the training env depends on:
 - **Resets.** ``reset`` puts the car back on the road where it is, at rest, and restarts
   the tick counter, like CSP's ``ac.ext_resetCar()`` behind upstream's reset. The very
   first reset starts at ``start_m``.
+- **Neutral.** A reset leaves the car in neutral, as AC leaves the SF70H. In neutral it
+  does not drive; ``shift_up`` engages first, and so does throttle of 0.5 or more (AC's
+  auto-shifter, in one tick rather than AC's 0.5-1 s).
 
 The track is a straight line folded into a loop: a lap of ``track_length_m`` metres, a
 sinusoidal drift that steering must cancel, and a road ``half_width_m`` either side of the
@@ -32,6 +35,9 @@ __all__ = ["FakeAc"]
 
 #: Half the car's width, for counting tyres over the edge.
 _HALF_CAR_M = 1.0
+
+#: AC's gear numbers (``acsys.CS.Gear``).
+_NEUTRAL, _FIRST = 1, 2
 
 
 class FakeAc:
@@ -73,6 +79,7 @@ class FakeAc:
         self.lateral_m = 0.0
         self.speed_mps = 0.0
         self.control = ControlVector.neutral()
+        self.gear_value = _FIRST
         self.resets = 0
         self._tick = 0
         self._time_s = 0.0
@@ -86,9 +93,18 @@ class FakeAc:
         self.lateral_m = 0.0
         self.speed_mps = 0.0
         self.control = ControlVector.neutral()
+        self.gear_value = _NEUTRAL
         self._tick = 0
         self._started = time.perf_counter()
         return self._frame()
+
+    def gear(self) -> int:
+        """AC's numbering: 1 neutral, 2 first."""
+        return self.gear_value
+
+    def shift_up(self) -> None:
+        """One gear up, at once."""
+        self.gear_value += 1
 
     def apply(self, control: ControlVector) -> None:
         """Hold ``control`` until the next one."""
@@ -132,7 +148,10 @@ class FakeAc:
 
     def _integrate(self) -> None:
         control = self.control
-        accel = self.max_accel * (control.throttle - 1.5 * control.brake) - 0.01 * self.speed_mps
+        if self.gear_value == _NEUTRAL and control.throttle >= 0.5:
+            self.gear_value = _FIRST
+        throttle = control.throttle if self.gear_value != _NEUTRAL else 0.0
+        accel = self.max_accel * (throttle - 1.5 * control.brake) - 0.01 * self.speed_mps
         self.speed_mps = max(0.0, self.speed_mps + accel * self.dt)
         distance = self.speed_mps * self.dt
         bend = math.sin(2.0 * math.pi * 2.0 * self.lap_dist_m / self.track_length_m)
