@@ -9,7 +9,7 @@ from dataclasses import fields
 import numpy as np
 import pytest
 
-from fly_driver.brains.central_complex import PopulationCounts
+from fly_driver.brains.populations import PopulationCounts
 from fly_driver.cockpit.live_pose import (
     HEAD_YAW_LIMIT_DEG,
     LIMITS_DEG,

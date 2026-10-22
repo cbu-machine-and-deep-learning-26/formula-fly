@@ -24,15 +24,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import astuple, dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from fly_driver.brains.populations import PopulationCounts
 from fly_driver.interface import ControlVector
-
-if TYPE_CHECKING:
-    from fly_driver.brains.central_complex import PopulationCounts
 
 __all__ = ["LIMITS_DEG", "FlyPose", "compass_heading", "fly_pose", "smooth_pose"]
 
