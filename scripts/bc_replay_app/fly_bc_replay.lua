@@ -11,6 +11,10 @@ local mm = ac.writeMemoryMappedFile('fly_bc_replay', [[
   float x; float y; float z; int heartbeat; int camera; int drivable;
 ]])
 
+-- No AC UI in the replay: its playback bar would sit in every frame. The sidebar that
+-- training frames carry is added when the dataset is built (fly_driver/training/bc_data.py).
+ui.onExclusiveHUD(function(mode) return mode == 'replay' end)
+
 local STEP_MS = 20
 -- Frames rendered at the new instant before the capturer may grab it: the capture is a
 -- screen grab, so the frame it sees must have been presented, not just simulated.

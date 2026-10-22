@@ -37,8 +37,10 @@ __all__ = [
     "STEER_LOCK_DEG",
     "HumanLaps",
     "Replay",
+    "add_ac_sidebar",
     "cache_eye_features",
     "eye_cache_key",
+    "fit_render_offset",
     "parse_replay",
     "replay_controls",
 ]
@@ -182,6 +184,67 @@ def replay_controls(
     return controls.astype(np.float32)
 
 
+# AC's collapsed app sidebar, drawn over the right edge of every training frame (pc-2's AC,
+# 640x480 window) and absent from a replay, whose UI the Lua app suppresses. Measured on a
+# training capture: 48 px wide, darkening the scene to 0.117 x + 4.7, which after the
+# capture's resize to 96x96 covers columns 89-95 exactly, with an opaque red marker in the
+# bottom-right corner. Affine in the pixel value, so applying it after the resize is exact.
+_SIDEBAR_COLUMNS = slice(89, 96)
+_SIDEBAR_GAIN, _SIDEBAR_OFFSET = 0.117, 4.7
+_SIDEBAR_MARKER = np.array(
+    [
+        [
+            [223, 19, 28],
+            [226, 19, 29],
+            [35, 16, 16],
+            [34, 15, 16],
+            [34, 15, 16],
+            [33, 15, 16],
+            [33, 15, 15],
+        ],
+        [
+            [229, 19, 29],
+            [234, 19, 30],
+            [42, 16, 17],
+            [42, 16, 17],
+            [42, 16, 17],
+            [41, 16, 16],
+            [40, 15, 16],
+        ],
+        [
+            [240, 43, 52],
+            [245, 43, 53],
+            [240, 20, 31],
+            [240, 20, 31],
+            [239, 20, 31],
+            [238, 20, 31],
+            [238, 20, 30],
+        ],
+        [
+            [235, 19, 30],
+            [240, 20, 31],
+            [240, 20, 31],
+            [240, 20, 31],
+            [239, 20, 31],
+            [238, 20, 30],
+            [238, 20, 30],
+        ],
+    ],
+    dtype=np.uint8,
+)
+
+
+def add_ac_sidebar(frames: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
+    """Draw AC's training-time sidebar onto replay frames, so they match what the fly sees."""
+    if frames.shape[1:] != FRAME_SHAPE:
+        raise ValueError(f"the sidebar was measured on {FRAME_SHAPE} frames, got {frames.shape}")
+    out = frames.copy()
+    strip = out[:, :, _SIDEBAR_COLUMNS].astype(np.float32) * _SIDEBAR_GAIN + _SIDEBAR_OFFSET
+    out[:, :, _SIDEBAR_COLUMNS] = np.clip(np.rint(strip), 0, 255).astype(np.uint8)
+    out[:, -len(_SIDEBAR_MARKER) :, _SIDEBAR_COLUMNS] = _SIDEBAR_MARKER
+    return out
+
+
 @dataclass(frozen=True)
 class HumanLaps:
     """A human drive as BC data: frames, the controls at each, and contiguous segments.
@@ -259,15 +322,19 @@ class HumanLaps:
         *,
         parked_speed_mps: float = 1.0,
         steer_lock_deg: float | None = None,
+        time_offset_s: float = 0.0,
     ) -> HumanLaps:
         """Pair frames rendered at ``k / FRAME_RATE_HZ`` of ``replay`` with its controls.
+
+        ``time_offset_s`` is how far ahead of its requested instant AC drew frame ``k``
+        (:func:`fit_render_offset`); controls, speed and lap are read at the drawn instant.
 
         Frames where the car is parked (under ``parked_speed_mps`` with no throttle) are
         dropped: they teach nothing but "sit still", and a Hotlap starts with the car
         parked. A launch from rest is kept, and each run of kept frames is a segment;
         runs shorter than a second are dropped too.
         """
-        times = np.arange(len(frames)) / FRAME_RATE_HZ
+        times = np.arange(len(frames)) / FRAME_RATE_HZ + time_offset_s
         if len(frames) and times[-1] > replay.duration_s + 1e-9:
             raise ValueError(
                 f"{len(frames)} frames run to {times[-1]:.2f} s, past the replay's "
@@ -289,6 +356,50 @@ class HumanLaps:
             segments=segments[kept],
             laps=laps[kept],
         )
+
+
+def fit_render_offset(
+    replay: Replay,
+    positions_m: npt.NDArray[np.float64],
+    *,
+    search_s: float = 0.06,
+    min_speed_mps: float = 5.0,
+) -> tuple[float, npt.NDArray[np.float64]]:
+    """How far ahead of its requested replay instant AC drew each frame, from the car's pose.
+
+    AC reports the car's position at a fixed point that differs from the replay's by a
+    constant offset in the car's frame, so on time the distance between the two is constant
+    in size. The time shift that makes it most constant on moving frames is the render offset
+    (20 ms on the first drive: AC draws a held replay instant one step ahead).
+
+    Args:
+        replay: The replay the frames were rendered from.
+        positions_m: ``(n, 3)`` car position AC reported with frame ``k`` (at ``k / 50`` s).
+        search_s: Shifts tried, from ``-search_s`` to ``+search_s`` in 1 ms steps.
+        min_speed_mps: Frames slower than this are left out; at rest every shift fits.
+
+    Returns:
+        ``(offset_s, deviation_m)``: the shift, and each frame's distance from the median
+        offset size at that shift, a per-frame timing check.
+    """
+    times = np.arange(len(positions_m)) / FRAME_RATE_HZ
+    moving = np.interp(times, replay.time_s, replay.speed_mps) >= min_speed_mps
+
+    def offsets(shift: float) -> npt.NDArray[np.float64]:
+        expected = np.stack(
+            [
+                np.interp(times + shift, replay.time_s, replay.position_m[:, axis])
+                for axis in range(3)
+            ],
+            axis=1,
+        )
+        return np.linalg.norm(positions_m - expected, axis=1)
+
+    shifts = np.arange(-search_s, search_s + 1e-9, 0.001)
+    spread = [float(np.std(offsets(shift)[moving])) for shift in shifts]
+    best = float(shifts[int(np.argmin(spread))])
+    sizes = offsets(best)
+    return best, np.abs(sizes - np.median(sizes[moving]))
 
 
 def eye_cache_key(eye_config: Mapping[str, Any]) -> str:

@@ -11,7 +11,9 @@ import pytest
 from fly_driver.interface import FRAME_RATE_HZ, FRAME_SHAPE
 from fly_driver.training.bc_data import (
     HumanLaps,
+    add_ac_sidebar,
     cache_eye_features,
+    fit_render_offset,
     parse_replay,
     replay_controls,
 )
@@ -157,3 +159,27 @@ def test_eye_cache_runs_segments_in_order_once(tmp_path: Path) -> None:
     again = cache_eye_features(laps, eye, tmp_path / "cache.npz")
     assert eye.calls == 5
     np.testing.assert_array_equal(again, features)
+
+
+def test_sidebar_darkens_the_right_edge_only() -> None:
+    frames = np.full((2, *FRAME_SHAPE), 200, np.uint8)
+    out = add_ac_sidebar(frames)
+    np.testing.assert_array_equal(out[:, :, :89], frames[:, :, :89])
+    assert out[0, 10, 89:].tolist() == [[28, 28, 28]] * 7  # 0.117 * 200 + 4.7
+    assert out[0, -1, -1].tolist() == [238, 20, 30]  # the red marker, whatever is behind
+    assert frames[0, 10, 95, 0] == 200  # the input is not modified
+
+
+def test_render_offset_recovers_a_shift_and_a_fixed_offset(tmp_path: Path) -> None:
+    rows = _drive(count=200, parked=10)
+    for index, row in enumerate(rows):  # a curving path, so a heading-fixed offset turns
+        row["position"] = (40.0 * np.sin(index / 40), 0.0, 40.0 * np.cos(index / 40))
+    replay = parse_replay(write_replay(tmp_path / "drive.acreplay", rows))
+    times = np.arange(int(replay.duration_s * FRAME_RATE_HZ) - 2) / FRAME_RATE_HZ
+    drawn = np.stack(
+        [np.interp(times + 0.02, replay.time_s, replay.position_m[:, a]) for a in range(3)], 1
+    )
+    drawn[:, 1] += 0.6  # AC's reference point sits 0.6 m above the replay's
+    offset_s, deviation_m = fit_render_offset(replay, drawn)
+    assert offset_s == pytest.approx(0.02, abs=0.0015)
+    assert deviation_m.max() < 0.05

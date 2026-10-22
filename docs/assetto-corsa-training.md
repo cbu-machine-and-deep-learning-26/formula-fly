@@ -244,21 +244,24 @@ ourselves and render the frames from the replay.
 ### From a drive to a dataset
 
 1. **Drive** (below), and save the replay.
-2. **Re-render the replay** on an idle AC box (csds-pc-1), in the desktop session AC runs
-   in. Copy `scripts/bc_replay_app/` to `<AC>\apps\lua\fly_bc_replay\` once, copy the
-   replay to `Documents\Assetto Corsa\replay\`, set `race.ini`'s `[REPLAY] ACTIVE=1`
-   and `FILENAME=<replay file name>`, and start AC with the training video settings
-   (640×480 windowed, 50 FPS). The Lua app puts the camera on the F1 nose view
-   (`DRIVABLE_MODE=4`, the one training uses) and holds the replay wherever
-   `scripts/bc_replay_capture.py` asks, so every frame is exactly `k × 20 ms` of replay
-   time whatever the frame rate. The grab is `sensors_par`'s own, so the frames are what
-   the env server sends. In AssettoCorsaGym's env:
+2. **Re-render the replay** on an AC box that is not training, in the desktop session AC
+   runs in (csds-pc-2's `student` console for the first drive). Copy `scripts/bc_replay_app/`
+   to `<AC>\apps\lua\fly_bc_replay\` once, copy the replay to
+   `Documents\Assetto Corsa\replay\`, set `race.ini`'s `[REPLAY] ACTIVE=1` and
+   `FILENAME=<replay file name>` (back it up first), and start AC as for training
+   (`fly_ac_start`: 640×480 windowed, 50 FPS, nose camera). The Lua app keeps the camera on
+   the F1 nose view (`DRIVABLE_MODE=4`), hides all of AC's UI in the replay (its playback
+   bar would sit in every frame), and holds the replay wherever
+   `scripts/bc_replay_capture.py` asks, so every frame is one 20 ms step of replay time
+   whatever the frame rate. The grab is `sensors_par`'s own, so the frames are what the env
+   server sends. Run it in AC's session (pc-2's `fly_ac_job`), in AssettoCorsaGym's env:
 
    ```powershell
-   python scripts\bc_replay_capture.py --out D:\formula-fly-ac\human_laps\<drive>\capture
+   python scripts\bc_replay_capture.py --out C:\formula-fly-ac\bc\capture_<drive>
    ```
 
-   Put `race.ini`'s `[REPLAY] ACTIVE=0` back afterwards, or AC opens the replay again.
+   It runs at about 9 frames/s, so a 4-minute drive takes 20 minutes. Afterwards stop AC
+   (`fly_ac_stop`) and restore `race.ini`, or AC opens the replay again.
 3. **Pair frames with inputs**, anywhere with the repo:
 
    ```bash
@@ -266,10 +269,21 @@ ourselves and render the frames from the replay.
        --out data/human_laps/<drive>.npz --strip <drive>_strip.png
    ```
 
-   It refuses frames whose car sits more than 0.5 m from the replay's pose at that
-   instant, drops parked frames (under 1 m/s with no throttle; a launch is kept), and
-   splits segments at laps and gaps. The strip shows the hardest corners with their
-   controls, half a second before and at the steering peak: check the sign by eye.
+   Three corrections make the frames match training's:
+   - **Timing.** AC draws a held replay instant 20 ms ahead of the one asked for. The
+     builder fits that shift from the car's pose (`fit_render_offset`: AC's reference point
+     sits a fixed 0.58 m from the replay's, so on time the gap is constant in size) and
+     reads the inputs at the instant actually drawn. A frame whose gap strays more than
+     0.5 m from the median is refused.
+   - **Sidebar.** Training frames carry AC's collapsed app sidebar down the right edge
+     (columns 89-95 at 96×96, the scene at 0.117 × its brightness, a red marker at the
+     bottom); the replay shows no UI, so `add_ac_sidebar` draws it, as measured on a
+     training capture.
+   - **Parked frames** (under 1 m/s with no throttle) are dropped; a launch is kept.
+     Segments split at laps and gaps.
+
+   The strip shows the hardest corners with their controls, half a second before and at the
+   steering peak: check the sign by eye.
 
 **Inputs.** `fly_driver/training/bc_data.py` reads the replay directly (version 16, the
 player car): steering-wheel angle, gas and brake pedals, gear, pose, lap. On the first

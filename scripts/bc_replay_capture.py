@@ -9,6 +9,7 @@ that instant is on screen, and grabs the window with the ``sensors_par`` plugin'
 
 Writes ``<out>.frames.npy`` (``(n, 96, 96, 3)`` uint8 RGB, frame ``k`` at ``k / 50`` s) and
 ``<out>.pose.npy`` (``(n, 4)``: the replay frame index AC reports and the car's x, y, z),
+for steps ``--start`` onwards (0 for a dataset),
 which ``scripts/bc_build_dataset.py`` checks against the replay file. See
 ``docs/assetto-corsa-training.md`` § Behaviour cloning.
 """
@@ -54,6 +55,7 @@ def main() -> int:
         default=Path(r"C:\Program Files (x86)\Steam\steamapps\common\assettocorsa"),
     )
     parser.add_argument("--size", type=int, default=96)
+    parser.add_argument("--start", type=int, default=0, help="first step (a test)")
     parser.add_argument("--limit", type=int, help="stop after this many frames (a test)")
     args = parser.parse_args()
 
@@ -68,7 +70,7 @@ def main() -> int:
         "replay on the nose camera (is the Lua app installed and AC in the replay?)",
     )
     frame_count, frame_ms = state[2], state[4]
-    steps = int((frame_count - 1) * frame_ms / 1000.0 / STEP_S) + 1
+    steps = int((frame_count - 1) * frame_ms / 1000.0 / STEP_S) + 1 - args.start
     if args.limit:
         steps = min(steps, args.limit)
     print(f"replay: {frame_count} frames of {frame_ms} ms -> {steps} steps", flush=True)
@@ -77,8 +79,9 @@ def main() -> int:
     poses = np.zeros((steps, 4), np.float64)
     started = time.monotonic()
     for k in range(steps):
-        struct.pack_into("<i", shared, 0, k + 1)
-        state = _wait(shared, lambda s, want=k + 1: s[1] == want, 10.0, f"step {k} on screen")
+        step = args.start + k
+        struct.pack_into("<i", shared, 0, step + 1)
+        state = _wait(shared, lambda s, want=step + 1: s[1] == want, 10.0, f"step {step} on screen")
         image, _ = screen_capture.capture_and_process(args.size, args.size, color_mode="bgr")
         if image is None:
             raise RuntimeError("the AC window was not found")
