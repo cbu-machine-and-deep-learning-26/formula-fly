@@ -256,7 +256,7 @@ ourselves and render the frames from the replay.
    every one, until the replay is in a haze that Ryan's own screen recording of the drive
    never shows. `video.ini` alone does not stop it. The only frames that lose real smoke are
    lock-ups and spins. Keep the console untouched while it renders: the capture is a grab of
-   the screen where AC's window is, and it waits whenever AC is not the foreground window. The Lua app keeps the camera on
+   the screen where AC's window is, and it waits whenever another window covers AC. The Lua app keeps the camera on
    the F1 nose view (`DRIVABLE_MODE=4`), hides all of AC's UI in the replay (its playback
    bar would sit in every frame), and holds the replay wherever
    `scripts/bc_replay_capture.py` asks, so every frame is one 20 ms step of replay time
