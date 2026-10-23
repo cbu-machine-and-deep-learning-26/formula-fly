@@ -351,6 +351,35 @@ leans left by 0.17; without that bias its error is still 0.26, worse than a cons
 Throttle and brake only match the constant. Don't use this checkpoint as an `init_from`.
 Train again with 10 or more laps; the target is 20 clean laps plus 5 recovery laps.
 
+### Evening sessions (2026-10-22)
+
+Three more sessions from Ryan, recorded at replay quality 4 (15 ms frames) and rendered on
+csds-pc-2 in 70 minutes: 35,000 frames, of which 29,005 are kept once parked frames are
+dropped. Session 3 holds three timed laps (118.32 s, 118.35 s, 110.52 s); sessions 1 and 2
+hold out-laps only. All three render cleanly: at 15 ms, AC reports one replay frame more
+than it was asked for, on every frame, and draws each 23-24 ms ahead; above 30 m/s no
+frame is more than 5 ms off. The afternoon drive is held out whole, so no held-out frame
+shares a session with a training frame.
+
+Held-out MAE of the clipped action, against the evening sessions' median action (straight
+ahead, full throttle):
+
+| | Steer | Throttle | Brake |
+|---|---|---|---|
+| Round-6 checkpoint, no BC (both afternoon laps) | 0.888 | 0.505 | 0.173 |
+| BC, 30 epochs, best (28), both afternoon laps | 0.177 | 0.372 | 0.174 |
+| Constant, both afternoon laps | 0.122 | 0.348 | 0.112 |
+| BC, the afternoon's clean lap only | 0.131 | 0.355 | 0.178 |
+| Constant, the clean lap only | 0.105 | 0.328 | 0.106 |
+
+Four times the data takes the held-out steer error from 0.34 to 0.18 and the clone's steer
+correlation on the clean held-out lap from 0.15 to 0.53, with no left lean (+0.02). It
+still does not beat the constant on steer, throttle or brake: on Silverstone a constant
+straight-ahead, full-throttle action is right most of the time, and the clone's errors in
+between cost more than they win in the corners. On the training laps it only matches the
+constant (steer MAE 0.13-0.15, correlation 0.68-0.73), so it is underfitting, not only
+failing to generalise. Not ready as an `init_from`; no closed-loop check was run.
+
 ### Recording laps
 
 At the console of an AC box that is not training, with a wheel or a gamepad:
