@@ -11,9 +11,14 @@ base_config: fly_driver/configs/train_flyvis_cx_ac_v6.yaml
 # Not in git: copied into weights/ (git-ignored).
 init_from: weights/round6_best/policy_update_00070.pt
 # HumanLaps .npz files from scripts/bc_build_dataset.py. Not in git: data/ is local.
+# The evening sessions train; the afternoon drive comes last and is held out whole, so no
+# held-out frame shares a session with a training frame.
 datasets:
+  - data/human_laps/20261022_ryan_eve1.npz
+  - data/human_laps/20261022_ryan_eve2.npz
+  - data/human_laps/20261022_ryan_eve3.npz
   - data/human_laps/20261022_ryan.npz
-holdout_laps: 1  # the last lap in the list picks the epoch and reports the held-out error
+holdout_laps: 2  # the afternoon drive's two laps: its clean lap and its partial one
 epochs: 30
 batch_size: 256
 learning_rate: 1.0e-4  # PPO's warm-start rate (v6)
