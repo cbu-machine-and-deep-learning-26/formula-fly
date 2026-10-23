@@ -116,6 +116,8 @@ class UpdateRecord:
         mean_throttle: Mean throttle the env was sent over the rollout, after clipping.
         mean_brake: Mean brake, likewise.
         mean_abs_steer: Mean ``|steer|``, likewise.
+        braking_line_fade: The braking line's opacity during the rollout's last episode
+            start, or ``None`` when the env paints no line.
     """
 
     seed: int
@@ -136,6 +138,7 @@ class UpdateRecord:
     mean_throttle: float
     mean_brake: float
     mean_abs_steer: float
+    braking_line_fade: float | None = None
 
     def to_row(self) -> dict[str, Any]:
         """Flat CSV row."""

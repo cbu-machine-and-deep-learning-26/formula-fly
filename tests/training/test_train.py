@@ -39,6 +39,7 @@ from fly_driver.training.train import (  # noqa: E402
     EYE_BUILDERS,
     FINAL_CHECKPOINT,
     build_env,
+    build_eye,
     train,
     train_seed,
 )
@@ -385,3 +386,36 @@ def test_the_practice_track_trains_through_the_same_loop(tmp_path: Path):
     # ProgressReward pays one per metre, so its term is the distance column.
     assert float(rows[0]["distance_m"]) == pytest.approx(float(rows[0]["reward_progress"]))
     assert result.env_steps == 64
+
+
+def test_the_eval_env_uses_the_training_fade(tmp_path: Path, monkeypatch):
+    """Evaluation builds its own env; it must see the braking-line fade training reached."""
+    config = _config(
+        tmp_path,
+        env=EnvConfig(
+            type="practice_track",
+            params={"scene": {"braking_line": True}, "braking_line_fade_steps": 1000},
+        ),
+    )
+    factories = []
+    monkeypatch.setattr(
+        train_module, "evaluate", lambda factory, driver, eval_config: factories.append(factory)
+    )
+    env = DummyTrackEnv()
+    eye = build_eye(config.eye, env)
+    policy = MlpPolicy(eye.feature_dim, hidden_sizes=(8,))
+    train_module._evaluate(
+        config,
+        0,
+        env_steps=400,
+        eye=eye,
+        brain=None,
+        policy=policy,
+        run_dir=tmp_path,
+        frame_rate_hz=50.0,
+    )
+    eval_env = factories[0]()
+    try:
+        assert eval_env.braking_line_fade == pytest.approx(0.4)
+    finally:
+        eval_env.close()

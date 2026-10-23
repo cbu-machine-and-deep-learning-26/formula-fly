@@ -1,10 +1,10 @@
 """Where to brake, lift and push, along the racing line (GH-27).
 
 Round 6 crashed most often at the braking zones after straights, so v7 paints the answer on
-the road: a stripe along :func:`~fly_driver.envs.racing_line.racing_line` that is **dark**
-where the car must brake, **mid-grey** where it carries cornering speed, and **white** where
-it can use full throttle. The fly's eye sees brightness, not colour, so the bands are coded
-in luminance.
+the road: a dark stripe along :func:`~fly_driver.envs.racing_line.racing_line` where the car
+must brake. The profile also marks where it carries cornering speed and where it pushes, but
+the scene paints only the brake band (:class:`~fly_driver.envs.scene.SceneConfig`): painting
+all three put a stripe in nearly every frame and a warm-started policy stopped launching.
 
 The bands come from a point-mass speed profile on that line:
 

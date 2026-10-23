@@ -237,6 +237,12 @@ class PracticeTrack:
             whole episode. A start is at rest, so this also sets how fast the car must get
             going.
         stall_seconds: How long below ``stall_speed_mps`` counts as a stall.
+        braking_line_fade_steps: Fade the scene's braking line in over this many training
+            steps: its opacity ramps linearly from 0, where the road shows through
+            and frames match a scene without the line, to 1. The trainer reports progress
+            through :meth:`set_training_steps`, on the training env and on every evaluation
+            env, so an evaluation sees the fade training has reached. 0 shows the line at
+            once. A warm-started eye that never saw the line stalled on it (v7b).
 
     Raises:
         ValueError: If any argument is out of range, if the frame does not fit the
@@ -261,6 +267,7 @@ class PracticeTrack:
         random_start: bool = False,
         stall_speed_mps: float | None = None,
         stall_seconds: float = 2.5,
+        braking_line_fade_steps: int = 0,
     ) -> None:
         shape = tuple(int(value) for value in frame_shape)
         if len(shape) != 3 or shape[2] != 3:
@@ -311,6 +318,15 @@ class PracticeTrack:
             assemble_model_xml(self.centerline, self.scene, self.car)
         )
         self._data = mujoco.MjData(self._model)
+        if braking_line_fade_steps < 0:
+            raise ValueError(
+                f"braking_line_fade_steps must be non-negative, got {braking_line_fade_steps}"
+            )
+        self._fade_steps = int(braking_line_fade_steps)
+        self._band_material = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_MATERIAL, "band_brake"
+        )
+        self.set_training_steps(0)
 
         # Everything that moves the car goes through CarDynamics, because aerodynamics are
         # not in the MJCF -- MuJoCo knows nothing about wings -- and writing data.ctrl here
@@ -623,6 +639,18 @@ class PracticeTrack:
         qpos = self._data.qpos[self._root_qpos : self._root_qpos + 7]
         qpos[0], qpos[1] = x, y
         qpos[3:7] = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
+
+    @property
+    def braking_line_fade(self) -> float | None:
+        """The braking line's opacity, 0 to 1, or ``None`` when the scene has no line."""
+        if not self.scene.braking_line:
+            return None
+        return float(self._model.mat_rgba[self._band_material, 3])
+
+    def set_training_steps(self, steps: int) -> None:
+        """Fade the braking line to where ``steps`` of training have brought it."""
+        fade = 1.0 if self._fade_steps == 0 else min(1.0, max(0, steps) / self._fade_steps)
+        self._model.mat_rgba[self._band_material, 3] = fade
 
     def _reset_corners(self) -> None:
         """Zero the odometer. A corner the car starts inside was not driven whole, so it
