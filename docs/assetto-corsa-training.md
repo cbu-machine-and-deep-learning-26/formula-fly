@@ -327,26 +327,29 @@ and `bc_log.csv` with the per-action error on both splits. Point a PPO config's
 ### First drive (2026-10-22)
 
 Ryan's first drive: one valid lap (2:35.96 by AC's clock, including the pit start) and 73 s
-of a second, re-rendered on csds-pc-2 in 19 minutes. After dropping the parked start,
-10,295 frames: 6,626 from lap 0 (training) and 3,669 from lap 1 (held out). All 11,468
-rendered frames reported the replay frame they asked for; above 30 m/s the worst was 7 ms
-off. Positive steer turns right: over lap 0 the heading turns -361° (clockwise) and steer
-correlates -0.87 with that sign's yaw rate.
+of a second, re-rendered on csds-pc-2 in 19 minutes with CSP smoke off. After dropping the
+parked start, 10,295 frames: 6,626 from lap 0 (training) and 3,669 from lap 1 (held out).
+All 11,468 rendered frames reported the replay frame they asked for; above 30 m/s the worst
+was 7 ms off. No frame was covered by another window (the largest frame-to-frame change is
+an overhead bridge). Positive steer turns right: over lap 0 the heading turns -361°
+(clockwise) and steer correlates -0.87 with that sign's yaw rate.
 
-BC on it, held-out mean absolute error of the clipped action (steer, throttle, brake):
+BC on it, held-out mean absolute error of the clipped action (steer, throttle, brake). The
+held-out lap also picks the epoch, so these flatter BC slightly:
 
 | | Steer | Throttle | Brake |
 |---|---|---|---|
-| Round-6 checkpoint, no BC | 0.854 | 0.504 | 0.299 |
-| BC, brain and actor (epoch 24 of 30) | 0.469 | 0.435 | 0.166 |
-| BC, actor only (epoch 30, still falling) | 0.407 | 0.448 | 0.183 |
+| Round-6 checkpoint, no BC | 0.854 | 0.464 | 0.162 |
+| BC, brain and actor, 30 epochs (the config) | 0.338 | 0.376 | 0.134 |
+| BC, brain and actor, best of 100 epochs (62) | 0.312 | 0.384 | 0.138 |
+| BC, actor only, 30 epochs | 0.427 | 0.413 | 0.162 |
 | A constant: the training lap's median action | 0.154 | 0.383 | 0.121 |
 
-BC removes half the base checkpoint's error, but one lap is not enough: the clone does
-worse on the held-out lap than a constant, steering left on average (-0.40). On the
-training lap it reaches 0.13 steer error with a correlation of only 0.35. Don't use this
-checkpoint as an `init_from`. Train again with 10 or more laps; the target is 20 clean laps
-plus 5 recovery laps.
+BC removes most of the base checkpoint's steering error, but one lap is not enough. On the
+held-out lap the clone's steer correlates 0.15 with Ryan's (0.61 on the training lap) and
+leans left by 0.17; without that bias its error is still 0.26, worse than a constant.
+Throttle and brake only match the constant. Don't use this checkpoint as an `init_from`.
+Train again with 10 or more laps; the target is 20 clean laps plus 5 recovery laps.
 
 ### Recording laps
 
