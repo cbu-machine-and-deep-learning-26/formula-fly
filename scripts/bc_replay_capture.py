@@ -46,15 +46,28 @@ def _wait(shared: mmap.mmap, ready, timeout_s: float, what: str) -> tuple:
     raise TimeoutError(f"no {what} after {timeout_s} s; last state {_read(shared)}")
 
 
-def _wait_for_foreground(win32gui, window: int, step: int, timeout_s: float = 600.0) -> None:
-    """Block while another window is in front of AC, e.g. someone using the console."""
-    if win32gui.GetForegroundWindow() == window:
+def _covered(win32gui, window: int) -> bool:
+    """Whether another window sits over AC's client area (its centre or a corner)."""
+    left, top = win32gui.ClientToScreen(window, (0, 0))
+    _, _, width, height = win32gui.GetClientRect(window)
+    points = [(left + width // 2, top + height // 2)] + [
+        (left + x, top + y) for x in (2, width - 3) for y in (2, height - 3)
+    ]
+    ga_root = 2
+    return any(
+        win32gui.GetAncestor(win32gui.WindowFromPoint(point), ga_root) != window for point in points
+    )
+
+
+def _wait_until_uncovered(win32gui, window: int, step: int, timeout_s: float = 600.0) -> None:
+    """Block while another window covers AC, e.g. someone using the console."""
+    if not _covered(win32gui, window):
         return
-    print(f"step {step}: AC is not the foreground window; waiting", flush=True)
+    print(f"step {step}: another window covers AC; waiting", flush=True)
     deadline = time.monotonic() + timeout_s
-    while win32gui.GetForegroundWindow() != window:
+    while _covered(win32gui, window):
         if time.monotonic() > deadline:
-            raise TimeoutError(f"AC was not the foreground window for {timeout_s} s")
+            raise TimeoutError(f"AC was covered for {timeout_s} s")
         time.sleep(0.5)
     time.sleep(0.5)  # let AC redraw over whatever was there
 
@@ -76,9 +89,18 @@ def main() -> int:
     import screen_capture  # the plugin's own grab and resize
     import win32gui
 
-    window = win32gui.FindWindow(None, "Assetto Corsa")
+    # By class, not title: Steam's web helper can open a window titled "Assetto Corsa" too,
+    # and the plugin's own lookup by title then grabs that one. Point the plugin at acs.exe's.
+    window = win32gui.FindWindow("acsW", None)
     if not window:
-        raise RuntimeError("the AC window was not found")
+        raise RuntimeError("the AC window (class acsW) was not found")
+
+    def client_area(window_title: str = "") -> tuple[int, int, int, int]:
+        left, top = win32gui.ClientToScreen(window, (0, 0))
+        _, _, width, height = win32gui.GetClientRect(window)
+        return left, top, width, height
+
+    screen_capture.get_client_area = client_area
 
     shared = mmap.mmap(-1, LAYOUT.size, tagname="Local\\fly_bc_replay")
     state = _wait(
@@ -101,7 +123,7 @@ def main() -> int:
         struct.pack_into("<i", shared, 0, step + 1)
         state = _wait(shared, lambda s, want=step + 1: s[1] == want, 10.0, f"step {step} on screen")
         # The grab is of the screen where AC's window is: anything on top of it is captured.
-        _wait_for_foreground(win32gui, window, step)
+        _wait_until_uncovered(win32gui, window, step)
         image, _ = screen_capture.capture_and_process(args.size, args.size, color_mode="bgr")
         if image is None:
             raise RuntimeError("the AC window was not found")
