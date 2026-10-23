@@ -26,8 +26,9 @@
 # showed the line at full contrast to a warm-started eye that had never seen it, and failed
 # for a full day: its grid evals stayed at 0-2 m (it never launched, even after
 # restart-from-best cycles) and its training drives were ~150-390 m, while v7a reached a
-# 1,197 m best 50-drive window. v7c's bands read 0.12 (brake), 0.29 (carry) and 0.45 (push)
-# against asphalt at 0.26 after the resampler, instead of 0.03 to 0.97, and start invisible.
+# 1,197 m best 50-drive window. v7c paints only the brake band, 14% of the lap, at 0.12
+# against asphalt at 0.26 after the resampler (v7b: 0.03 to 0.97 over the whole lap), and it
+# starts invisible. A smoke with all three bands faded in still stopped the car launching.
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
 name: flyvis_cx_v7c  # v7c = corner bonus, faded braking line; v6 = fine-tuning PPO
 output_dir: runs
@@ -68,7 +69,7 @@ env:
   params:
     racing_line: false  # off, as for the RQ1 comparisons
     scene:
-      braking_line: true  # v7c: dark = brake, grey = carry, light = push, low contrast
+      braking_line: true  # v7c: a dark stripe in the braking zones only, low contrast
     braking_line_fade_steps: 1000000  # v7c: invisible at step 0, full contrast at 1M
     track_limit: 0.15
     random_start: true  # training episodes start anywhere round the lap; eval stays on the grid

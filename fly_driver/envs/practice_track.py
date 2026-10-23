@@ -238,7 +238,7 @@ class PracticeTrack:
             going.
         stall_seconds: How long below ``stall_speed_mps`` counts as a stall.
         braking_line_fade_steps: Fade the scene's braking line in over this many training
-            steps: its bands' opacity ramps linearly from 0, where the road shows through
+            steps: its opacity ramps linearly from 0, where the road shows through
             and frames match a scene without the line, to 1. The trainer reports progress
             through :meth:`set_training_steps`, on the training env and on every evaluation
             env, so an evaluation sees the fade training has reached. 0 shows the line at
@@ -323,11 +323,9 @@ class PracticeTrack:
                 f"braking_line_fade_steps must be non-negative, got {braking_line_fade_steps}"
             )
         self._fade_steps = int(braking_line_fade_steps)
-        self._band_materials = [
-            index
-            for name in ("band_brake", "band_carry", "band_push")
-            if (index := mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_MATERIAL, name)) >= 0
-        ]
+        self._band_material = mujoco.mj_name2id(
+            self._model, mujoco.mjtObj.mjOBJ_MATERIAL, "band_brake"
+        )
         self.set_training_steps(0)
 
         # Everything that moves the car goes through CarDynamics, because aerodynamics are
@@ -647,13 +645,12 @@ class PracticeTrack:
         """The braking line's opacity, 0 to 1, or ``None`` when the scene has no line."""
         if not self.scene.braking_line:
             return None
-        return float(self._model.mat_rgba[self._band_materials[0], 3])
+        return float(self._model.mat_rgba[self._band_material, 3])
 
     def set_training_steps(self, steps: int) -> None:
         """Fade the braking line to where ``steps`` of training have brought it."""
         fade = 1.0 if self._fade_steps == 0 else min(1.0, max(0, steps) / self._fade_steps)
-        for index in self._band_materials:
-            self._model.mat_rgba[index, 3] = fade
+        self._model.mat_rgba[self._band_material, 3] = fade
 
     def _reset_corners(self) -> None:
         """Zero the odometer. A corner the car starts inside was not driven whole, so it

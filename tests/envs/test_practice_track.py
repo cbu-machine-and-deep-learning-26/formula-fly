@@ -1432,8 +1432,8 @@ class TestTheBrakingLine:
         centerline = Centerline.load()
         assert 'material="band_brake"' not in build_scene_xml(centerline)
         painted = build_scene_xml(centerline, SceneConfig(braking_line=True))
-        for band in ("band_brake", "band_carry", "band_push"):
-            assert f'material="{band}"' in painted
+        assert 'material="band_brake"' in painted
+        assert "band_carry" not in painted and "band_push" not in painted  # brake zones only
 
 
 class TestTheBrakingLineFade:
