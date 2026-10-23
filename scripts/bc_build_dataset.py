@@ -83,7 +83,14 @@ def main() -> int:
     wanted = np.minimum(
         np.floor(steps / FRAME_RATE_HZ / replay.interval_s + 1e-9), len(replay.time_s) - 2
     )
-    wrong_index = np.flatnonzero(poses[:, 0] != wanted)
+    # AC reports the frame it holds with a constant offset that depends on the recording
+    # rate (0 at 30 ms, +1 at 15 ms); the pose fit below measures the instant actually drawn.
+    # What must not happen is the offset changing from one frame to the next.
+    gap = poses[:, 0] - wanted
+    values, counts = np.unique(gap, return_counts=True)
+    index_offset = values[np.argmax(counts)]
+    clamped = wanted == len(replay.time_s) - 2
+    wrong_index = np.flatnonzero((gap != index_offset) & ~clamped)
     if len(wrong_index):
         print(
             f"AC held the wrong replay frame at steps {wrong_index[:10].tolist()}", file=sys.stderr
@@ -96,7 +103,8 @@ def main() -> int:
     error_s = np.where(moving, error_m / np.maximum(speed, MIN_SPEED_MPS), 0.0)
     bad = np.flatnonzero(error_s > MAX_TIMING_ERROR_S)
     print(
-        f"{len(frames)} frames, all at the replay frame asked for; AC drew each "
+        f"{len(frames)} frames, all at the replay frame asked for "
+        f"(AC's index {index_offset:+.0f}); AC drew each "
         f"{offset_s * 1000:+.0f} ms from its instant; timing error over 30 m/s: median "
         f"{np.median(error_s[moving]) * 1000:.1f} ms, "
         f"max {error_s.max() * 1000:.1f} ms, {len(bad)} over {MAX_TIMING_ERROR_S * 1000:.0f} ms"
