@@ -228,9 +228,145 @@ On the Mac the fake's ticks slip by tens of milliseconds because `time.sleep` ov
 there by about 44 ms, so the fake reports missed ticks that real AC would not. That is the
 counter working, not the protocol.
 
-## Next step: behaviour cloning
+## Behaviour cloning on human laps
 
-Pure online RL here is bounded by the wall clock. `AGENTS.md` §6's plan is to
-behaviour-clone from AssettoCorsaGym's 2.3M-step human dataset first and then fine-tune with
-this env. Note that the dataset is telemetry, not 96×96 frames, so cloning the frame-based
-fly needs either recorded frames or the hybrid observation §6 allows.
+Pure online RL here is bounded by the wall clock, and the MuJoCo-trained driver does not
+steer on AC's frames. So the AC driver starts from a clone: the round-6 MuJoCo checkpoint
+(frozen flyvis eye, 4,096-neuron central complex, MLP head), fine-tuned by behaviour
+cloning on our own human laps, then handed to PPO here through `init_from`.
+
+**Why our own laps.** AssettoCorsaGym's human dataset (HuggingFace `dasgringuen/assettoCorsaGym`)
+has no Silverstone laps, no SF70H, and no images: 183 telemetry channels at 25 Hz from the
+Dallara F317, BMW Z4 GT3 and Miata at Barcelona, Red Bull Ring, Monza and Indianapolis.
+Our policy sees only 96×96 nose-camera frames, so we drive the SF70H at Silverstone GP
+ourselves and render the frames from the replay.
+
+### From a drive to a dataset
+
+1. **Drive** (below), and save the replay.
+2. **Re-render the replay** on an AC box that is not training, in the desktop session AC
+   runs in (csds-pc-2's `student` console for the first drive). Copy `scripts/bc_replay_app/`
+   to `<AC>\apps\lua\fly_bc_replay\` once, copy the replay to
+   `Documents\Assetto Corsa\replay\`, set `race.ini`'s `[REPLAY] ACTIVE=1` and
+   `FILENAME=<replay file name>` (back it up first), turn smoke off, and start AC as for
+   training (`fly_ac_start`: 640×480 windowed, 50 FPS, nose camera). For smoke, put
+   `[SMOKE]` / `ENABLED=0` in `Documents\Assetto Corsa\cfg\extension\particles_fx.ini`
+   (CSP's Particles FX) and set `video.ini`'s `SMOKE=0`. Smoke must be off because AC
+   renders each held step several times, and CSP's long-lasting tyre smoke builds up on
+   every one, until the replay is in a haze that Ryan's own screen recording of the drive
+   never shows. `video.ini` alone does not stop it. The only frames that lose real smoke are
+   lock-ups and spins. Keep the console untouched while it renders: the capture is a grab of
+   the screen where AC's window is, and it waits whenever AC is not the foreground window. The Lua app keeps the camera on
+   the F1 nose view (`DRIVABLE_MODE=4`), hides all of AC's UI in the replay (its playback
+   bar would sit in every frame), and holds the replay wherever
+   `scripts/bc_replay_capture.py` asks, so every frame is one 20 ms step of replay time
+   whatever the frame rate. The grab is `sensors_par`'s own, so the frames are what the env
+   server sends. Run it in AC's session (pc-2's `fly_ac_job`), in AssettoCorsaGym's env:
+
+   ```powershell
+   python scripts\bc_replay_capture.py --out C:\formula-fly-ac\bc\capture_<drive>
+   ```
+
+   It runs at about 9 frames/s, so a 4-minute drive takes 20 minutes. Afterwards stop AC
+   (`fly_ac_stop`), restore `race.ini` and `video.ini` and delete the `particles_fx.ini`
+   override, or AC opens the replay again and training runs without smoke.
+3. **Pair frames with inputs**, anywhere with the repo:
+
+   ```bash
+   python scripts/bc_build_dataset.py --replay <drive>.acreplay --capture <drive>/capture \
+       --out data/human_laps/<drive>.npz --strip <drive>_strip.png
+   ```
+
+   Three corrections make the frames match training's:
+   - **Timing.** AC draws a held replay instant 20 ms ahead of the one asked for. The
+     builder fits that shift from the car's pose (`fit_render_offset`: AC's reference point
+     sits a fixed 0.58 m from the replay's, so on time the gap is constant in size) and
+     reads the inputs at the instant actually drawn. Every frame must report the replay
+     frame it asked for, and above 30 m/s (where the pose resolves time) a frame whose gap
+     strays from the median by more than 10 ms of travel, half a step, is refused. On the first drive
+     AC's frame index matched on all 11,468 frames, the fitted shift was +19 ms, and the
+     worst frame was 6.7 ms off: AC blends between replay frames a little differently from
+     linear interpolation, most visibly at 300 km/h.
+   - **Sidebar.** Training frames carry AC's collapsed app sidebar down the right edge
+     (columns 89-95 at 96×96, the scene at 0.117 × its brightness, a red marker at the
+     bottom); the replay shows no UI, so `add_ac_sidebar` draws it, as measured on a
+     training capture.
+   - **Parked frames** (under 1 m/s with no throttle) are dropped; a launch is kept.
+     Segments split at laps and gaps.
+
+   The strip shows the hardest corners with their controls, half a second before and at the
+   steering peak: check the sign by eye.
+
+**Inputs.** `fly_driver/training/bc_data.py` reads the replay directly (version 16, the
+player car): steering-wheel angle, gas and brake pedals, gear, pose, lap. On the first
+drive they agreed with AC's own telemetry export (`telemetry_dump.act`, 20 Hz) to a steer
+MAE of 0.47° (correlation 0.9997), throttle 1.6% and brake 0.8%, at a 10 ms lag. Steer is
+the wheel angle over the SF70H's 180° lock, the env's `steer = ±1` (its `steer_map.csv`
+maps ±0.4006 vJoy to ±180°); throttle and brake are the pedals, in [0, 1]. A 30 ms replay
+frame is interpolated linearly to the 20 ms steps.
+
+### Train
+
+```bash
+python scripts/bc_train.py --config fly_driver/configs/bc_flyvis_cx_ac.yaml
+```
+
+`fly_driver/training/bc.py`'s docstring has the details. The frozen eye runs once per drive
+and its features are cached beside the `.npz`. The brain and the actor load from
+`init_from` (round 6's best, `weights/round6_best/policy_update_00070.pt`). They learn the
+human's actions by squared error of the clipped action. That error counts nothing the
+env's clip would absorb anyway, so brake at -0.6 for a target of 0 is free. The brain gets
+PPO's one-step gradient from membranes recomputed each epoch, in segment order. `log_std`
+and the critic stay as the base checkpoint had them: human laps carry no rewards, and PPO
+should start with its usual exploration. The policy's feature normaliser is refitted to the
+brain's outputs on these laps. The last `holdout_laps` laps pick the epoch; the run writes
+`policy_final.pt` and `brain_final.pt` for that epoch, `config.yaml` (the AC base config)
+and `bc_log.csv` with the per-action error on both splits. Point a PPO config's
+`init_from` at `runs/bc_flyvis_cx_ac/policy_final.pt`.
+
+### First drive (2026-10-22)
+
+Ryan's first drive: one valid lap (2:35.96 by AC's clock, including the pit start) and 73 s
+of a second, re-rendered on csds-pc-2 in 19 minutes with CSP smoke off. After dropping the
+parked start, 10,295 frames: 6,626 from lap 0 (training) and 3,669 from lap 1 (held out).
+All 11,468 rendered frames reported the replay frame they asked for; above 30 m/s the worst
+was 7 ms off. No frame was covered by another window (the largest frame-to-frame change is
+an overhead bridge). Positive steer turns right: over lap 0 the heading turns -361°
+(clockwise) and steer correlates -0.87 with that sign's yaw rate.
+
+BC on it, held-out mean absolute error of the clipped action (steer, throttle, brake). The
+held-out lap also picks the epoch, so these flatter BC slightly:
+
+| | Steer | Throttle | Brake |
+|---|---|---|---|
+| Round-6 checkpoint, no BC | 0.854 | 0.464 | 0.162 |
+| BC, brain and actor, 30 epochs (the config) | 0.338 | 0.376 | 0.134 |
+| BC, brain and actor, best of 100 epochs (62) | 0.312 | 0.384 | 0.138 |
+| BC, actor only, 30 epochs | 0.427 | 0.413 | 0.162 |
+| A constant: the training lap's median action | 0.154 | 0.383 | 0.121 |
+
+BC removes most of the base checkpoint's steering error, but one lap is not enough. On the
+held-out lap the clone's steer correlates 0.15 with Ryan's (0.61 on the training lap) and
+leans left by 0.17; without that bias its error is still 0.26, worse than a constant.
+Throttle and brake only match the constant. Don't use this checkpoint as an `init_from`.
+Train again with 10 or more laps; the target is 20 clean laps plus 5 recovery laps.
+
+### Recording laps
+
+At the console of an AC box that is not training, with a wheel or a gamepad:
+
+- **Content Manager or AC's launcher → Hotlap**, car **Ferrari SF70H**
+  (`ks_ferrari_sf70h`), track **Silverstone, GP layout**. Weather `4_mid_clear` and the
+  default time of day, as in training: the frames must look like the ones the fly sees.
+- **Assists:** automatic gearbox and clutch (the env auto-shifts; gear is not an action).
+  Ideal line off. Any steering, throttle and brake aids off.
+- **Drive.** A Hotlap starts in the pits at rest. Drive at a pace you can repeat. After
+  the clean laps, drive a few **recovery laps**: on each straight, let the car drift to
+  two wheels on the kerb and steer back to the middle, and once a lap stop on the track
+  and launch again. The fly's own failures look like this (resets in AC leave the car at
+  rest where it stopped), and clean laps never show them. Keep three tyres inside: three
+  out ends an env episode.
+- **Save each replay before leaving the session.** AC keeps only one temporary replay and
+  overwrites it in the next session: open Replay, then Save, after every session of a few
+  laps. Copy each `.acreplay` from `Documents\Assetto Corsa\replay\` to
+  `D:\formula-fly-ac\human_laps\<date>_<driver>\`, then re-render it as above.
