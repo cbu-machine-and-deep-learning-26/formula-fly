@@ -1434,3 +1434,63 @@ class TestTheBrakingLine:
         painted = build_scene_xml(centerline, SceneConfig(braking_line=True))
         for band in ("band_brake", "band_carry", "band_push"):
             assert f'material="{band}"' in painted
+
+
+class TestTheBrakingLineFade:
+    """v7c fades the line in over training, so a warm-started eye is not shown it at once."""
+
+    def _frame_at(self, env: PracticeTrack, arclength_m: float) -> np.ndarray:
+        _started(env)
+        env._place_car(arclength_m)
+        mujoco.mj_forward(env.model, env.data)
+        return env._render()
+
+    def test_the_fade_follows_training_steps(self):
+        env = PracticeTrack(scene=SceneConfig(braking_line=True), braking_line_fade_steps=1000)
+        try:
+            fades = []
+            for steps in (0, 250, 500, 1000, 5000):
+                env.set_training_steps(steps)
+                fades.append(env.braking_line_fade)
+            assert fades == pytest.approx([0.0, 0.25, 0.5, 1.0, 1.0])
+        finally:
+            env.close()
+
+    def test_no_fade_shows_the_line_and_no_line_has_no_fade(self):
+        lined = PracticeTrack(scene=SceneConfig(braking_line=True))
+        plain = PracticeTrack()
+        try:
+            assert lined.braking_line_fade == 1.0 and plain.braking_line_fade is None
+        finally:
+            lined.close()
+            plain.close()
+
+    @pytest.mark.render
+    def test_at_fade_zero_frames_match_a_scene_without_the_line(self):
+        plain = PracticeTrack(scene=SceneConfig(racing_line=False))
+        faded = PracticeTrack(
+            scene=SceneConfig(racing_line=False, braking_line=True), braking_line_fade_steps=100
+        )
+        try:
+            for at in (1880.0, 1930.0, 4600.0):  # Brooklands brake, its corner, a straight
+                np.testing.assert_array_equal(self._frame_at(faded, at), self._frame_at(plain, at))
+        finally:
+            plain.close()
+            faded.close()
+
+    @pytest.mark.render
+    def test_contrast_grows_with_steps(self):
+        plain = PracticeTrack(scene=SceneConfig(racing_line=False))
+        faded = PracticeTrack(
+            scene=SceneConfig(racing_line=False, braking_line=True), braking_line_fade_steps=100
+        )
+        try:
+            base = self._frame_at(plain, 1880.0).astype(float)
+            changes = []
+            for steps in (0, 25, 50, 100):
+                faded.set_training_steps(steps)
+                changes.append(np.abs(self._frame_at(faded, 1880.0) - base).mean())
+            assert changes[0] == 0.0 and changes == sorted(changes) and len(set(changes)) == 4
+        finally:
+            plain.close()
+            faded.close()

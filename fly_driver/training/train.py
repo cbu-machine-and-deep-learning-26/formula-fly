@@ -561,9 +561,19 @@ def _evaluate(
     policy.eval()
     try:
         with _preserved_rng():
-            return evaluate(lambda: build_env(config.env), driver, eval_config)
+            return evaluate(
+                lambda: _at_training_steps(build_env(config.env), env_steps), driver, eval_config
+            )
     finally:
         policy.train(was_training)
+
+
+def _at_training_steps(env: Any, steps: int) -> Any:
+    """Tell an env how far training has got, for curricula such as the braking-line fade."""
+    setter = getattr(env, "set_training_steps", None)
+    if callable(setter):
+        setter(steps)
+    return env
 
 
 def _run(
@@ -619,6 +629,7 @@ def _run(
         np.ndarray, np.ndarray, np.ndarray | None, np.ndarray, _EpisodeTally
     ]:
         """Reset env, eye and brain; the fresh tally records where the episode started."""
+        _at_training_steps(env, env_steps)
         frame, info = env.reset(seed=int(episode_seeds.integers(0, 2**31 - 1)))
         eye.reset()
         if brain is not None:
@@ -721,6 +732,7 @@ def _run(
             mean_throttle=mean_throttle,
             mean_brake=mean_brake,
             mean_abs_steer=mean_abs_steer,
+            braking_line_fade=getattr(env, "braking_line_fade", None),
         )
         loggers.log_update(last_record)
         if progress is not None:

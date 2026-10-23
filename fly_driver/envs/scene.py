@@ -763,9 +763,9 @@ def build_scene_xml(
     <material name="kerb" texture="kerb_tex"/>
     <material name="wall" rgba="0.8 0.8 0.85 1"/>
     <material name="racing_line" rgba="0.15 0.55 0.95 0.85"/>
-    <material name="band_brake" rgba="0.02 0.02 0.02 1"/>
-    <material name="band_carry" rgba="0.55 0.55 0.55 1"/>
-    <material name="band_push" rgba="1 1 1 1"/>
+    <material name="band_brake" rgba="0.10 0.10 0.10 1"/>
+    <material name="band_carry" rgba="0.25 0.25 0.25 1"/>
+    <material name="band_push" rgba="0.40 0.40 0.40 1"/>
     <!-- The start/finish check. texuniform keeps the squares world-scaled, so they stay
          square across the full width of the circuit instead of stretching with the geom. -->
     <texture name="start_tex" type="2d" builtin="checker" width="64" height="64"
