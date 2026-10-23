@@ -26,6 +26,8 @@
 # never saw the line: from the grid they stall after 1 m with it on (1,055 m with it off), and
 # a 50k-step smoke fell from 223 to 115 m per drive. Expect v7b to dip first while it learns
 # to use the line; 5M steps show whether it ends up ahead of v7a.
+# Since v7c the line paints the braking zones only, at lower contrast, so this file no
+# longer reproduces v7b.
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
 name: flyvis_cx_v7b  # v7b = corner bonus, braking line; v6 = fine-tuning PPO
 output_dir: runs
