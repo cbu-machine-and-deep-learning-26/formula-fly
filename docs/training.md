@@ -9,6 +9,8 @@ Lives in `fly_driver.training` (config, loggers, `ppo`, `train`),
 `fly_driver.policies.mlp_policy` (the head), and `fly_driver.eyes.pixel_eye` (the smoke
 eye). The entry point is `scripts/train.py`.
 
+On the lab PCs, use `train start` instead: see [Lab PCs](../AGENTS.md#15-lab-pcs).
+
 ## Run it
 
 ```bash
