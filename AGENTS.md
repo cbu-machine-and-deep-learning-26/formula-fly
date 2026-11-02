@@ -263,6 +263,8 @@ train stop      # stops this folder's supervisor and trainers, from any terminal
 
 Run these from `D:\formula-fly`. In PowerShell, type `.\train`. `logs/lab_train.log` has every decision.
 
+Closing the `train start` window or logging off stops training.
+
 **Rules**
 - At most 3 trainers per GPU. `train start` refuses more.
 - Every run warm-starts from the best checkpoint, never from scratch.
