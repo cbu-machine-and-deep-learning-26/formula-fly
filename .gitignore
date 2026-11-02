@@ -30,8 +30,11 @@ env/
 # Experiment outputs
 outputs/
 runs/
+logs/
 wandb/
 checkpoints/
+# FLYVIS_ROOT_DIR, set by train.cmd.
+.cache/
 # Warm-start weights (init_from:), copied in by hand between rounds.
 weights/
 *.mp4

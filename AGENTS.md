@@ -96,15 +96,12 @@ These came out of proposal review. Treat as defaults unless explicitly changed.
 | 9 (Nov 16) | Report through methods; record video |
 | 10 (Nov 23) | Full report draft. Dec 1–14: slides, practice, final report (due Dec 14) |
 
-## 9. Current status (as of Sep 17, 2026)
+## 9. Current status (as of Nov 2, 2026)
 
-- Proposal near-final (due Sep 18).
-- Repo scaffolding, git-flow templates, and CI skeleton merged to `develop`. The issue backlog (#13–#34) covers all ten weeks.
-- **Landed on `develop`:** the hexagonal eye resampler (#13), the frozen flyvis eye as the default visual frontend (#14), the standalone-stack documentation (#19, `docs/running-the-stacks.md`), the evaluation harness (#18), the MuJoCo practice track (#16), the shared stage contract and drivers (#20), and the tethered flybody (#21).
-- **In review:** the training loop (#17, `docs/training.md`): config-driven PPO with a frozen eye and a small MLP head, per-term rewards to CSV, seeds `[0, 1, 2]` as a config field, W&B off by default. Verified on the dummy track (laps within ~40k steps) and running on the practice track; a completed practice-track lap by the connectome eye is the week-3 milestone (§8), not this issue's criterion.
-- Assetto Corsa purchased.
-- Hardware confirmed: 4× DGX Spark cluster + a Windows machine. **Note:** this file says RTX 4090 in §7, but the Windows box in use reports an RTX 4060 Ti 16 GB — confirm which is correct before sizing any run against it.
-- Immediate working focus: the practice-track env (#16), then the **eye + brain track (E)** on top of it.
+- **Round 7 (v7a) is the current recipe.** Best 50-drive average is 1,323 m. Best single drive is about 4,475 m of the 5,887 m lap (76%). No full lap yet. Most crashes (58%) are at the braking zones after long straights: Maggotts, Vale, Brooklands, Stowe.
+- The braking-line experiments (v7b, v7c) failed and were stopped.
+- Assetto Corsa behaviour cloning is built (PRs #98, #99) and needs a closed-loop driving test.
+- Hardware: 4× DGX Spark cluster, plus two Windows lab PCs with RTX 4090s (§15).
 
 ## 10. Immediate next steps (first Claude Code sessions, in order)
 
@@ -253,3 +250,36 @@ def calculate_discount(price: float, percent: float) -> float:
 - Black, Ruff, and mypy run as **pre-commit hooks** so violations are caught before a commit lands.
 - The same checks run in **CI** as a required status check — pre-commit hooks can be skipped locally, CI can't.
 - Code review flags naming/structure issues the tools can't catch (a misleading name, a module doing too much) — save review time for things that need human judgment.
+
+## 15. Lab PCs
+
+Training runs locally on two shared Windows PCs, `CSDS_PC_1` and `CSDS_PC_2`. Each has an RTX 4090 and about 3.6 TB free on D:. The folder is `D:\formula-fly` on both.
+
+```
+train start     # 3 seeds from weights/best/, stays in this window; Ctrl-C stops the trainers
+train status    # seeds, best window, GPU use, free disk; works from any terminal
+train stop      # stops this folder's supervisor and trainers, from any terminal
+```
+
+Run these from `D:\formula-fly`. In PowerShell, type `.\train`. `logs/lab_train.log` has every decision.
+
+Closing the `train start` window or logging off stops training.
+
+**Rules**
+- At most 3 trainers per GPU. `train start` refuses more.
+- Every run warm-starts from the best checkpoint, never from scratch.
+- Run `train status` before starting. The PCs are shared with other lab users.
+- Don't touch other users' folders or processes.
+
+**What the supervisor does**
+- Every 10 minutes it relaunches dead trainers from best, and copies any new best into `weights/best/`.
+- Every 2 hours it restarts the worst seed from best if that seed is past 150 updates and its last 50 drives average under 70% of the best window. One seed per cycle.
+- Each launch is a new run, `runs/lab_<YYYYMMDD>_g<N>/`, so no history is overwritten.
+
+**Try an idea on top:** copy `fly_driver/configs/train_lab.yaml`, change one thing, then `train start --config <file>`. Commit configs and code on a `feature/GH-<issue>-<name>` branch with a PR to `develop`. Weights and runs stay on the PC and are not in git.
+
+**Shared Windows logins, so commit as yourself.** When you start, run `gh auth login` and set `git config user.name` and `git config user.email` in the checkout. When you leave, run `gh auth logout`.
+
+**Move the best checkpoint between PCs:** stop training on the target PC and copy `weights/best/` across whole. It holds `policy_best.pt`, `brain_best.pt` and `best.json` (`score`, `run`, `seed`, `update`). `train start` refuses to run without all three. A new best is only recorded when it beats `best.json`'s `score`.
+
+**Known problem:** PC1 has had NVIDIA driver resets (`nvlddmkm` 153). They kill trainers, and the supervisor relaunches them.
