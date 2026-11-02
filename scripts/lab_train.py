@@ -33,6 +33,7 @@ from fly_driver.training.lab import (  # noqa: E402
     State,
     check_seeds,
     next_run_name,
+    one_per_trainer,
     promote_best,
     read_best,
     read_drives,
@@ -208,7 +209,7 @@ def start(config_path: Path, seeds: Sequence[int] | None) -> int:
     state = load_state()
     if _supervisor_running(state, processes):
         raise RuntimeError(f"a supervisor is already running as pid {state.supervisor_pid}")
-    running = trainer_processes(processes)
+    running = one_per_trainer(trainer_processes(processes))
     if running:
         names = "\n".join(f"  pid {process.pid}: {process.command}" for process in running)
         raise RuntimeError(
@@ -255,9 +256,11 @@ def stop() -> int:
         kill_tree(state.supervisor_pid)
         log(f"stopped supervisor pid {state.supervisor_pid}")
         stopped = True
-    for process in _own_trainers(state, processes):
+    trainers = _own_trainers(state, processes)
+    for process in trainers:
         kill_tree(process.pid)
-        log(f"stopped trainer pid {process.pid}")
+    for process in one_per_trainer(trainers):
+        log(f"stopped trainer: {process.command}")
         stopped = True
     state.supervisor_pid = None
     if STATE_FILE.exists():
@@ -311,7 +314,7 @@ def status() -> int:
         print(f"best window: {read_best(BEST_DIR)}")
     except FileNotFoundError as error:
         print(f"best window: {error}")
-    for process in trainer_processes(processes):
+    for process in one_per_trainer(trainer_processes(processes)):
         print(f"train.py running: pid {process.pid}: {process.command}")
     _print_gpu()
     print(f"free disk: {shutil.disk_usage(REPO).free / 1e12:.2f} TB")

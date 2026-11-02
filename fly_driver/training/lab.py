@@ -152,6 +152,16 @@ def trainer_processes(processes: Sequence[Process]) -> list[Process]:
     return [process for process in processes if _TRAINER_COMMAND.search(process.command)]
 
 
+def one_per_trainer(processes: Sequence[Process]) -> list[Process]:
+    """One process per trainer, for people to read: a Windows venv's python.exe has a child."""
+    trainers: dict[str, Process] = {}
+    for process in processes:
+        match = _TRAINER_COMMAND.match(process.command)
+        arguments = process.command[match.end(1) :].strip() if match else process.command
+        trainers.setdefault(arguments, process)
+    return list(trainers.values())
+
+
 def next_run_name(state: State, today: datetime) -> str:
     """Take the next generation: ``lab_<YYYYMMDD>_g<N>``. Bumps ``state.generation``."""
     state.generation += 1

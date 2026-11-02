@@ -15,6 +15,7 @@ from fly_driver.training.lab import (
     best_window,
     check_seeds,
     nearest_checkpoint,
+    one_per_trainer,
     promote_best,
     read_drives,
     seed_to_restart,
@@ -92,6 +93,14 @@ def test_trainer_processes_names_train_py_but_not_the_supervisor_or_an_editor() 
         Process(4, 'powershell -Command "python scripts\\train.py --seed 0"'),
     ]
     assert trainer_processes(processes) == [trainer]
+
+
+def test_a_venv_launcher_and_its_child_count_as_one_trainer() -> None:
+    arguments = r"D:\x\scripts\train.py --config D:\x\logs\g1.yaml --seed 0"
+    launcher = Process(1, rf"D:\x\.venv-flyvis\Scripts\python.exe {arguments}")
+    child = Process(2, rf'"C:\Program Files\Python311\python.exe" {arguments}')
+    other_seed = Process(3, rf"D:\x\.venv-flyvis\Scripts\python.exe {arguments[:-1]}1")
+    assert one_per_trainer([launcher, child, other_seed]) == [launcher, other_seed]
 
 
 def _write_run(run_dir: Path, distances: list[float], checkpoints: list[int]) -> None:
