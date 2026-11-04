@@ -43,6 +43,7 @@ class Drive(NamedTuple):
     steps: int
     distance_m: float
     lap_complete: bool
+    start_focused: bool = False
 
 
 class Window(NamedTuple):
@@ -100,8 +101,22 @@ def nearest_checkpoint(update: int, checkpoints: Sequence[int]) -> int | None:
     return checkpoints[index - 1] if index else None
 
 
+def scored_drives(drives: Sequence[Drive]) -> list[Drive]:
+    """The drives a score may count: the uniform-start ones, without any focused starts.
+
+    A focused drive starts near the corner it is there to practise, so it is short by design.
+    Scoring it would hold the last-50 average under ``RESTART_FRACTION`` of the record, and a
+    seed would be sent back to the same checkpoint every cycle while nothing could beat it.
+    The uniform share is the distribution every earlier run was scored on, so the record means
+    the same thing either side of the change.
+    """
+    return [drive for drive in drives if not drive.start_focused]
+
+
 def best_window(drives: Sequence[Drive], checkpoints: Sequence[int]) -> Window | None:
     """The best 50-drive window that has a checkpoint, scanned in steps of 5 rows.
+
+    Only :func:`scored_drives` count, so a window can span more rows than 50 under a focus.
 
     A window ending before the first checkpoint is skipped, not returned, because its weights
     were never saved. A warm-started run often peaks that early, and returning it would hide
@@ -112,8 +127,9 @@ def best_window(drives: Sequence[Drive], checkpoints: Sequence[int]) -> Window |
         checkpoints: The run's saved checkpoint updates, sorted.
     """
     best: Window | None = None
-    for start in range(0, len(drives) - WINDOW_DRIVES + 1, WINDOW_STEP):
-        window = drives[start : start + WINDOW_DRIVES]
+    scored = scored_drives(drives)
+    for start in range(0, len(scored) - WINDOW_DRIVES + 1, WINDOW_STEP):
+        window = scored[start : start + WINDOW_DRIVES]
         checkpoint = nearest_checkpoint(window[-1].update, checkpoints)
         if checkpoint is None:
             continue
@@ -124,10 +140,11 @@ def best_window(drives: Sequence[Drive], checkpoints: Sequence[int]) -> Window |
 
 
 def recent_score(drives: Sequence[Drive]) -> float | None:
-    """Mean distance of the last 50 drives, or ``None`` before there are 50."""
-    if len(drives) < WINDOW_DRIVES:
+    """Mean distance of the last 50 :func:`scored_drives`, or ``None`` before there are 50."""
+    scored = scored_drives(drives)
+    if len(scored) < WINDOW_DRIVES:
         return None
-    return sum(drive.distance_m for drive in drives[-WINDOW_DRIVES:]) / WINDOW_DRIVES
+    return sum(drive.distance_m for drive in scored[-WINDOW_DRIVES:]) / WINDOW_DRIVES
 
 
 def seed_to_restart(
@@ -183,6 +200,8 @@ def read_drives(run_dir: Path) -> list[Drive]:
                         int(row["steps"]),
                         float(row["distance_m"]),
                         row["lap_complete"] == "True",
+                        # Runs from before the column read as unfocused, which they were.
+                        row.get("start_focused") == "True",
                     )
                 )
             except (KeyError, TypeError, ValueError):

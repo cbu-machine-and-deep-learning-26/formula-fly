@@ -68,6 +68,8 @@ class TrainingEpisode:
         distance_m: Metres driven along the centreline, summed from ``info["progress_m"]``,
             or ``None`` for an env that does not publish it. Kept apart from the reward
             terms so distance stays readable whatever the reward pays.
+        start_focused: The start came from the env's ``start_focus`` share, not the uniform
+            one. Always false without a focus, or for an env that does not publish it.
     """
 
     seed: int
@@ -83,6 +85,7 @@ class TrainingEpisode:
     reward_terms: Mapping[str, float]
     start_m: float | None = None
     distance_m: float | None = None
+    start_focused: bool = False
 
     def to_row(self) -> dict[str, Any]:
         """Flat CSV row: the fixed columns, then one ``reward_<term>`` column per term."""

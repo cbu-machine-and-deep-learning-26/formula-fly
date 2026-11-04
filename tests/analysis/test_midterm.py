@@ -90,11 +90,18 @@ def test_mean_and_sample_std_over_seeds_per_model_and_condition() -> None:
 
 def test_brain_and_random_start_runs_are_their_own_models_not_pooled(tmp_path: Path) -> None:
     random_start = EnvConfig(params={"random_start": True})
+    focused = EnvConfig(
+        params={
+            "random_start": True,
+            "start_focus": {"share": 0.5, "zones": [[4800.0, 5200.0]]},
+        }
+    )
     for name, brain, env in (
         ("rq1_flyvis", BrainConfig(), EnvConfig()),
         ("flyvis_cx", BrainConfig("central_complex"), EnvConfig()),
         ("rq1v2_flyvis", BrainConfig(), random_start),
         ("flyvis_cx_v2", BrainConfig("central_complex"), random_start),
+        ("flyvis_cx_vale", BrainConfig("central_complex"), focused),
     ):
         seed_dir = tmp_path / name / "seed_0"
         seed_dir.mkdir(parents=True)
@@ -109,4 +116,5 @@ def test_brain_and_random_start_runs_are_their_own_models_not_pooled(tmp_path: P
         ("flyvis_cx", "flyvis+central_complex"),
         ("rq1v2_flyvis", "flyvis+random_start"),
         ("flyvis_cx_v2", "flyvis+central_complex+random_start"),
+        ("flyvis_cx_vale", "flyvis+central_complex+random_start+start_focus"),
     }

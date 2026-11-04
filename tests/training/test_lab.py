@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from fly_driver.training.config import TrainConfig
 from fly_driver.training.lab import (
+    WINDOW_DRIVES,
     Drive,
     Process,
     best_window,
@@ -18,6 +20,8 @@ from fly_driver.training.lab import (
     one_per_trainer,
     promote_best,
     read_drives,
+    recent_score,
+    scored_drives,
     seed_to_restart,
     trainer_processes,
 )
@@ -137,9 +141,107 @@ def test_promote_best_copies_the_pair_only_when_the_record_is_beaten(tmp_path: P
     assert promote_best([("lab_20261102_g1", 2)], runs_dir, best_dir) is None
 
 
+def _alternating(uniform_m: float, focused_m: float, count: int) -> list[Drive]:
+    """``count`` of each kind in turn, five rows per update, as a focused run writes them."""
+    rows = []
+    for index in range(count * 2):
+        is_focused = index % 2 == 1
+        distance = focused_m if is_focused else uniform_m
+        rows.append(Drive(index // 5 + 1, 1000, distance, False, is_focused))
+    return rows
+
+
+class TestFocusedStarts:
+    """A focused drive is short by design, and must not look like a collapse (GH-103)."""
+
+    def test_scores_read_only_the_uniform_drives(self) -> None:
+        drives = _alternating(uniform_m=1200.0, focused_m=300.0, count=60)
+        assert len(scored_drives(drives)) == 60
+        assert recent_score(drives) == 1200.0
+        window = best_window(drives, [1])
+        assert window is not None
+        assert window.score == 1200.0
+
+    def test_a_focused_run_at_the_old_pace_is_not_restarted(self) -> None:
+        """The trap: scored naively this run averages 750 m and would restart every cycle."""
+        drives = _alternating(uniform_m=1200.0, focused_m=300.0, count=60)
+        last_50 = drives[-WINDOW_DRIVES:]
+        naive = sum(drive.distance_m for drive in last_50) / WINDOW_DRIVES
+        assert naive == pytest.approx(750.0)
+        assert seed_to_restart({0: naive}, {0: 900}, best_score=1359.0) == 0, "the trap is real"
+
+        score = recent_score(drives)
+        assert score is not None
+        assert seed_to_restart({0: score}, {0: 900}, best_score=1359.0) is None
+
+    def test_a_uniform_collapse_is_still_restarted_under_a_focus(self) -> None:
+        drives = _alternating(uniform_m=400.0, focused_m=300.0, count=60)
+        score = recent_score(drives)
+        assert score == 400.0
+        assert seed_to_restart({0: score}, {0: 900}, best_score=1359.0) == 0
+
+    def test_focused_drives_cannot_set_a_record(self) -> None:
+        drives = _alternating(uniform_m=500.0, focused_m=4000.0, count=60)
+        window = best_window(drives, [1])
+        assert window is not None
+        assert window.score == 500.0
+
+    def test_a_score_waits_for_fifty_uniform_drives_however_many_focused_there_are(self) -> None:
+        drives = _alternating(uniform_m=500.0, focused_m=300.0, count=49)
+        assert len(drives) == 98
+        assert recent_score(drives) is None
+        assert best_window(drives, [1]) is None
+
+    def test_a_lap_from_a_focused_start_still_counts_as_a_lap(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "seed_0"
+        run_dir.mkdir()
+        (run_dir / "episodes.csv").write_text(
+            "update,steps,distance_m,lap_complete,start_focused\n"
+            "1,1000,300.0,False,True\n"
+            "1,9000,7000.0,True,True\n"
+            "2,1000,900.0,False,False\n",
+            encoding="utf-8",
+        )
+        drives = read_drives(run_dir)
+        assert [drive.start_focused for drive in drives] == [True, True, False]
+        assert sum(drive.lap_complete for drive in drives) == 1
+        assert [drive.distance_m for drive in scored_drives(drives)] == [900.0]
+
+    def test_a_run_from_before_the_column_reads_exactly_as_it_did(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "seed_0"
+        _write_run(run_dir, [500.0] * 60, [1])
+        drives = read_drives(run_dir)
+        assert len(drives) == 60
+        assert not any(drive.start_focused for drive in drives)
+        assert recent_score(drives) == 500.0
+
+
 def test_train_lab_yaml_is_the_recipe_and_warm_starts_from_weights_best() -> None:
     pytest.importorskip("yaml")
     config = TrainConfig.from_yaml(CONFIGS / "train_lab.yaml")
     assert config.seeds == (0, 1, 2)
     assert (config.ppo.learning_rate, config.ppo.target_kl) == (5.0e-5, 0.0075)
     assert config.init_from == "weights/best/policy_best.pt"
+
+
+def test_the_vale_recipe_is_train_lab_plus_its_two_changes_and_nothing_else() -> None:
+    """GH-103's comparison against the running recipe only means something if this holds."""
+    pytest.importorskip("yaml")
+    recipe = TrainConfig.from_yaml(CONFIGS / "train_lab.yaml")
+    vale = TrainConfig.from_yaml(CONFIGS / "train_lab_vale.yaml")
+
+    assert vale.env.params["start_focus"] == {
+        "share": 0.5,
+        "zones": [[470.0, 620.0], [1290.0, 1700.0], [4800.0, 5200.0]],
+    }
+    assert vale.ppo.entropy_coef == 0.002
+    assert recipe.ppo.entropy_coef == 0.005
+
+    params = {key: value for key, value in vale.env.params.items() if key != "start_focus"}
+    undone = replace(
+        vale,
+        name=recipe.name,
+        env=replace(vale.env, params=params),
+        ppo=replace(vale.ppo, entropy_coef=recipe.ppo.entropy_coef),
+    )
+    assert undone == recipe

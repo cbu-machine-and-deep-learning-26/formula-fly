@@ -194,17 +194,25 @@ assert set(EYE_BUILDERS) == set(KNOWN_EYE_TYPES)
 assert set(BRAIN_BUILDERS) == set(KNOWN_BRAINS)
 
 
+TRAINING_ONLY_ENV_PARAMS = frozenset({"random_start", "start_focus"})
+
+
 def build_env(config: EnvConfig, *, training: bool = False) -> Any:
     """Construct the env a config names.
 
     Args:
         config: The env section of a run config.
-        training: Build the training env. Only then does ``params.random_start`` reach the
-            env; every evaluation env (periodic, ``scripts/evaluate.py``, robustness) drops
-            it and starts on the grid, so lap times stay comparable across runs.
+        training: Build the training env. Only then do ``params.random_start`` and
+            ``params.start_focus`` reach the env; every evaluation env (periodic,
+            ``scripts/evaluate.py``, robustness) drops them and starts on the grid, so lap
+            times stay comparable across runs.
     """
-    if not training and "random_start" in config.params:
-        params = {key: value for key, value in config.params.items() if key != "random_start"}
+    if not training and TRAINING_ONLY_ENV_PARAMS & config.params.keys():
+        params = {
+            key: value
+            for key, value in config.params.items()
+            if key not in TRAINING_ONLY_ENV_PARAMS
+        }
         config = replace(config, params=params)
     return ENV_BUILDERS[config.type](config)
 
@@ -437,9 +445,10 @@ def _open_loggers(
 class _EpisodeTally:
     """Running totals of the episode in progress."""
 
-    def __init__(self, frame_rate_hz: float, start_m: float | None) -> None:
+    def __init__(self, frame_rate_hz: float, start_m: float | None, start_focused: bool) -> None:
         self.frame_rate_hz = frame_rate_hz
         self.start_m = start_m
+        self.start_focused = start_focused
         self.steps = 0
         self.total_return = 0.0
         self.terms: dict[str, float] = {}
@@ -491,6 +500,7 @@ class _EpisodeTally:
             reward_terms=dict(self.terms),
             start_m=self.start_m,
             distance_m=self.distance_m,
+            start_focused=self.start_focused,
         )
 
 
@@ -639,7 +649,11 @@ def _run(
             brain.reset()
         frame = validate_frame(frame, frame_shape)
         start_m = info.get("arclength_m")
-        tally = _EpisodeTally(frame_rate_hz, None if start_m is None else float(start_m))
+        tally = _EpisodeTally(
+            frame_rate_hz,
+            None if start_m is None else float(start_m),
+            bool(info.get("start_focused", False)),
+        )
         return frame, *observe(frame), tally
 
     frame, eye_features, brain_state, features, tally = begin_episode()
