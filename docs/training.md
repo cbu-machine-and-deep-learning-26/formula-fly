@@ -134,6 +134,40 @@ was scored on, so `weights/best/best.json` means the same thing either side of t
 a focused run isn't restarted just for having short drives. Compare runs on that score and on
 Vale survival, not on the mean of every drive.
 
+**The Vale test, and how to read it.** The test folder runs `train_lab_vale.yaml`. The base
+folder runs `train_lab.yaml`. They differ in two settings, and each run's own `config.yaml`
+records them:
+
+| Setting | `train_lab.yaml` | `train_lab_vale.yaml` |
+|---|---|---|
+| `env.params.start_focus` | none, every start uniform | half the drives start at 4,000-5,200 m |
+| `ppo.entropy_coef` | 0.005 | 0.002 |
+
+The test changes both at once, so a result can't say which one caused it. To separate them,
+run a follow-up with one of the two put back.
+
+`scripts/lab_compare.py` prints the recipe differences as run, then the same numbers for both
+folders. It only reads, so it is safe while either folder trains:
+
+```powershell
+.venv-flyvis\Scripts\python.exe scripts\lab_compare.py D:\formula-fly D:\formula-fly-vale
+```
+
+The baseline, from `CSDS_PC_2` on the evening of 2026-11-03, before any focused run:
+
+| Number | Baseline | What improving looks like |
+|---|---|---|
+| Laps | 0 in 174,466 drives | Any |
+| Through Vale (5,500-5,600 m) | About 5% of arrivals | The main thing to watch |
+| Best 50-drive score, uniform starts | 1,359 m | Clearly over 1,359 m: one window is only good to about ±100-150 m |
+| Longest drive | 4,475 m | Past 4,475 m, which is where Vale stops them |
+| Best grid eval, no noise | 1,183 m | Past 1,183 m |
+| Mean \|steer\| | About 0.85 | Falling, if the driving is getting calmer |
+| Entropy | Rising, 2.0-2.15 | Falling slowly, not collapsing to the 1.2-1.5 of round 6 |
+
+The 5% counts a drive that started inside the stretch as an arrival. `lab_compare.py` doesn't,
+so its figure for the same runs can come out a little lower.
+
 To run another condition, copy the file, change `name` and the condition keys, keep the
 seeds. To spread the seeds over the cluster, give every job the same file and a different
 `--seed`; the run directories do not collide.
