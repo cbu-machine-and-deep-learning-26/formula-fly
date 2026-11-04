@@ -1,5 +1,7 @@
-# Training with fully variable controls (GH-104): train_lab.yaml plus three changes that work
+# Training with fully variable controls (GH-104): train_lab.yaml plus two changes that work
 # together. It is not what `train start` runs, and nothing shows yet that it beats train_lab.yaml.
+# In 200k-step tests it ran cleanly but got faster and crashed sooner (528-636 m), so it's only a
+# recipe to test over a long run.
 #
 #   1. env.params.car: a stiffer steering motor. On the default car, small inputs barely move the
 #      wheels leaving centre: 10% gives 0.3% of lock at 108 km/h, and it takes 30% to move them at
@@ -10,7 +12,9 @@
 #      driver drives 862 +- 114 m at 123 km/h, against 503 +- 76 m unscaled. Make it first:
 #        python scripts/rescale_checkpoint.py --source weights/best/policy_best.pt \
 #          --target weights/variable_start/policy_best.pt --steer 0.3 --pedals 0.5
-#   3. ppo.output_range_coef: stops the raw outputs growing back past the range.
+#
+# ppo.output_range_coef is left off. At 0.1 it kept the pedals in range, but stalled drives from a
+# standstill rose to 60 and 26 of 81 on two seeds of three, against 5 and 4 without it.
 #
 # Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
 name: train_lab_variable
@@ -76,7 +80,6 @@ ppo:
   max_grad_norm: 0.5
   normalize_advantages: true
   target_kl: 0.0075
-  output_range_coef: 0.1
 
 eval:
   every_updates: 25

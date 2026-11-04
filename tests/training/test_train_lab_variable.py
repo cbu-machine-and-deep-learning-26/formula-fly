@@ -1,4 +1,4 @@
-"""The variable-controls recipe (GH-104): train_lab.yaml plus its three changes."""
+"""The variable-controls recipe (GH-104): train_lab.yaml plus its two changes."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ def test_the_recipe_is_train_lab_plus_its_changes_and_nothing_else() -> None:
         "steer_gain": 192000.0,
         "steer_damping_nms": 800.0,
     }
-    assert recipe["ppo"].pop("output_range_coef") == 0.1
     assert recipe.pop("init_from") == "weights/variable_start/policy_best.pt"
     assert recipe.pop("name") == "train_lab_variable"
     del lab["init_from"], lab["name"]
@@ -31,13 +30,18 @@ def test_the_recipe_is_train_lab_plus_its_changes_and_nothing_else() -> None:
 
 def test_the_recipe_loads_as_a_train_config() -> None:
     config = TrainConfig.from_yaml(CONFIGS / "train_lab_variable.yaml")
-    assert config.ppo.output_range_coef == 0.1
+    assert config.init_from == "weights/variable_start/policy_best.pt"
+
+
+def test_the_range_penalty_is_off_because_it_stalled_launches() -> None:
+    config = TrainConfig.from_yaml(CONFIGS / "train_lab_variable.yaml")
+    assert config.ppo.output_range_coef == 0.0
 
 
 def test_the_lab_recipe_has_none_of_the_changes() -> None:
     lab = _load("train_lab.yaml")
     assert "car" not in lab["env"]["params"]
-    assert "output_range_coef" not in lab["ppo"]
+    assert lab["init_from"] == "weights/best/policy_best.pt"
 
 
 def test_the_recipe_builds_a_car_with_the_stiff_steering() -> None:
