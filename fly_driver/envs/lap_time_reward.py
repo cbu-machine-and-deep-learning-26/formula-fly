@@ -53,6 +53,13 @@ the kerb's *outer* edge, so two wheels on the kerb cost nothing.
 **The lap is the prize.** The bonus reads ``info["lap_time"]``, which already includes the
 off-track penalty seconds, and the env's :class:`~fly_driver.envs.lap.LapTimer` only counts a
 full lap of forward progress from a crossing of the line, so laps cannot be farmed.
+
+**Steering lock to lock can cost something (GH-104).** ``steer_change_m`` charges for how far
+the steering moved since the last frame, ``info["steer_change"]``. It is off by default, and
+off means no ``steering`` term at all, so a run without it is unchanged down to its CSV columns.
+The cost shares the kerb cost's cap: together they take no more than the step's own pace, so a
+step that moves forward is still worth >= 0 and ending the drive still never pays. Because it
+is charged per frame and not per metre, driving slower to dodge it costs more, not less.
 """
 
 from __future__ import annotations
@@ -90,6 +97,8 @@ class LapTimeReward:
         lap_bonus_m: Bonus for a lap at exactly the target time, scaled by
             ``target / lap_time``.
         target_bonus_m: Extra bonus for a lap at or under the target.
+        steer_change_m: Cost per unit of steering change between frames, so a lock-to-lock flip
+            (a change of 2) costs twice this. 0 turns it off and leaves no ``steering`` term.
         penalty_weights: The env's off-track rule. ``time_weight`` sets the cost past the
             kerb, ``minimum_depth`` and ``maximum_depth`` bound the depth it applies to.
         lap_length_m: Track length, for target pace.
@@ -106,6 +115,7 @@ class LapTimeReward:
     corner_bonus_m: float = 0.0
     lap_bonus_m: float = 2000.0
     target_bonus_m: float = 1000.0
+    steer_change_m: float = 0.0
     penalty_weights: PenaltyWeights = field(default_factory=lambda: DEFAULT_PENALTY_WEIGHTS)
     lap_length_m: float = _LAP_LENGTH_M
     scale: float = 1.0
@@ -120,6 +130,7 @@ class LapTimeReward:
             "corner_bonus_m",
             "lap_bonus_m",
             "target_bonus_m",
+            "steer_change_m",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative, got {getattr(self, name)}")
@@ -141,14 +152,19 @@ class LapTimeReward:
         else:
             pace = progress_m
         track_limits = self.target_speed_mps * weights.time_weight * beyond_kerb * dt
+        # Capped at the step's pace, so no step that moves forward is worth less than 0.
+        track_limits_cost = min(track_limits, max(pace, 0.0))
         terms = {
             "pace": pace,
-            # Capped at the step's pace, so no step that moves forward is worth less than 0.
-            "track_limits": -min(track_limits, max(pace, 0.0)),
+            "track_limits": -track_limits_cost,
             "crash": -self.crash_penalty_m if info["crashed"] or info["stalled"] else 0.0,
             "corner_bonus": self.corner_bonus_m if info.get("corner_complete") else 0.0,
             "lap_bonus": 0.0,
         }
+        if self.steer_change_m > 0.0:
+            steering_cost = self.steer_change_m * float(info.get("steer_change", 0.0))
+            # What the kerb cost left of the same cap.
+            terms["steering"] = -min(steering_cost, max(pace, 0.0) - track_limits_cost)
         if info["lap_complete"]:
             lap_time = float(info["lap_time"])
             terms["lap_bonus"] = self.lap_bonus_m * self.target_lap_time_s / lap_time

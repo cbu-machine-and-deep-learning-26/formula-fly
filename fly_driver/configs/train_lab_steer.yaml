@@ -1,0 +1,89 @@
+# A trial of the steering-change cost (GH-104): train_lab.yaml plus reward.steer_change_m, and a
+# shorter run. It is not what `train start` runs, and it is not a replacement recipe.
+#
+# Why: the best checkpoint flips its steering 5.18 times a second with noise off, at full lock on
+# 68% of frames, and that wobble alone crashes a well-aimed car at 170-210 km/h on a straight. The
+# policy's pedals depend on the wobble, so removing it at run time fails. It has to be trained out.
+#
+# 0.25 m is about 25% of pace at today's chatter. At 108 km/h pace pays about 16 m/s, and the
+# steering moves about 16.5 units/s with noise on, so the cost is about 4 m/s. Its success target
+# is on the issue, set before the first run.
+#
+# Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
+name: train_lab_steer
+output_dir: runs
+# The best checkpoint on this machine, not in git. warm_start finds brain_best.pt beside it.
+init_from: weights/best/policy_best.pt
+seeds: [0, 1, 2]  # at most 3 trainers per GPU (AGENTS.md, Lab PCs)
+total_env_steps: 1500000  # train_lab.yaml's 5,000,000 cut down: a trial on one desktop GPU
+device: auto
+
+eye:
+  type: flyvis
+  frozen: true
+  params: {}
+
+brain:
+  type: central_complex
+  params:
+    neuron_count: 4096
+    output_dim: 32
+
+policy:
+  hidden_sizes: [64, 64]
+  activation: tanh
+  normalize_features: true
+  init_log_std: 0.0
+  init_action_mean: [0.0, 0.4, -0.6]
+
+env:
+  type: practice_track
+  max_steps: 15000
+  params:
+    racing_line: false
+    scene:
+      braking_line: false
+    track_limit: 0.15
+    random_start: true
+    stall_speed_mps: 8.3
+    stall_seconds: 3.0
+    reward:
+      type: lap_time
+      target_lap_time_s: 105.0
+      pace_cap: 2.0
+      pace_floor: 0.0
+      crash_penalty_m: 18.0
+      corner_bonus_m: 50.0
+      steer_change_m: 0.25  # the trial: per unit of steering change between frames
+      scale: 0.01
+
+ppo:
+  rollout_steps: 2048
+  minibatches: 32
+  epochs: 10
+  learning_rate: 5.0e-5
+  anneal_learning_rate: true
+  gamma: 0.997
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  clip_value_loss: true
+  entropy_coef: 0.005
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  normalize_advantages: true
+  target_kl: 0.0075
+
+eval:
+  every_updates: 25
+  episodes: 1
+  max_steps: null
+  record_video: false
+
+logging:
+  wandb:
+    enabled: false
+    project: formula-fly
+    entity: null
+    mode: online
+    tags: []
+  checkpoint_every_updates: 10
