@@ -1,0 +1,94 @@
+# Training with fully variable controls (GH-104): train_lab.yaml plus three changes that work
+# together. It is not what `train start` runs, and nothing shows yet that it beats train_lab.yaml.
+#
+#   1. env.params.car: a stiffer steering motor. On the default car, small inputs barely move the
+#      wheels leaving centre: 10% gives 0.3% of lock at 108 km/h, and it takes 30% to move them at
+#      250 km/h. With this they follow the input at every speed tested. A policy learned on the
+#      default car, so this is a different car, and lap times aren't comparable across the two.
+#   2. init_from: the best checkpoint with steering x 0.3 and pedals x 0.5 written into its weights,
+#      because raw outputs were past the car's range on all but 0.6% of frames. On this car, that
+#      driver drives 862 +- 114 m at 123 km/h, against 503 +- 76 m unscaled. Make it first:
+#        python scripts/rescale_checkpoint.py --source weights/best/policy_best.pt \
+#          --target weights/variable_start/policy_best.pt --steer 0.3 --pedals 0.5
+#   3. ppo.output_range_coef: stops the raw outputs growing back past the range.
+#
+# Every key maps to fly_driver.training.TrainConfig; unknown keys are an error.
+name: train_lab_variable
+output_dir: runs
+init_from: weights/variable_start/policy_best.pt
+seeds: [0, 1, 2]  # at most 3 trainers per GPU (AGENTS.md, Lab PCs)
+total_env_steps: 5000000
+device: auto
+
+eye:
+  type: flyvis
+  frozen: true
+  params: {}
+
+brain:
+  type: central_complex
+  params:
+    neuron_count: 4096
+    output_dim: 32
+
+policy:
+  hidden_sizes: [64, 64]
+  activation: tanh
+  normalize_features: true
+  init_log_std: 0.0
+  init_action_mean: [0.0, 0.4, -0.6]
+
+env:
+  type: practice_track
+  max_steps: 15000
+  params:
+    racing_line: false
+    scene:
+      braking_line: false
+    track_limit: 0.15
+    random_start: true
+    stall_speed_mps: 8.3
+    stall_seconds: 3.0
+    car:
+      steer_gain: 192000.0
+      steer_damping_nms: 800.0
+    reward:
+      type: lap_time
+      target_lap_time_s: 105.0
+      pace_cap: 2.0
+      pace_floor: 0.0
+      crash_penalty_m: 18.0
+      corner_bonus_m: 50.0
+      scale: 0.01
+
+ppo:
+  rollout_steps: 2048
+  minibatches: 32
+  epochs: 10
+  learning_rate: 5.0e-5
+  anneal_learning_rate: true
+  gamma: 0.997
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  clip_value_loss: true
+  entropy_coef: 0.005
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  normalize_advantages: true
+  target_kl: 0.0075
+  output_range_coef: 0.1
+
+eval:
+  every_updates: 25
+  episodes: 1
+  max_steps: null
+  record_video: false
+
+logging:
+  wandb:
+    enabled: false
+    project: formula-fly
+    entity: null
+    mode: online
+    tags: []
+  checkpoint_every_updates: 10
