@@ -168,6 +168,11 @@ The baseline, from `CSDS_PC_2` on the evening of 2026-11-03, before any focused 
 The 5% counts a drive that started inside the stretch as an arrival. `lab_compare.py` doesn't,
 so its figure for the same runs can come out a little lower.
 
+A 61,440-step check of this recipe from the 1,359 m checkpoint, one trainer on `CSDS_PC_1`, ran
+43 drives: 20 focused, all starting inside the zone. 26 of the 43 reached Vale, against about
+20% of drives in the baseline runs, and none got through. That shows the practice is happening,
+not that it helps.
+
 To run another condition, copy the file, change `name` and the condition keys, keep the
 seeds. To spread the seeds over the cluster, give every job the same file and a different
 `--seed`; the run directories do not collide.

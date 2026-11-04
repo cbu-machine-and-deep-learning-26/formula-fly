@@ -280,6 +280,19 @@ Closing the `train start` window or logging off stops training.
 
 **A second folder, for an idea that shouldn't share `weights/best/`:** a run scored differently, or one you might throw away, belongs in its own checkout, such as `D:\formula-fly-vale`. It gets its own `weights\best\`, `runs\`, `logs\` and supervisor state, and `train stop` there stops only its own trainers. Clone the branch, build `.venv-flyvis` in it, copy `.cache\flyvis` and `weights\best\` from `D:\formula-fly`, then run `train` from the new folder. `train start` still refuses while any `train.py` is running on the PC, from any folder, because the GPU is shared. `fly_driver/configs/train_lab_vale.yaml` (GH-103) runs this way, and `scripts/lab_compare.py <base folder> <test folder>` shows what differs and whether it helped (docs/training.md, "The Vale test").
 
+**Leave it running after you disconnect:** a process started from SSH dies when the session closes, so start training from a scheduled task. The task runs in the logged-on user's session, which gets the real GPU for rendering even while that session is disconnected (checked on `CSDS_PC_1`). A task with no desktop session is not expected to render. `scripts/lab_wait_then_train.ps1` waits for another GPU program, such as Isaac Sim, to close first. As the account that is logged on, in PowerShell:
+
+```powershell
+$run = '-NoProfile -ExecutionPolicy Bypass -File D:\formula-fly-vale\scripts\lab_wait_then_train.ps1'
+$action = New-ScheduledTaskAction -Execute powershell.exe -Argument $run
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask fly_vale_train -Action $action -Principal $principal -Settings $settings
+Start-ScheduledTask fly_vale_train
+```
+
+To stop it, run both of these from that folder: `Stop-ScheduledTask fly_vale_train` ends a wait that hasn't started training, and `.\train stop` stops training that has. `.\train stop` alone doesn't end a wait, so training would still start later. Logging that user off or rebooting also ends the task, and it doesn't start again by itself. Training has no end time: the supervisor keeps relaunching seeds until someone stops it.
+
 **Shared Windows logins, so commit as yourself.** When you start, run `gh auth login` and set `git config user.name` and `git config user.email` in the checkout. When you leave, run `gh auth logout`.
 
 **Move the best checkpoint between PCs:** stop training on the target PC and copy `weights/best/` across whole. It holds `policy_best.pt`, `brain_best.pt` and `best.json` (`score`, `run`, `seed`, `update`). `train start` refuses to run without all three. A new best is only recorded when it beats `best.json`'s `score`.
