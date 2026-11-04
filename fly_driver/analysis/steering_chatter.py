@@ -360,8 +360,12 @@ def zone_outcome(trace: DriveTrace, start_m: float, end_m: float) -> str:
         end_m: Where it ends.
 
     Returns:
-        ``not_reached``, ``ended_in_zone``, or ``passed`` if the drive left it and carried on.
+        ``started_in_zone`` if the drive began there, because it never made the approach and
+        must not count as getting through. Otherwise ``not_reached``, ``ended_in_zone``, or
+        ``passed`` if the drive left it and carried on.
     """
+    if start_m <= trace.start_m <= end_m:
+        return "started_in_zone"
     inside = (trace.arclength_m >= start_m) & (trace.arclength_m <= end_m)
     if not inside.any():
         return "not_reached"

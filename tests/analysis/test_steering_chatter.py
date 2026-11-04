@@ -322,7 +322,9 @@ def _trace_at(arclengths: list[float], speeds: list[float] | None = None) -> Dri
         ([10.0, 20.0, 30.0], "not_reached"),
         ([90.0, 110.0, 150.0], "ended_in_zone"),
         ([90.0, 110.0, 150.0, 210.0], "passed"),
-        ([190.0, 5.0, 8.0], "passed"),  # left by crossing the start line
+        ([90.0, 190.0, 5.0, 8.0], "passed"),  # left by crossing the start line
+        ([150.0, 210.0], "started_in_zone"),  # never made the approach, so not a pass
+        ([150.0, 160.0], "started_in_zone"),
     ],
 )
 def test_zone_outcome(arclengths: list[float], outcome: str) -> None:

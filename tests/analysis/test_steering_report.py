@@ -225,6 +225,7 @@ def test_exit_speed_rows_pool_by_condition_and_straight_in_kmh() -> None:
 
 def test_write_results_records_vale_and_straight_exits(tmp_path: Path) -> None:
     result = _result("noise_off", "grid", [0.0, 0.0], arclength=5500.0)
+    result = replace(result, trace=replace(result.trace, start_m=5000.0))  # a real run-up
     result.straight_exits["S0"] = [10.0]
     write_results([result], tmp_path)
     with (tmp_path / "episodes.csv").open(encoding="utf-8") as handle:
