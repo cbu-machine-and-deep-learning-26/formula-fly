@@ -24,11 +24,27 @@ from fly_driver.analysis.steering_chatter import (
     SteeringStats,
     combine_stats,
     drive,
+    straight_exit_speeds,
     trace_stats,
+    zone_outcome,
 )
 from fly_driver.envs.segments import Segment
 
-__all__ = ["DriveResult", "StartSet", "measure", "print_summary", "summary_rows", "write_results"]
+__all__ = [
+    "VALE_ZONE_M",
+    "ConditionSpec",
+    "DriveResult",
+    "StartSet",
+    "exit_speed_rows",
+    "measure",
+    "print_summary",
+    "summary_rows",
+    "write_results",
+]
+
+#: Vale's braking zone and corner (#103): the speed profile brakes from 5,390 m to 5,502 m, and
+#: the drives that end there end between 5,500 m and 5,599 m.
+VALE_ZONE_M = (5390.0, 5600.0)
 
 #: Where zone seeds begin, so they never overlap the uniform seeds counted up from 0.
 _ZONE_FIRST_SEED = 1000
@@ -37,6 +53,39 @@ _ZONE_FIRST_SEED = 1000
 _ZONE_MAX_TRIES = 2000
 
 REGIONS = ("all", "straight", "corner")
+
+
+@dataclass(frozen=True)
+class ConditionSpec:
+    """What a condition label asks for.
+
+    Args:
+        noise_on: Sample the policy's actions rather than take its mean.
+        blend: Steering low-pass blend, see
+            :class:`~fly_driver.analysis.steering_chatter.SmoothedSteering`. ``None`` is off.
+    """
+
+    noise_on: bool
+    blend: float | None
+
+    @classmethod
+    def parse(cls, label: str) -> ConditionSpec:
+        """Read ``noise_off``, ``noise_on``, ``smooth_0.2`` or ``noise_on_smooth_0.2``.
+
+        ``smooth_<blend>`` alone means noise off.
+
+        Raises:
+            ValueError: If the label is none of those, or the blend isn't a number.
+        """
+        noise_on = label.startswith("noise_on")
+        rest = label.removeprefix("noise_on").removeprefix("noise_off").removeprefix("_")
+        if not rest:
+            if label in ("noise_on", "noise_off"):
+                return cls(noise_on=noise_on, blend=None)
+            raise ValueError(f"unknown condition {label!r}")
+        if not rest.startswith("smooth_"):
+            raise ValueError(f"unknown condition {label!r}")
+        return cls(noise_on=noise_on, blend=float(rest.removeprefix("smooth_")))
 
 
 @dataclass(frozen=True)
@@ -90,12 +139,14 @@ class DriveResult:
         start_kind: ``grid``, ``uniform`` or ``zone``.
         trace: Every frame of the drive.
         stats: Its steering, keyed by region in :data:`REGIONS`.
+        straight_exits: Speed in m/s leaving each straight, keyed by segment name.
     """
 
     condition: str
     start_kind: str
     trace: DriveTrace
     stats: dict[str, SteeringStats]
+    straight_exits: dict[str, list[float]]
 
 
 def measure(
@@ -130,7 +181,8 @@ def measure(
         began = time.perf_counter()
         trace = drive(env, driver, seed=seed, max_steps=max_steps)
         stats = trace_stats(trace, float(env.frame_rate_hz), segments)
-        results.append(DriveResult(condition, start_kind, trace, stats))
+        exits = straight_exit_speeds(trace, segments)
+        results.append(DriveResult(condition, start_kind, trace, stats, exits))
         print(
             f"{condition} {number}/{len(plan)} {start_kind} seed {seed}: "
             f"{trace.start_m:.0f} m, drove {trace.distance_m:.0f} m, {trace.outcome}, "
@@ -189,6 +241,33 @@ def summary_rows(results: Sequence[DriveResult]) -> list[dict[str, Any]]:
     return rows
 
 
+def exit_speed_rows(results: Sequence[DriveResult]) -> list[dict[str, Any]]:
+    """Mean speed leaving each straight, per condition.
+
+    Conditions reach different straights, so only compare a straight against itself. A row's
+    ``exits`` says how many drives its mean rests on.
+
+    Args:
+        results: The measured drives.
+
+    Returns:
+        One row per ``(condition, straight)`` that any drive left.
+    """
+    pooled: dict[tuple[str, str], list[float]] = {}
+    for result in results:
+        for name, speeds in result.straight_exits.items():
+            pooled.setdefault((result.condition, name), []).extend(speeds)
+    return [
+        {
+            "condition": condition,
+            "straight": name,
+            "exits": len(speeds),
+            "mean_exit_kmh": round(float(np.mean(speeds)) * 3.6, 1),
+        }
+        for (condition, name), speeds in pooled.items()
+    ]
+
+
 def _write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
@@ -197,7 +276,7 @@ def _write_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
 
 
 def write_results(results: Sequence[DriveResult], output_dir: Path) -> None:
-    """Write ``episodes.csv``, ``summary.csv`` and a trace per drive.
+    """Write ``episodes.csv``, ``summary.csv``, ``straight_exits.csv`` and a trace per drive.
 
     Args:
         results: The measured drives. Writes nothing when empty.
@@ -217,6 +296,7 @@ def write_results(results: Sequence[DriveResult], output_dir: Path) -> None:
             "end_m": round(trace.end_m, 1),
             "distance_m": round(trace.distance_m, 1),
             "outcome": trace.outcome,
+            "vale": zone_outcome(trace, *VALE_ZONE_M),
             "top_speed_kmh": round(float(np.max(trace.speed_mps, initial=0.0)) * 3.6, 1),
         }
         for region in REGIONS:
@@ -238,6 +318,9 @@ def write_results(results: Sequence[DriveResult], output_dir: Path) -> None:
         )
     _write_csv(output_dir / "episodes.csv", episodes)
     _write_csv(output_dir / "summary.csv", summary_rows(results))
+    exit_rows = exit_speed_rows(results)
+    if exit_rows:
+        _write_csv(output_dir / "straight_exits.csv", exit_rows)
 
 
 def print_summary(results: Sequence[DriveResult]) -> None:

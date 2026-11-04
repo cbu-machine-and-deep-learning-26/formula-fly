@@ -3,9 +3,10 @@
 Example:
     python scripts/steering_chatter.py --checkpoint weights/best/policy_best.pt
     python scripts/steering_chatter.py --conditions noise_off --uniform-starts 2 --zone-starts 0
+    python scripts/steering_chatter.py --conditions noise_off smooth_0.5 smooth_0.2
 
-Writes ``episodes.csv``, ``summary.csv`` and one ``.npz`` trace per drive to ``--output``. The
-checkpoint needs its brain beside it. It needs torch and a flyvis install.
+Writes ``episodes.csv``, ``summary.csv``, ``straight_exits.csv`` and one ``.npz`` trace per drive
+to ``--output``. The checkpoint needs its brain beside it. It needs torch and a flyvis install.
 """
 
 from __future__ import annotations
@@ -16,7 +17,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fly_driver.analysis.steering_report import StartSet, measure, print_summary, write_results
+from fly_driver.analysis.steering_chatter import SmoothedSteering
+from fly_driver.analysis.steering_report import (
+    ConditionSpec,
+    StartSet,
+    measure,
+    print_summary,
+    write_results,
+)
 from fly_driver.envs.segments import find_segments
 from fly_driver.policies.sampled_policy import SampledPolicy
 from fly_driver.training import TrainConfig
@@ -58,11 +66,13 @@ def main(argv: list[str] | None = None) -> int:
         mean_policy = driver.policy
         results = []
         for condition in args.conditions:
-            driver.policy = SampledPolicy(mean_policy) if condition == "noise_on" else mean_policy
+            spec = ConditionSpec.parse(condition)
+            driver.policy = SampledPolicy(mean_policy) if spec.noise_on else mean_policy
+            agent = driver if spec.blend is None else SmoothedSteering(driver, spec.blend)
             results.extend(
                 measure(
                     condition,
-                    driver,
+                    agent,
                     grid_env=grid_env,
                     random_env=random_env,
                     starts=starts,

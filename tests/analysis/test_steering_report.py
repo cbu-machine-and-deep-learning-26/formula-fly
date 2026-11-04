@@ -12,8 +12,10 @@ import pytest
 
 from fly_driver.analysis.steering_chatter import DriveTrace, trace_stats
 from fly_driver.analysis.steering_report import (
+    ConditionSpec,
     DriveResult,
     StartSet,
+    exit_speed_rows,
     measure,
     print_summary,
     summary_rows,
@@ -72,7 +74,7 @@ def _result(condition: str, kind: str, steer: list[float], arclength: float = 50
         arclength_m=np.full(size, arclength),
         lateral_m=np.zeros(size),
     )
-    return DriveResult(condition, kind, trace, trace_stats(trace, 50.0, SEGMENTS))
+    return DriveResult(condition, kind, trace, trace_stats(trace, 50.0, SEGMENTS), {})
 
 
 def test_zone_seeds_are_read_from_real_resets_and_skip_starts_outside_the_zone() -> None:
@@ -154,3 +156,50 @@ def test_print_summary_prints_a_row_per_group(capsys: pytest.CaptureFixture[str]
     output = capsys.readouterr().out
     assert "flips/s" in output
     assert output.count("noise_off") == 6  # grid and all, three regions each
+
+
+@pytest.mark.parametrize(
+    ("label", "noise_on", "blend"),
+    [
+        ("noise_off", False, None),
+        ("noise_on", True, None),
+        ("smooth_0.2", False, 0.2),
+        ("noise_off_smooth_0.5", False, 0.5),
+        ("noise_on_smooth_0.5", True, 0.5),
+    ],
+)
+def test_condition_labels_parse(label: str, noise_on: bool, blend: float | None) -> None:
+    assert ConditionSpec.parse(label) == ConditionSpec(noise_on=noise_on, blend=blend)
+
+
+@pytest.mark.parametrize("label", ["", "noise", "noise_onward", "smooth", "smooth_fast"])
+def test_an_unknown_condition_label_is_refused(label: str) -> None:
+    with pytest.raises(ValueError):
+        ConditionSpec.parse(label)
+
+
+def test_exit_speed_rows_pool_by_condition_and_straight_in_kmh() -> None:
+    first = _result("noise_off", "grid", [0.0])
+    second = _result("noise_off", "zone", [0.0])
+    other = _result("noise_on", "grid", [0.0])
+    first.straight_exits["S0"] = [10.0]
+    second.straight_exits["S0"] = [20.0, 30.0]
+    other.straight_exits["S0"] = [5.0]
+    rows = exit_speed_rows([first, second, other])
+    assert rows == [
+        {"condition": "noise_off", "straight": "S0", "exits": 3, "mean_exit_kmh": 72.0},
+        {"condition": "noise_on", "straight": "S0", "exits": 1, "mean_exit_kmh": 18.0},
+    ]
+
+
+def test_write_results_records_vale_and_straight_exits(tmp_path: Path) -> None:
+    result = _result("noise_off", "grid", [0.0, 0.0], arclength=5500.0)
+    result.straight_exits["S0"] = [10.0]
+    write_results([result], tmp_path)
+    with (tmp_path / "episodes.csv").open(encoding="utf-8") as handle:
+        episode = next(csv.DictReader(handle))
+    assert episode["vale"] == "ended_in_zone"
+    with (tmp_path / "straight_exits.csv").open(encoding="utf-8") as handle:
+        exit_row = next(csv.DictReader(handle))
+    assert exit_row["straight"] == "S0"
+    assert float(exit_row["mean_exit_kmh"]) == pytest.approx(36.0)

@@ -9,13 +9,17 @@ import numpy as np
 import pytest
 
 from fly_driver.analysis.steering_chatter import (
+    DriveTrace,
+    SmoothedSteering,
     SteeringStats,
     combine_stats,
     count_flips,
     drive,
     steering_stats,
+    straight_exit_speeds,
     straight_mask,
     trace_stats,
+    zone_outcome,
 )
 from fly_driver.envs.segments import Segment
 from fly_driver.interface import ControlVector
@@ -245,3 +249,96 @@ def test_trace_stats_counts_only_the_straight_frames_as_straight() -> None:
     assert (stats["straight"].frames, stats["straight"].flips) == (2, 1)
     assert (stats["corner"].frames, stats["corner"].flips) == (2, 1)
     assert stats["all"].flips == 2  # the -1, -1 across the boundary is not a flip either way
+
+
+def test_smoothing_follows_the_hand_computed_filter() -> None:
+    smoothed = SmoothedSteering(_ScriptedAgent([1.0, 1.0, 1.0, -1.0]), blend=0.5)
+    smoothed.reset(seed=0)
+    steers = [smoothed.act(None).steer for _ in range(4)]
+    # Starts centred: 0.5, 0.75, 0.875, then 0.875 + 0.5 * (-1 - 0.875) = -0.0625.
+    assert steers == pytest.approx([0.5, 0.75, 0.875, -0.0625])
+
+
+def test_a_blend_of_one_changes_nothing() -> None:
+    script = [1.0, -1.0, 0.25]
+    smoothed = SmoothedSteering(_ScriptedAgent(script), blend=1.0)
+    smoothed.reset()
+    assert [smoothed.act(None).steer for _ in script] == script
+
+
+def test_smoothing_leaves_throttle_and_brake_alone() -> None:
+    smoothed = SmoothedSteering(_ScriptedAgent([1.0]), blend=0.1)
+    smoothed.reset()
+    control = smoothed.act(None)
+    assert (control.throttle, control.brake) == (0.25, 0.75)
+
+
+def test_smoothing_shrinks_a_full_lock_chatter() -> None:
+    script = [1.0, -1.0] * 50
+    smoothed = SmoothedSteering(_ScriptedAgent(script), blend=0.2)
+    smoothed.reset()
+    filtered = [smoothed.act(None).steer for _ in script]
+    # Settled, it swings between +-1/9: x = 0.2 - 0.8x gives x = 0.2 / 1.8.
+    assert abs(filtered[-1]) == pytest.approx(1.0 / 9.0, abs=1e-6)
+    assert steering_stats(filtered[-10:], 50.0).mean_abs_steer == pytest.approx(1.0 / 9.0, abs=1e-6)
+
+
+def test_reset_recentres_the_filter_and_passes_the_seed_on() -> None:
+    agent = _ScriptedAgent([1.0, 1.0])
+    smoothed = SmoothedSteering(agent, blend=0.5)
+    smoothed.reset(seed=3)
+    assert smoothed.act(None).steer == pytest.approx(0.5)
+    smoothed.reset(seed=4)
+    assert smoothed.act(None).steer == pytest.approx(0.5)
+    assert agent.reset_seeds == [3, 4]
+
+
+@pytest.mark.parametrize("blend", [0.0, -0.1, 1.5])
+def test_a_blend_outside_its_range_is_refused(blend: float) -> None:
+    with pytest.raises(ValueError, match="blend"):
+        SmoothedSteering(_ScriptedAgent([0.0]), blend)
+
+
+def _trace_at(arclengths: list[float], speeds: list[float] | None = None) -> DriveTrace:
+    size = len(arclengths)
+    return DriveTrace(
+        seed=0,
+        start_m=arclengths[0] if arclengths else 0.0,
+        distance_m=0.0,
+        outcome="crashed",
+        steer=np.zeros(size),
+        throttle=np.zeros(size),
+        brake=np.zeros(size),
+        kingpin_rad=np.zeros(size),
+        speed_mps=np.array(speeds if speeds is not None else [0.0] * size),
+        arclength_m=np.array(arclengths, dtype=np.float64),
+        lateral_m=np.zeros(size),
+    )
+
+
+@pytest.mark.parametrize(
+    ("arclengths", "outcome"),
+    [
+        ([10.0, 20.0, 30.0], "not_reached"),
+        ([90.0, 110.0, 150.0], "ended_in_zone"),
+        ([90.0, 110.0, 150.0, 210.0], "passed"),
+        ([190.0, 5.0, 8.0], "passed"),  # left by crossing the start line
+    ],
+)
+def test_zone_outcome(arclengths: list[float], outcome: str) -> None:
+    assert zone_outcome(_trace_at(arclengths), 100.0, 200.0) == outcome
+
+
+def test_exit_speed_is_the_last_frame_on_the_straight() -> None:
+    trace = _trace_at([50.0, 99.0, 105.0], [10.0, 20.0, 30.0])
+    assert straight_exit_speeds(trace, SEGMENTS) == {"S0": [20.0]}
+
+
+def test_a_straight_the_drive_ended_on_has_no_exit() -> None:
+    trace = _trace_at([50.0, 60.0], [10.0, 20.0])
+    assert straight_exit_speeds(trace, SEGMENTS) == {}
+
+
+def test_a_straight_driven_twice_has_two_exits() -> None:
+    trace = _trace_at([50.0, 105.0, 50.0, 60.0, 105.0], [1.0, 2.0, 3.0, 4.0, 5.0])
+    assert straight_exit_speeds(trace, SEGMENTS) == {"S0": [1.0, 4.0]}

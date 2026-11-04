@@ -30,13 +30,16 @@ __all__ = [
     "FLIP_DEADBAND",
     "FULL_LOCK",
     "DriveTrace",
+    "SmoothedSteering",
     "SteeringStats",
     "combine_stats",
     "count_flips",
     "drive",
+    "straight_exit_speeds",
     "straight_mask",
     "steering_stats",
     "trace_stats",
+    "zone_outcome",
 ]
 
 #: Steering within this of centre counts as neither side: 5% of lock, about 0.9 degrees.
@@ -310,6 +313,82 @@ def drive(env: Any, agent: Any, *, seed: int, max_steps: int | None = None) -> D
         arclength_m=columns[5],
         lateral_m=columns[6],
     )
+
+
+class SmoothedSteering:
+    """A driver whose steering passes through a first-order low-pass filter at run time.
+
+    This asks what the steering chatter costs a policy that was not trained with the filter,
+    so it is a one-sided test. If the car drives better, chatter was costing something. If it
+    drives worse, that clears nothing, because the policy learned with its own steering in the
+    loop and the filter adds a lag it never saw. Throttle and brake pass through untouched.
+
+    Args:
+        agent: Anything with ``reset(seed=...)`` and ``act(frame)``.
+        blend: Share of the gap to the new command closed each frame, in ``(0, 1]``. 1 changes
+            nothing. At 50 Hz, 0.5 is a time constant of about 29 ms and 0.2 about 90 ms.
+
+    Raises:
+        ValueError: If ``blend`` is outside ``(0, 1]``.
+    """
+
+    def __init__(self, agent: Any, blend: float) -> None:
+        if not 0.0 < blend <= 1.0:
+            raise ValueError(f"blend must be in (0, 1], got {blend}")
+        self.agent = agent
+        self.blend = float(blend)
+        self._steer = 0.0
+
+    def reset(self, seed: int | None = None) -> None:
+        """Start an episode with the steering centred, as the car starts."""
+        self.agent.reset(seed=seed)
+        self._steer = 0.0
+
+    def act(self, frame: Any) -> ControlVector:
+        """The wrapped driver's control, with its steering filtered."""
+        control = ControlVector.from_any(self.agent.act(frame))
+        self._steer += self.blend * (control.steer - self._steer)
+        return ControlVector(steer=self._steer, throttle=control.throttle, brake=control.brake)
+
+
+def zone_outcome(trace: DriveTrace, start_m: float, end_m: float) -> str:
+    """What a drive did at a stretch of track.
+
+    Args:
+        trace: The drive.
+        start_m: Where the stretch begins.
+        end_m: Where it ends.
+
+    Returns:
+        ``not_reached``, ``ended_in_zone``, or ``passed`` if the drive left it and carried on.
+    """
+    inside = (trace.arclength_m >= start_m) & (trace.arclength_m <= end_m)
+    if not inside.any():
+        return "not_reached"
+    return "ended_in_zone" if inside[-1] else "passed"
+
+
+def straight_exit_speeds(trace: DriveTrace, segments: Sequence[Segment]) -> dict[str, list[float]]:
+    """Speed on the last frame of each straight the drive drove off the end of.
+
+    A straight the drive ended on has no exit, because it never finished the straight.
+
+    Args:
+        trace: The drive.
+        segments: The whole lap.
+
+    Returns:
+        Exit speeds in m/s, keyed by segment name. A straight driven twice has two.
+    """
+    exits: dict[str, list[float]] = {}
+    for segment in segments:
+        if segment.is_corner:
+            continue
+        inside = (trace.arclength_m >= segment.start_m) & (trace.arclength_m < segment.end_m)
+        for _, stop in _contiguous_runs(inside):
+            if stop < inside.size:
+                exits.setdefault(segment.name, []).append(float(trace.speed_mps[stop - 1]))
+    return exits
 
 
 def trace_stats(
