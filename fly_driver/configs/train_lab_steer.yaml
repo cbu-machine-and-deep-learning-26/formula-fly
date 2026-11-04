@@ -2,7 +2,7 @@
 # shorter run. It is not what `train start` runs, and it is not a replacement recipe.
 #
 # Why: the best checkpoint flips its steering 5.18 times a second with noise off, at full lock on
-# 68% of frames, and that wobble alone crashes a well-aimed car at 170-210 km/h on a straight. The
+# 68% of frames, and that wobble alone crashes a well-aimed car at 155-175 km/h on a straight. The
 # policy's pedals depend on the wobble, so removing it at run time fails. It has to be trained out.
 #
 # 0.25 m is about 25% of pace at today's chatter. At 108 km/h pace pays about 16 m/s, and the
