@@ -5,7 +5,7 @@ comparing with the recipe it changed, so this reads each folder's runs and print
 between their configs, then the numbers that decide it.
 
 Scores come from :mod:`fly_driver.training.lab`, so they are the supervisor's own: uniform-start
-drives only. Vale survival counts every drive, because that is what a focused start practises.
+drives only. Corner survival counts every drive, because that is what a focused start practises.
 Nothing here writes anywhere, so it is safe to run while a folder is training.
 """
 
@@ -35,10 +35,10 @@ __all__ = [
     "summarize_run",
 ]
 
-#: Vale, the track's corner T10 (fly_driver.envs.segments). A drive has to leave the whole corner
-#: to count as through it: 9 of 6,210 arrivals did in the baseline runs of 2026-11-03 and 04.
-VALE_FROM_M = 5485.0
-VALE_TO_M = 5810.0
+#: The corners the Vale recipe practises, named as fly_driver.envs.segments names them, with the
+#: arclengths it finds. A drive has to leave the whole corner to count as through it. In the
+#: baseline runs of 2026-11-03 and 04: T3 1 of 2,416, T5 195 of 2,809, T10 (Vale) 9 of 6,210.
+WATCHED_CORNERS = {"T3": (855.0, 1115.0), "T5": (1895.0, 2310.0), "T10": (5485.0, 5810.0)}
 LAP_M = 5886.8
 
 #: Config keys that name a run rather than describe its recipe.
@@ -58,8 +58,8 @@ class RunSummary:
         best_window_m: The best 50-drive window with a saved checkpoint, or ``None``.
         longest_m: The longest single drive, of every kind.
         laps: Completed laps, of every kind.
-        vale_arrivals: Times a drive reached Vale, not counting one that started inside it.
-        vale_passes: How many of those got through.
+        corners: ``{name: (arrivals, passes)}`` for each of :data:`WATCHED_CORNERS`. An arrival
+            doesn't count a drive that started inside the corner.
         best_eval_m: The furthest deterministic drive from the grid, or ``None``.
         eval_laps: Laps completed by those deterministic drives.
         entropy: Policy entropy at the last update, or ``None``.
@@ -74,8 +74,7 @@ class RunSummary:
     best_window_m: float | None
     longest_m: float
     laps: int
-    vale_arrivals: int
-    vale_passes: int
+    corners: Mapping[str, tuple[int, int]]
     best_eval_m: float | None
     eval_laps: int
     entropy: float | None
@@ -112,8 +111,8 @@ def config_differences(
 def corner_survival(
     drives: Iterable[tuple[float, float]],
     *,
-    from_m: float = VALE_FROM_M,
-    to_m: float = VALE_TO_M,
+    from_m: float,
+    to_m: float,
     lap_m: float = LAP_M,
 ) -> tuple[int, int]:
     """How often drives reached a stretch of track, and how often they got through it.
@@ -174,7 +173,10 @@ def summarize_run(run_dir: Path) -> RunSummary:
         start_m, distance_m = _number(row, "start_m"), _number(row, "distance_m")
         if start_m is not None and distance_m is not None:
             positions.append((start_m, distance_m))
-    arrivals, passes = corner_survival(positions)
+    corners = {
+        name: corner_survival(positions, from_m=from_m, to_m=to_m)
+        for name, (from_m, to_m) in WATCHED_CORNERS.items()
+    }
 
     eval_rows = [
         row for path in sorted(run_dir.glob("eval/step_*/episodes.csv")) for row in _read_rows(path)
@@ -192,8 +194,7 @@ def summarize_run(run_dir: Path) -> RunSummary:
         best_window_m=None if window is None else window.score,
         longest_m=max((drive.distance_m for drive in drives), default=0.0),
         laps=sum(drive.lap_complete for drive in drives),
-        vale_arrivals=arrivals,
-        vale_passes=passes,
+        corners=corners,
         best_eval_m=max(eval_distances, default=None),
         eval_laps=sum(row.get("lap_complete") == "True" for row in eval_rows),
         entropy=_number(last_update, "entropy"),
@@ -218,10 +219,14 @@ def _shown(value: float | None, digits: int = 0) -> str:
     return "-" if value is None else f"{value:,.{digits}f}"
 
 
-def _folder_lines(folder: Path, runs: list[RunSummary]) -> list[str]:
-    arrivals = sum(run.vale_arrivals for run in runs)
-    passes = sum(run.vale_passes for run in runs)
+def _corner_line(name: str, runs: list[RunSummary]) -> str:
+    arrivals = sum(run.corners[name][0] for run in runs)
+    passes = sum(run.corners[name][1] for run in runs)
     survival = f"{100.0 * passes / arrivals:.1f}%" if arrivals else "-"
+    return f"  through {name:<12}{survival}  ({passes:,} of {arrivals:,} arrivals)"
+
+
+def _folder_lines(folder: Path, runs: list[RunSummary]) -> list[str]:
     best = [run.best_window_m for run in runs if run.best_window_m is not None]
     evals = [run.best_eval_m for run in runs if run.best_eval_m is not None]
     entropies = [run.entropy for run in runs if run.entropy is not None]
@@ -233,21 +238,24 @@ def _folder_lines(folder: Path, runs: list[RunSummary]) -> list[str]:
         f"  laps                {sum(run.laps for run in runs)}",
         f"  best 50-drive score {_shown(max(best, default=None))} m  (uniform-start drives)",
         f"  longest drive       {_shown(max((run.longest_m for run in runs), default=None))} m",
-        f"  through Vale        {survival}  ({passes:,} of {arrivals:,} arrivals)",
+        *(_corner_line(name, runs) for name in WATCHED_CORNERS),
         f"  best grid eval      {_shown(max(evals, default=None))} m, "
         f"{sum(run.eval_laps for run in runs)} laps (no noise)",
         f"  entropy, |steer|    "
         f"{_shown(statistics.mean(entropies) if entropies else None, 2)}, "
         f"{_shown(statistics.mean(steers) if steers else None, 2)}  (each run's last update)",
         f"  {'run':<24}{'steps':>10}{'drives':>8}{'last 50':>9}{'best 50':>9}{'longest':>9}"
-        f"{'Vale':>12}{'laps':>6}",
+        + "".join(f"{name:>11}" for name in WATCHED_CORNERS)
+        + f"{'laps':>6}",
     ]
     for run in runs:
-        vale = f"{run.vale_passes}/{run.vale_arrivals}"
+        corners = "".join(
+            f"{f'{passes}/{arrivals}':>11}" for arrivals, passes in run.corners.values()
+        )
         name = f"{run.run} s{run.seed}"
         lines.append(
             f"  {name:<24}{run.env_steps:>10,}{run.drives:>8,}{_shown(run.last_50_m):>9}"
-            f"{_shown(run.best_window_m):>9}{_shown(run.longest_m):>9}{vale:>12}{run.laps:>6}"
+            f"{_shown(run.best_window_m):>9}{_shown(run.longest_m):>9}{corners}{run.laps:>6}"
         )
     return lines
 
@@ -281,5 +289,5 @@ def format_comparison(base: Path, other: Path, *, run_prefix: str = "lab_") -> s
     for folder in (base, other):
         lines.append("")
         lines += _folder_lines(folder, [summarize_run(run_dir) for run_dir in run_dirs[folder]])
-    scored_note = "Scores count uniform-start drives only; Vale and laps count every drive."
+    scored_note = "Scores count uniform-start drives only; corners and laps count every drive."
     return "\n".join([*lines, "", scored_note])

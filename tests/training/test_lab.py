@@ -230,7 +230,10 @@ def test_the_vale_recipe_is_train_lab_plus_its_two_changes_and_nothing_else() ->
     recipe = TrainConfig.from_yaml(CONFIGS / "train_lab.yaml")
     vale = TrainConfig.from_yaml(CONFIGS / "train_lab_vale.yaml")
 
-    assert vale.env.params["start_focus"] == {"share": 0.5, "from_m": 4000.0, "to_m": 5200.0}
+    assert vale.env.params["start_focus"] == {
+        "share": 0.5,
+        "zones": [[470.0, 620.0], [1290.0, 1700.0], [4800.0, 5200.0]],
+    }
     assert vale.ppo.entropy_coef == 0.002
     assert recipe.ppo.entropy_coef == 0.005
 

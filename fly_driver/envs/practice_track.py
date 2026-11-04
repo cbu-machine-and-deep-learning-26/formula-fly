@@ -231,7 +231,7 @@ class PracticeTrack:
             assumes the grid: the lap timer waits for the first crossing of the line
             (the out lap), segments re-anchor at the start, and progress is a per-step
             delta that is safe across the seam.
-        start_focus: Start a share of the ``random_start`` episodes inside a zone of the
+        start_focus: Start a share of the ``random_start`` episodes inside zones of the
             track, as a :class:`~fly_driver.envs.start_focus.StartFocus` or a mapping of its
             fields. ``None``, the default, leaves every start uniform. Needs ``random_start``.
             ``info["start_focused"]`` says which kind the episode's start was.
@@ -326,11 +326,13 @@ class PracticeTrack:
             )
 
         self.centerline = Centerline.load()
-        if self.start_focus is not None and self.start_focus.to_m > self.centerline.length:
-            raise ValueError(
-                f"start_focus.to_m={self.start_focus.to_m} is past the end of the "
-                f"{self.centerline.length:.0f} m lap"
-            )
+        if self.start_focus is not None:
+            furthest_m = max(to_m for _, to_m in self.start_focus.zones)
+            if furthest_m > self.centerline.length:
+                raise ValueError(
+                    f"a start_focus zone ends at {furthest_m}, past the end of the "
+                    f"{self.centerline.length:.0f} m lap"
+                )
         self._model = mujoco.MjModel.from_xml_string(
             assemble_model_xml(self.centerline, self.scene, self.car)
         )

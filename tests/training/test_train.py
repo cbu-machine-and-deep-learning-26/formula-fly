@@ -315,7 +315,7 @@ class TestRandomStartReachesOnlyTheTrainingEnv:
 
     def test_a_start_focus_is_training_only_too(self, monkeypatch):
         """A focus left on an evaluation env would be refused for having no random start."""
-        focus = {"share": 0.5, "from_m": 4000.0, "to_m": 5200.0}
+        focus = {"share": 0.5, "zones": [[4800.0, 5200.0]]}
         params = {"random_start": True, "start_focus": focus, "track_limit": 0.15}
         seen: list[dict] = []
         monkeypatch.setitem(

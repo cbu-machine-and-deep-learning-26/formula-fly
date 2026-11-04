@@ -11,42 +11,60 @@ pytest.importorskip("yaml")
 
 from fly_driver.analysis.lab_compare import (  # noqa: E402
     LAP_M,
-    VALE_FROM_M,
-    VALE_TO_M,
+    WATCHED_CORNERS,
     config_differences,
     corner_survival,
     format_comparison,
     summarize_run,
 )
 
+VALE_FROM_M, VALE_TO_M = WATCHED_CORNERS["T10"]
+
+
+def _vale(drives: list[tuple[float, float]]) -> tuple[int, int]:
+    return corner_survival(drives, from_m=VALE_FROM_M, to_m=VALE_TO_M)
+
 
 class TestCornerSurvival:
-    """Vale survival is the number GH-103 is judged on, so every case is worked out by hand."""
+    """Corner survival is the number GH-103 is judged on, so every case is worked out by hand."""
 
     def test_short_of_the_corner_is_no_arrival(self) -> None:
-        assert corner_survival([(5000.0, 400.0)]) == (0, 0)
+        assert _vale([(5000.0, 400.0)]) == (0, 0)
 
     def test_ending_in_the_corner_is_an_arrival_and_no_pass(self) -> None:
-        assert corner_survival([(5000.0, 515.0)]) == (1, 0)
+        assert _vale([(5000.0, 515.0)]) == (1, 0)
 
     def test_leaving_the_corner_is_a_pass(self) -> None:
-        assert corner_survival([(5000.0, 900.0)]) == (1, 1)
+        assert _vale([(5000.0, 900.0)]) == (1, 1)
 
     def test_starting_inside_the_corner_has_not_arrived_at_it(self) -> None:
         """A start past the corner's entry must not count as surviving it."""
-        assert corner_survival([(5550.0, 200.0)]) == (0, 0)
+        assert _vale([(5550.0, 200.0)]) == (0, 0)
 
     def test_a_start_after_the_corner_meets_it_on_the_next_lap(self) -> None:
         reaches_it = LAP_M - 5700.0 + VALE_FROM_M + 10.0
-        assert corner_survival([(5700.0, reaches_it)]) == (1, 0)
-        assert corner_survival([(5700.0, reaches_it - 20.0)]) == (0, 0)
+        assert _vale([(5700.0, reaches_it)]) == (1, 0)
+        assert _vale([(5700.0, reaches_it - 20.0)]) == (0, 0)
 
     def test_going_round_again_meets_it_twice(self) -> None:
         once_round_and_through = LAP_M + (VALE_TO_M - VALE_FROM_M) + 500.0
-        assert corner_survival([(5000.0, once_round_and_through)]) == (2, 2)
+        assert _vale([(5000.0, once_round_and_through)]) == (2, 2)
 
     def test_the_counts_add_up_over_many_drives(self) -> None:
-        assert corner_survival([(5000.0, 515.0), (5000.0, 900.0), (100.0, 50.0)]) == (2, 1)
+        assert _vale([(5000.0, 515.0), (5000.0, 900.0), (100.0, 50.0)]) == (2, 1)
+
+    def test_the_watched_corners_are_where_the_track_says_they_are(self) -> None:
+        """The comparison must not quietly measure the wrong stretch if the track changes."""
+        from fly_driver.envs.centerline import Centerline
+        from fly_driver.envs.segments import find_segments
+
+        centerline = Centerline.load()
+        corners = {segment.name: segment for segment in find_segments(centerline)}
+        assert pytest.approx(centerline.length, abs=0.1) == LAP_M
+        for name, (from_m, to_m) in WATCHED_CORNERS.items():
+            assert corners[name].is_corner
+            assert corners[name].start_m == pytest.approx(from_m, abs=1.0)
+            assert corners[name].start_m + corners[name].length_m == pytest.approx(to_m, abs=1.0)
 
 
 class TestConfigDifferences:
@@ -116,7 +134,8 @@ def test_a_run_reads_the_supervisors_score_and_counts_every_drive_for_vale(tmp_p
     assert summary.drives == 100
     assert summary.last_50_m == 1000.0, "the score is the uniform-start drives'"
     assert summary.best_window_m == 1000.0
-    assert (summary.vale_arrivals, summary.vale_passes) == (50, 50)
+    assert summary.corners["T10"] == (50, 50)
+    assert summary.corners["T3"] == (50, 0), "the uniform drives end at 1,100 m, inside T3"
     assert summary.env_steps == 4096
     assert summary.entropy == 2.1, "the last update's, not the first's"
     assert summary.mean_abs_steer == 0.85
@@ -133,7 +152,7 @@ def test_a_run_from_before_the_new_columns_still_reads(tmp_path: Path) -> None:
     assert summary.drives == 60
     assert summary.last_50_m == 500.0
     assert summary.mean_abs_steer is None
-    assert (summary.vale_arrivals, summary.best_eval_m) == (0, None)
+    assert (summary.corners["T10"], summary.best_eval_m) == ((0, 0), None)
 
 
 def test_a_run_with_nothing_yet_does_not_crash(tmp_path: Path) -> None:
@@ -149,8 +168,9 @@ def test_the_comparison_marks_the_difference_and_prints_both_folders(tmp_path: P
     _write_run(test, "lab_20261104_g1", 0, 0.002, [(5000.0, 900.0, False)] * 60)
     text = format_comparison(base, test)
     assert "ppo.entropy_coef: 0.005 -> 0.002" in text
-    assert "through Vale        0.0%  (0 of 60 arrivals)" in text
-    assert "through Vale        100.0%  (60 of 60 arrivals)" in text
+    assert "through T10         0.0%  (0 of 60 arrivals)" in text
+    assert "through T10         100.0%  (60 of 60 arrivals)" in text
+    assert "through T3          -  (0 of 0 arrivals)" in text
     assert str(base) in text
     assert str(test) in text
 

@@ -93,7 +93,7 @@ def test_brain_and_random_start_runs_are_their_own_models_not_pooled(tmp_path: P
     focused = EnvConfig(
         params={
             "random_start": True,
-            "start_focus": {"share": 0.5, "from_m": 4000.0, "to_m": 5200.0},
+            "start_focus": {"share": 0.5, "zones": [[4800.0, 5200.0]]},
         }
     )
     for name, brain, env in (
