@@ -38,6 +38,7 @@ from fly_driver.training.lab import (  # noqa: E402
     read_best,
     read_drives,
     recent_score,
+    scored_drives,
     seed_to_restart,
     trainer_processes,
     write_json,
@@ -297,7 +298,7 @@ def status() -> int:
     )
     for seed in state.seeds:
         drives = read_drives(RUNS_DIR / latest[seed] / f"seed_{seed}")
-        last = drives[-WINDOW_DRIVES:]
+        last = scored_drives(drives)[-WINDOW_DRIVES:]
         score = recent_score(drives)
         seconds = sum(drive.steps for drive in last) / FRAME_RATE_HZ
         speed = sum(drive.distance_m for drive in last) / seconds * 3.6 if seconds else None
