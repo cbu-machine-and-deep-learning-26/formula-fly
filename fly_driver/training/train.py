@@ -50,6 +50,7 @@ from fly_driver.brains.blank import blank_trainable_parameter_count
 from fly_driver.brains.central_complex import CentralComplexBrain
 from fly_driver.drivers import DirectDriveAgent
 from fly_driver.envs.assetto_corsa import AssettoCorsaTrack
+from fly_driver.envs.car import CarConfig
 from fly_driver.envs.dummy_track import DummyTrackEnv
 from fly_driver.envs.practice_track import PracticeTrack
 from fly_driver.envs.scene import SceneConfig
@@ -116,6 +117,8 @@ def _build_practice_track(config: EnvConfig) -> PracticeTrack:
     if "racing_line" in params:
         scene_kwargs["racing_line"] = bool(params.pop("racing_line"))
     scene = SceneConfig(**scene_kwargs) if scene_kwargs else None
+    if "car" in params:
+        params["car"] = CarConfig(**params["car"])
     return PracticeTrack(scene=scene, max_steps=config.max_steps, **params)
 
 

@@ -305,3 +305,74 @@ class TestTheDefaultIsUnchanged:
         assert total == pytest.approx(1.0 - 0.008 - 10.0)
         lap = _info(speed_mps=50.0, lap_time=100.0)
         assert reward(lap, DT)[1]["lap_bonus"] == 100.0
+
+
+#: Fast enough that a step's pace is well above the steering costs below: 1 m at 50 m/s, and
+#: REWARD's target pace is 5886.8 / 105 = about 56.06 m/s, so the weight is about 0.892.
+_STEER_SPEED_MPS = 50.0
+
+
+def _steering(steer_change: float, *, depth: float = 0.0, speed_mps: float = _STEER_SPEED_MPS):
+    info = {**_info(speed_mps=speed_mps, depth=depth), "steer_change": steer_change}
+    return replace(REWARD, steer_change_m=0.25)(info, DT)
+
+
+def test_steering_cost_is_off_by_default_and_leaves_no_term() -> None:
+    info = {**_info(speed_mps=_STEER_SPEED_MPS), "steer_change": 2.0}
+    total, terms = REWARD(info, DT)
+    assert "steering" not in terms
+    assert total == pytest.approx(REWARD(_info(speed_mps=_STEER_SPEED_MPS), DT)[0])
+
+
+def test_steering_cost_matches_a_hand_computed_step() -> None:
+    pace = REWARD(_info(speed_mps=_STEER_SPEED_MPS), DT)[1]["pace"]
+    total, terms = _steering(1.2)
+    assert terms["steering"] == pytest.approx(-0.25 * 1.2)
+    assert total == pytest.approx(pace - 0.3)
+    assert sum(terms.values()) == pytest.approx(total)
+
+
+def test_a_lock_to_lock_flip_costs_twice_the_weight() -> None:
+    assert _steering(2.0)[1]["steering"] == pytest.approx(-0.5)
+
+
+def test_holding_a_steady_lock_costs_nothing() -> None:
+    assert _steering(0.0)[1]["steering"] == 0.0
+
+
+def test_steering_cost_scales_with_the_reward() -> None:
+    reward = replace(REWARD, steer_change_m=0.25, scale=0.01)
+    info = {**_info(speed_mps=_STEER_SPEED_MPS), "steer_change": 2.0}
+    assert reward(info, DT)[1]["steering"] == pytest.approx(-0.005)
+
+
+def test_steering_cost_never_makes_a_forward_step_worth_less_than_zero() -> None:
+    # At 5 m/s the step's pace is tiny, far below a flip's 0.5 m.
+    total, terms = _steering(2.0, speed_mps=5.0)
+    assert terms["steering"] == pytest.approx(-terms["pace"])
+    assert total == pytest.approx(0.0)
+
+
+def test_kerb_and_steering_costs_share_one_cap() -> None:
+    weights = REWARD.penalty_weights
+    depth = weights.maximum_depth
+    total, terms = _steering(2.0, depth=depth, speed_mps=10.0)
+    assert terms["track_limits"] + terms["steering"] == pytest.approx(-terms["pace"])
+    assert total >= -1e-12
+
+
+def test_reversing_is_not_charged_for_steering() -> None:
+    assert _steering(2.0, speed_mps=-5.0)[1]["steering"] == 0.0
+
+
+def test_ending_the_drive_still_never_beats_driving_on_with_the_steering_cost() -> None:
+    reward = replace(REWARD, steer_change_m=0.25)
+    worst_step = {**_info(speed_mps=MIN_SPEED_MPS), "steer_change": 2.0}
+    crash = {**_info(speed_mps=MIN_SPEED_MPS, crashed=True), "steer_change": 2.0}
+    assert reward(worst_step, DT)[0] >= 0.0
+    assert reward(crash, DT)[0] < 0.0
+
+
+def test_a_negative_steering_cost_is_refused() -> None:
+    with pytest.raises(ValueError, match="steer_change_m"):
+        replace(REWARD, steer_change_m=-0.1)

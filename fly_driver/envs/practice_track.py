@@ -389,6 +389,7 @@ class PracticeTrack:
         self._done = True
         self._steps = 0
         self._previous_s = 0.0
+        self._previous_steer = 0.0
         self._odometer_m = 0.0
         self._corner_paid_at: dict[int, float] = {}
         self._frame: Frame | None = None
@@ -500,6 +501,7 @@ class PracticeTrack:
         self._steps = 0
         self._slow_steps = 0
         self._done = False
+        self._previous_steer = 0.0
 
         projection = self._project()
         self._previous_s = projection.arclength
@@ -544,6 +546,8 @@ class PracticeTrack:
             raise RuntimeError("call reset() before step(); the episode has ended")
 
         control = ControlVector.from_any(action)
+        steer_change = abs(control.steer - self._previous_steer)
+        self._previous_steer = control.steer
         self._dynamics.step(control, self._data, self._substeps)
         self._steps += 1
         truncated = self._max_steps is not None and self._steps >= self._max_steps
@@ -613,6 +617,7 @@ class PracticeTrack:
             stalled=stalled,
         )
         info["corner_complete"] = corner_complete
+        info["steer_change"] = steer_change  # for LapTimeReward's optional steering cost
         reward, terms = self.reward(info, self.dt)
         info["reward_terms"] = terms
 

@@ -173,6 +173,25 @@ class RolloutBuffer:
         self.returns[:] = self.advantages + self.values
 
 
+def output_range_excess(action_mean: torch.Tensor) -> torch.Tensor:
+    """How far raw action means go past +-1, squared and summed per sample (GH-104).
+
+    A clipped action past the edge drives the car exactly as the edge does, so nothing else stops
+    the raw mean growing: the best checkpoint's steering has a median of 1.7. A mean that far out
+    can only reach the car as full lock or a closed pedal, whatever the noise does. Both sides
+    count for the pedals too. A pedal mean a little below 0 is a closed pedal that noise rarely
+    opens, which is fine, and one at -3 is a closed pedal the policy has stopped being able to
+    move gently.
+
+    Args:
+        action_mean: Raw means, ``(batch, 3)``.
+
+    Returns:
+        ``(batch,)``, zero for every sample inside the range.
+    """
+    return torch.relu(action_mean.abs() - 1.0).square().sum(-1)
+
+
 @dataclass(frozen=True)
 class UpdateStats:
     """What one :meth:`PPOLearner.update` did."""
@@ -340,6 +359,10 @@ class PPOLearner:
                     - config.entropy_coef * entropy_mean
                     + config.value_coef * value_loss
                 )
+                if config.output_range_coef > 0.0:
+                    action_mean, _ = self.policy(batch_features)
+                    excess = output_range_excess(action_mean).mean()
+                    loss = loss + config.output_range_coef * excess
                 if not torch.isfinite(loss):
                     raise RuntimeError(
                         f"non-finite PPO loss at update {update_index}: policy "
