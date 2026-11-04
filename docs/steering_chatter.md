@@ -41,3 +41,5 @@ python scripts/steering_source.py
 `LapTimeReward.steer_change_m` charges for how far the steering moved since the last frame. It's off by default, and off leaves no `steering` term, no new CSV column, and the same rewards and physics as before. It shares the kerb cost's cap, so a step that moves forward is still worth at least 0.
 
 `fly_driver/configs/train_lab_steer.yaml` is the trial recipe: `train_lab.yaml` plus `steer_change_m: 0.25` and a shorter run. It isn't what `train start` runs.
+
+**The trial failed, so don't use this recipe.** Over 1.5M steps and 3 seeds, it missed its target on flips and on mean |steer| at every checkpoint. By the final checkpoints the car was faster (95th percentile 194-233 km/h, against 141) but crashed sooner (411-629 m, against 1,026 m), and no seed got through T10. The cost is kept so that result can be reproduced. If chatter gets another try, test a limit on the raw output's size or lower exploration noise, not a higher weight on this cost.

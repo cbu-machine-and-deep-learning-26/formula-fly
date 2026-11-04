@@ -1,6 +1,10 @@
 # A trial of the steering-change cost (GH-104): train_lab.yaml plus reward.steer_change_m, and a
 # shorter run. It is not what `train start` runs, and it is not a replacement recipe.
 #
+# THE TRIAL FAILED: don't use this for training. It missed its target on all 3 seeds. By the final
+# checkpoints the car was faster but crashed sooner (411-629 m, against 1,026 m). It is kept so the
+# result can be reproduced. See docs/steering_chatter.md.
+#
 # Why: the best checkpoint flips its steering 5.18 times a second with noise off, at full lock on
 # 68% of frames, and that wobble alone crashes a well-aimed car at 155-175 km/h on a straight. The
 # policy's pedals depend on the wobble, so removing it at run time fails. It has to be trained out.
