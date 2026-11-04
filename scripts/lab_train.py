@@ -28,10 +28,12 @@ from fly_driver.interface import FRAME_RATE_HZ  # noqa: E402
 from fly_driver.training.config import TrainConfig  # noqa: E402
 from fly_driver.training.lab import (  # noqa: E402
     BEST_POLICY,
+    RESTART_FRACTION,
     WINDOW_DRIVES,
     Process,
     State,
     check_seeds,
+    clear_record,
     next_run_name,
     one_per_trainer,
     promote_best,
@@ -169,7 +171,9 @@ def _launch_run(state: State, base: TrainConfig, trainers: Trainers, seeds: Sequ
 # -- commands -------------------------------------------------------------------------------
 
 
-def _supervise_once(state: State, base: TrainConfig, trainers: Trainers) -> None:
+def _supervise_once(
+    state: State, base: TrainConfig, trainers: Trainers, restart_fraction: float
+) -> None:
     """One 10-minute check: keep the best, relaunch the dead, then maybe restart the worst."""
     promoted = promote_best(state.runs, RUNS_DIR, BEST_DIR)
     if promoted:
@@ -189,7 +193,7 @@ def _supervise_once(state: State, base: TrainConfig, trainers: Trainers) -> None
     scores = {seed: score for seed in trainers if (score := recent_score(drives[seed])) is not None}
     updates = {seed: drives[seed][-1].update for seed in scores}
     best_score = float(read_best(BEST_DIR)["score"])
-    worst = seed_to_restart(scores, updates, best_score)
+    worst = seed_to_restart(scores, updates, best_score, restart_fraction)
     if worst is None:
         rounded = {seed: round(score) for seed, score in scores.items()}
         log(f"restart check: none needed, last-50 {rounded}, best {best_score:.0f} m")
@@ -197,11 +201,18 @@ def _supervise_once(state: State, base: TrainConfig, trainers: Trainers) -> None
     kill_tree(trainers[worst].pid)
     trainers[worst].wait()
     run = _launch_run(state, base, trainers, [worst])
-    log(f"seed {worst} at {scores[worst]:.0f} m, under 70% of {best_score:.0f} m: now {run}")
+    share = f"{restart_fraction:.0%}"
+    log(f"seed {worst} at {scores[worst]:.0f} m, under {share} of {best_score:.0f} m: now {run}")
 
 
-def start(config_path: Path, seeds: Sequence[int] | None) -> int:
+def start(
+    config_path: Path,
+    seeds: Sequence[int] | None,
+    restart_fraction: float = RESTART_FRACTION,
+) -> int:
     """Launch the trainers and supervise them until Ctrl-C or ``stop``."""
+    if not 0.0 <= restart_fraction < 1.0:
+        raise ValueError(f"--restart-fraction must be in [0, 1), got {restart_fraction}")
     base = TrainConfig.from_yaml(config_path)
     seeds = list(base.seeds) if seeds is None else list(seeds)
     check_seeds(seeds)
@@ -232,7 +243,7 @@ def start(config_path: Path, seeds: Sequence[int] | None) -> int:
         while True:
             time.sleep(CHECK_SECONDS)
             try:
-                _supervise_once(state, base, trainers)
+                _supervise_once(state, base, trainers, restart_fraction)
             except (OSError, ValueError) as error:
                 # On Windows a starting trainer's open checkpoint blocks the swap, and a
                 # hand-edited best.json can be wrong. Neither should cost a day of training.
@@ -329,6 +340,16 @@ def main(argv: list[str] | None = None) -> int:
     start_parser = commands.add_parser("start", help="train in the foreground; Ctrl-C stops it")
     start_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     start_parser.add_argument("--seeds", type=int, nargs="+", help="default: the config's seeds")
+    start_parser.add_argument(
+        "--restart-fraction",
+        type=float,
+        default=RESTART_FRACTION,
+        help="restart the worst seed below this share of the best window; 0 never restarts",
+    )
+    record_parser = commands.add_parser(
+        "clear-record", help="forget weights/best's score, for a new car or reward; keeps weights"
+    )
+    record_parser.add_argument("--note", required=True, help="where this checkpoint came from")
     commands.add_parser("status", help="what is training, and how well")
     commands.add_parser("stop", help="stop the supervisor and its trainers")
     args = parser.parse_args(argv)
@@ -337,7 +358,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "stop":
         return stop()
     try:
-        return start(args.config, args.seeds)
+        if args.command == "clear-record":
+            log(f"cleared the record: {clear_record(BEST_DIR, args.note)}")
+            return 0
+        return start(args.config, args.seeds, args.restart_fraction)
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(f"not starting: {error}", file=sys.stderr)
         return 2

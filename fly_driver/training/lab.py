@@ -148,7 +148,10 @@ def recent_score(drives: Sequence[Drive]) -> float | None:
 
 
 def seed_to_restart(
-    scores: Mapping[int, float], last_updates: Mapping[int, int], best_score: float
+    scores: Mapping[int, float],
+    last_updates: Mapping[int, int],
+    best_score: float,
+    restart_fraction: float = RESTART_FRACTION,
 ) -> int | None:
     """The seed to restart from best this cycle, or ``None``. Only the worst seed can go.
 
@@ -156,12 +159,13 @@ def seed_to_restart(
         scores: Each seed's last-50 mean distance. A seed with fewer drives is left out.
         last_updates: Each seed's last PPO update in its current run.
         best_score: The recorded best window.
+        restart_fraction: Restart only below this share of ``best_score``. 0 never restarts.
     """
     if not scores:
         return None
     worst = min(scores, key=lambda seed: scores[seed])
     is_warmed_up = last_updates[worst] > WARMUP_UPDATES
-    return worst if is_warmed_up and scores[worst] < RESTART_FRACTION * best_score else None
+    return worst if is_warmed_up and scores[worst] < restart_fraction * best_score else None
 
 
 def trainer_processes(processes: Sequence[Process]) -> list[Process]:
@@ -245,6 +249,29 @@ def write_json(path: Path, data: object) -> None:
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def clear_record(best_dir: Path, note: str) -> dict[str, Any]:
+    """Keep ``best_dir``'s checkpoint but forget its score, for a run not comparable with it.
+
+    A score only means something on the car and rewards it was earned on. Carried over to a new
+    car, it holds every seed under the restart rule and stops any new best being recorded. At
+    score 0 the first window with a checkpoint becomes the record, and restarts wait for it.
+
+    Args:
+        best_dir: The folder's ``weights/best``.
+        note: Where the checkpoint came from, kept in the record's ``run``.
+
+    Returns:
+        The new record.
+
+    Raises:
+        FileNotFoundError: If the checkpoint pair or record is missing.
+    """
+    read_best(best_dir)
+    record = {"score": 0.0, "run": note, "seed": None, "update": None}
+    write_json(best_dir / BEST_RECORD, record)
+    return record
 
 
 def promote_best(runs: Sequence[tuple[str, int]], runs_dir: Path, best_dir: Path) -> str | None:

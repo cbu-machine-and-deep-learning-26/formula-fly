@@ -16,6 +16,7 @@ from fly_driver.training.lab import (
     Process,
     best_window,
     check_seeds,
+    clear_record,
     nearest_checkpoint,
     one_per_trainer,
     promote_best,
@@ -75,6 +76,40 @@ def test_which_seed_restarts(
     scores: dict[int, float], last_updates: dict[int, int], expected: int | None
 ) -> None:
     assert seed_to_restart(scores, last_updates, best_score=1000.0) == expected
+
+
+def test_the_restart_fraction_sets_the_bar() -> None:
+    """A real collapse still restarts at 0.3, and an ordinary dip below the lucky best doesn't."""
+    assert seed_to_restart({0: 500.0}, {0: 900}, best_score=1359.0) == 0, "the default bar is 951 m"
+    assert seed_to_restart({0: 500.0}, {0: 900}, 1359.0, restart_fraction=0.3) is None
+    assert seed_to_restart({0: 200.0}, {0: 900}, 1359.0, restart_fraction=0.3) == 0
+    assert seed_to_restart({0: 1.0}, {0: 900}, 1359.0, restart_fraction=0.0) is None
+
+
+def test_clearing_the_record_keeps_the_weights_and_lets_a_new_car_earn_its_own(
+    tmp_path: Path,
+) -> None:
+    runs_dir, best_dir = tmp_path / "runs", tmp_path / "best"
+    best_dir.mkdir()
+    (best_dir / "policy_best.pt").write_text("rescaled")
+    (best_dir / "brain_best.pt").write_text("rescaled")
+    (best_dir / "best.json").write_text(json.dumps({"score": 1359.0}))
+
+    record = clear_record(best_dir, "1,359 m checkpoint, rescaled for the stiff car")
+    assert json.loads((best_dir / "best.json").read_text()) == record
+    assert record["score"] == 0.0
+    assert (best_dir / "policy_best.pt").read_text() == "rescaled"
+    assert seed_to_restart({0: 1.0}, {0: 900}, record["score"]) is None, "nothing to fall short of"
+
+    run_dir = runs_dir / "lab_20261105_g1" / "seed_0"
+    _write_run(run_dir, [300.0] * 60, [1])
+    assert promote_best([("lab_20261105_g1", 0)], runs_dir, best_dir) is not None
+    assert json.loads((best_dir / "best.json").read_text())["score"] == 300.0
+
+
+def test_clearing_a_folder_with_no_checkpoint_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="missing"):
+        clear_record(tmp_path, "nothing here")
 
 
 def test_only_the_worst_seed_is_considered() -> None:
