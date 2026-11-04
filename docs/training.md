@@ -158,7 +158,7 @@ focused run:
 
 | Number | Baseline | What improving looks like |
 |---|---|---|
-| Laps | 0, and 0 in the 174,466 drives on that PC before these | Any |
+| Laps | 0, as in every earlier run on that PC | Any |
 | Through Vale (T10, 5,485-5,810 m) | 9 of 6,210 arrivals (0.1%) | The main thing to watch |
 | Best 50-drive score, uniform starts | 1,359 m | Clearly over 1,359 m: one window is only good to about ±100-150 m |
 | Longest drive | 5,486 m | Past 5,486 m |
