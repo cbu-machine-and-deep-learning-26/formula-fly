@@ -77,7 +77,7 @@ misspelt hyperparameter cannot silently keep its default.
 | `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std`, `init_action_mean` (default zeros) |
 | `env.type` | `practice_track` or `dummy` |
 | `env.max_steps` | Episode truncation in frames. 15 000 = 5 minutes at 50 Hz, room for a slow clean lap |
-| `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, `random_start` (training env only, see below), and anything else `PracticeTrack` takes |
+| `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, `random_start` and `start_focus` (training env only, see below), and anything else `PracticeTrack` takes |
 | `ppo` | CleanRL's continuous-control defaults: 2048-step rollouts, 32 minibatches, 10 epochs, lr 3e-4 annealed, γ 0.99, λ 0.95, clip 0.2 |
 | `eval` | `every_updates` (0 = off), `episodes`, `max_steps`, `record_video` |
 | `logging.wandb` | `enabled: false` by default; `project`, `entity`, `mode`, `tags` |
@@ -94,6 +94,45 @@ evaluation, `scripts/evaluate.py` and robustness build the env without it and st
 grid, so their lap times compare with every other run. `episodes.csv` records each
 episode's `start_m`. The four `conditions/*.yaml` and `train_flyvis_cx.yaml` turn it on and
 are renamed `rq1v2_<eye>` and `flyvis_cx_v2` so they do not overwrite the v1 runs.
+
+**Focused starts (GH-103).** Uniform starts share practice out by track length, whatever a
+corner costs. `env.params.start_focus` starts a share of the training episodes inside a zone
+and leaves the rest uniform:
+
+```yaml
+env:
+  params:
+    random_start: true
+    start_focus: {share: 0.5, from_m: 4000.0, to_m: 5200.0}
+```
+
+It needs `random_start`, and like it reaches only the training env, so evaluation still starts
+on the grid. Without it, a reset seed makes the same single draw and gives the same start as
+before. `episodes.csv` says which kind each drive was (`start_focused`).
+
+`fly_driver/configs/train_lab_vale.yaml` uses this zone for Stowe and Vale. In the runs of
+2026-11-03, 95% of the drives that reached 5,500-5,599 m ended there, and 51 of the 52 drives
+over 3,800 m ended at Vale. A simple centreline-following script holding 85% of the
+`speed_profile` got past Vale from every start tried, so the corner can be driven. Measured
+from rest with that script, on the real physics (its speed cap makes these lower bounds):
+
+| Start | At Stowe's brake point (4,942 m) | At Vale's brake point (5,390 m) |
+|---|---|---|
+| 4,000-4,700 m | ~245 km/h | ~228 km/h |
+| 4,800 m | 216 km/h | 230 km/h |
+| 4,900-5,200 m | already past, or under 120 km/h | ~228 km/h |
+| 5,300 m | - | 180 km/h |
+| 5,350 m | - | 116 km/h |
+
+A start after about 5,200 m doesn't reach the speed that makes Vale hard, so the zone stops
+there. The car still starts at rest, and a policy can only practise braking from the speed it
+chose to reach.
+
+A focused drive is short by design, so the lab supervisor scores only the uniform share
+(`fly_driver/training/lab.py`, `scored_drives`). That is the distribution every earlier run
+was scored on, so `weights/best/best.json` means the same thing either side of the change, and
+a focused run isn't restarted just for having short drives. Compare runs on that score and on
+Vale survival, not on the mean of every drive.
 
 To run another condition, copy the file, change `name` and the condition keys, keep the
 seeds. To spread the seeds over the cluster, give every job the same file and a different
@@ -114,8 +153,9 @@ runs/<name>/seed_0/eval/step_<n>/    the evaluation harness's episodes.csv + sum
 ```
 
 **`episodes.csv`** -- `seed, episode, update, env_steps, steps, total_return, lap_complete,
-lap_time_s, terminated, truncated, start_m, distance_m` (the arclength the episode started
-at, and metres driven along the centreline), then
+lap_time_s, terminated, truncated, start_m, distance_m, start_focused` (the arclength the
+episode started at, metres driven along the centreline, and whether the start came from
+`start_focus`), then
 one column per reward term:
 `reward_progress, reward_lateral, reward_lap_bonus, reward_off_track` (sorted by name).
 The term columns are what `AGENTS.md` §11 asks for: they always add up to `total_return`,

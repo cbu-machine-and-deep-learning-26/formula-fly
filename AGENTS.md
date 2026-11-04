@@ -273,10 +273,12 @@ Closing the `train start` window or logging off stops training.
 
 **What the supervisor does**
 - Every 10 minutes it relaunches dead trainers from best, and copies any new best into `weights/best/`.
-- Every 2 hours it restarts the worst seed from best if that seed is past 150 updates and its last 50 drives average under 70% of the best window. One seed per cycle.
+- Every 2 hours it restarts the worst seed from best if that seed is past 150 updates and its last 50 drives average under 70% of the best window. One seed per cycle. Scores count only uniform-start drives, so `start_focus` drives (GH-103) don't move them.
 - Each launch is a new run, `runs/lab_<YYYYMMDD>_g<N>/`, so no history is overwritten.
 
 **Try an idea on top:** copy `fly_driver/configs/train_lab.yaml`, change one thing, then `train start --config <file>`. Commit configs and code on a `feature/GH-<issue>-<name>` branch with a PR to `develop`. Weights and runs stay on the PC and are not in git.
+
+**A second folder, for an idea that shouldn't share `weights/best/`:** a run scored differently, or one you might throw away, belongs in its own checkout, such as `D:\formula-fly-vale`. It gets its own `weights\best\`, `runs\`, `logs\` and supervisor state, and `train stop` there stops only its own trainers. Clone the branch, build `.venv-flyvis` in it, copy `.cache\flyvis` and `weights\best\` from `D:\formula-fly`, then run `train` from the new folder. `train start` still refuses while any `train.py` is running on the PC, from any folder, because the GPU is shared. `fly_driver/configs/train_lab_vale.yaml` (GH-103) runs this way.
 
 **Shared Windows logins, so commit as yourself.** When you start, run `gh auth login` and set `git config user.name` and `git config user.email` in the checkout. When you leave, run `gh auth logout`.
 
