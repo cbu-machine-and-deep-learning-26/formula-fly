@@ -57,7 +57,7 @@ REGIONS = ("all", "straight", "corner")
 
 _NUMBER = r"[0-9]+(?:\.[0-9]+)?"
 _CONDITION_LABEL = re.compile(
-    rf"(noise_on|noise_off)?_?(?:gain_({_NUMBER}))?_?(?:smooth_({_NUMBER}))?"
+    rf"(noise_on|noise_off)?_?(?:gain_({_NUMBER}))?_?(?:pedal_({_NUMBER}))?_?(?:smooth_({_NUMBER}))?"
 )
 
 
@@ -72,33 +72,37 @@ class ConditionSpec:
         gain: Multiplies the raw steering mean, see
             :class:`~fly_driver.policies.scaled_steering_policy.ScaledSteeringPolicy`. ``None``
             is off.
+        pedal_gain: Multiplies the raw throttle and brake means, the same way. ``None`` is off.
     """
 
     noise_on: bool
     blend: float | None = None
     gain: float | None = None
+    pedal_gain: float | None = None
 
     @classmethod
     def parse(cls, label: str) -> ConditionSpec:
         """Read a condition label.
 
-        Labels are ``noise_off``, ``noise_on``, ``smooth_<blend>``, ``gain_<gain>``, a noise
-        prefix on either, or ``gain_<gain>_smooth_<blend>``. No noise prefix means noise off.
+        Labels are ``noise_off``, ``noise_on``, ``smooth_<blend>``, ``gain_<gain>``,
+        ``pedal_<gain>``, or those in that order, such as ``gain_0.3_pedal_0.5``, optionally after
+        a noise prefix. No noise prefix means noise off.
 
         Raises:
             ValueError: If the label is none of those, or it asks for a gain with noise on,
-                which would change the noise as well as the policy's steering.
+                which would change the noise as well as the policy's output.
         """
         match = _CONDITION_LABEL.fullmatch(label)
         if match is None or not label:
             raise ValueError(f"unknown condition {label!r}")
-        noise, gain, blend = match.groups()
-        if noise == "noise_on" and gain is not None:
+        noise, gain, pedal_gain, blend = match.groups()
+        if noise == "noise_on" and (gain is not None or pedal_gain is not None):
             raise ValueError(f"condition {label!r} asks for a gain with noise on")
         return cls(
             noise_on=noise == "noise_on",
             blend=None if blend is None else float(blend),
             gain=None if gain is None else float(gain),
+            pedal_gain=None if pedal_gain is None else float(pedal_gain),
         )
 
 

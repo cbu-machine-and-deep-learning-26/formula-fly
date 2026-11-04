@@ -57,6 +57,26 @@ def test_throttle_and_brake_are_left_alone() -> None:
     assert control.steer == pytest.approx(0.05)
 
 
+def test_the_pedal_gain_scales_throttle_and_brake_but_not_steering() -> None:
+    wrapped = ScaledSteeringPolicy(_policy_with_raw_mean(0.5, 3.0, 2.0), 1.0, pedal_gain=0.25)
+    control = wrapped.act(_features())
+    assert control.steer == pytest.approx(0.5)
+    assert control.throttle == pytest.approx(0.75)
+    assert control.brake == pytest.approx(0.5)
+
+
+def test_a_scaled_pedal_past_its_range_still_clips() -> None:
+    wrapped = ScaledSteeringPolicy(_policy_with_raw_mean(0.0, 4.0, -4.0), 1.0, pedal_gain=0.5)
+    control = wrapped.act(_features())
+    assert control.throttle == 1.0
+    assert control.brake == 0.0
+
+
+def test_a_pedal_gain_that_isnt_positive_is_refused() -> None:
+    with pytest.raises(ValueError, match="pedal_gain"):
+        ScaledSteeringPolicy(_policy_with_raw_mean(0.0), 1.0, pedal_gain=0.0)
+
+
 def test_it_reports_the_wrapped_policys_feature_width() -> None:
     assert ScaledSteeringPolicy(_policy_with_raw_mean(0.0), 0.5).feature_dim == FEATURE_DIM
 

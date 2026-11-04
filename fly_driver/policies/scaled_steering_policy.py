@@ -21,21 +21,25 @@ __all__ = ["ScaledSteeringPolicy"]
 
 
 class ScaledSteeringPolicy:
-    """Implements the ``Policy`` protocol, multiplying the raw steering mean before the clip.
+    """Implements the ``Policy`` protocol, multiplying the raw means before the clip.
 
     Args:
         policy: The trained policy. Its weights are not changed.
         gain: Multiplies the raw steering mean. 1 changes nothing.
+        pedal_gain: Multiplies the raw throttle and brake means. 1 changes nothing.
 
     Raises:
-        ValueError: If ``gain`` is not positive.
+        ValueError: If a gain is not positive.
     """
 
-    def __init__(self, policy: MlpPolicy, gain: float) -> None:
+    def __init__(self, policy: MlpPolicy, gain: float, *, pedal_gain: float = 1.0) -> None:
         if gain <= 0.0:
             raise ValueError(f"gain must be positive, got {gain}")
+        if pedal_gain <= 0.0:
+            raise ValueError(f"pedal_gain must be positive, got {pedal_gain}")
         self.policy = policy
         self.gain = float(gain)
+        self.pedal_gain = float(pedal_gain)
 
     @property
     def feature_dim(self) -> int:
@@ -47,10 +51,12 @@ class ScaledSteeringPolicy:
         self.policy.reset(seed=seed)
 
     def act(self, features: Features) -> ControlVector:
-        """The clipped mean action, with the steering scaled first."""
+        """The clipped mean action, with each channel scaled first."""
         validate_features(features, self.feature_dim)
         with torch.no_grad():
             batch = torch.as_tensor(features, device=self.policy.device)[None]
             mean, _ = self.policy(batch)
         steer, throttle, brake = mean[0].tolist()
-        return ControlVector.clipped(self.gain * steer, throttle, brake)
+        return ControlVector.clipped(
+            self.gain * steer, self.pedal_gain * throttle, self.pedal_gain * brake
+        )

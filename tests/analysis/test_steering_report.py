@@ -224,6 +224,17 @@ def test_an_unknown_condition_label_is_refused(label: str) -> None:
 def test_a_gain_with_noise_on_is_refused() -> None:
     with pytest.raises(ValueError, match="gain with noise on"):
         ConditionSpec.parse("noise_on_gain_0.5")
+    with pytest.raises(ValueError, match="gain with noise on"):
+        ConditionSpec.parse("noise_on_pedal_0.5")
+
+
+@pytest.mark.parametrize(
+    ("label", "gain", "pedal_gain"),
+    [("pedal_0.5", None, 0.5), ("gain_0.3_pedal_0.7", 0.3, 0.7), ("noise_off_pedal_1", None, 1.0)],
+)
+def test_pedal_gain_labels_parse(label: str, gain: float | None, pedal_gain: float) -> None:
+    spec = ConditionSpec.parse(label)
+    assert (spec.noise_on, spec.gain, spec.pedal_gain) == (False, gain, pedal_gain)
 
 
 def test_exit_speed_rows_pool_by_condition_and_straight_in_kmh() -> None:

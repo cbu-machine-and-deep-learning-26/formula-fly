@@ -79,8 +79,12 @@ def main(argv: list[str] | None = None) -> int:
             spec = ConditionSpec.parse(condition)
             if spec.noise_on:
                 driver.policy = SampledPolicy(mean_policy)
-            elif spec.gain is not None:
-                driver.policy = ScaledSteeringPolicy(mean_policy, spec.gain)
+            elif spec.gain is not None or spec.pedal_gain is not None:
+                driver.policy = ScaledSteeringPolicy(
+                    mean_policy,
+                    1.0 if spec.gain is None else spec.gain,
+                    pedal_gain=1.0 if spec.pedal_gain is None else spec.pedal_gain,
+                )
             else:
                 driver.policy = mean_policy
             agent = driver if spec.blend is None else SmoothedSteering(driver, spec.blend)
