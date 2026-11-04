@@ -54,12 +54,27 @@ the kerb's *outer* edge, so two wheels on the kerb cost nothing.
 off-track penalty seconds, and the env's :class:`~fly_driver.envs.lap.LapTimer` only counts a
 full lap of forward progress from a crossing of the line, so laps cannot be farmed.
 
-**Steering lock to lock can cost something (GH-104).** ``steer_change_m`` charges for how far
-the steering moved since the last frame, ``info["steer_change"]``. It is off by default, and
-off means no ``steering`` term at all, so a run without it is unchanged down to its CSV columns.
-The cost shares the kerb cost's cap: together they take no more than the step's own pace, so a
-step that moves forward is still worth >= 0 and ending the drive still never pays. Because it
-is charged per frame and not per metre, driving slower to dodge it costs more, not less.
+**Shedding excess speed pays at once (GH-104).** The return already favours braking for a corner,
+but the gain arrives seconds after the pace it costs, through a critic that has rarely seen a
+corner survived. ``over_speed_m`` adds potential-based shaping (Ng et al. 1999) on the excess
+``E``, ``info["over_speed_mps"]`` (see :class:`~fly_driver.envs.speed_guide.SpeedGuide`):
+
+    over_speed_m * (E_previous - gamma * E_now)                          E_now = 0 on an early end
+
+Slowing towards the target pays on that frame and building excess costs on that frame. Over a
+drive the term telescopes, so it can't be farmed, and with ``over_speed_gamma`` equal to PPO's
+gamma and a target that doesn't change, it doesn't change which policy is best. A straight taken
+fast and braked from in time nets nothing, so this doesn't teach slow straights. It is off by
+default, and off means no ``over_speed`` term at all. On, a single frame can be worth less than 0,
+so the guarantee above that every forward step is worth >= 0 holds for the other terms only.
+
+An early end sets ``E_now`` to 0, which repays the excess at that moment, logged as
+``over_speed_refund``. It only returns what building that excess cost, but a critic that hasn't
+learned that could read it as a crash at speed not being so bad. So keep the weight small enough
+that the refund stays under ``crash_penalty_m`` at ordinary crash speeds: at 0.5, Vale's usual
+crash (about 20 m/s of excess at a 0.7 factor) refunds about 10 m against the 18 m penalty. Dropping
+the refund instead would make a crash at speed truly cost more, but it would change which policy
+is best, and could teach driving below the target.
 """
 
 from __future__ import annotations
@@ -97,8 +112,9 @@ class LapTimeReward:
         lap_bonus_m: Bonus for a lap at exactly the target time, scaled by
             ``target / lap_time``.
         target_bonus_m: Extra bonus for a lap at or under the target.
-        steer_change_m: Cost per unit of steering change between frames, so a lock-to-lock flip
-            (a change of 2) costs twice this. 0 turns it off and leaves no ``steering`` term.
+        over_speed_m: Weight of the over-speed shaping, in metres of reward per m/s of excess. 0
+            turns it off and leaves no ``over_speed`` term.
+        over_speed_gamma: The shaping's discount. Keep it equal to PPO's gamma.
         penalty_weights: The env's off-track rule. ``time_weight`` sets the cost past the
             kerb, ``minimum_depth`` and ``maximum_depth`` bound the depth it applies to.
         lap_length_m: Track length, for target pace.
@@ -115,7 +131,8 @@ class LapTimeReward:
     corner_bonus_m: float = 0.0
     lap_bonus_m: float = 2000.0
     target_bonus_m: float = 1000.0
-    steer_change_m: float = 0.0
+    over_speed_m: float = 0.0
+    over_speed_gamma: float = 0.997
     penalty_weights: PenaltyWeights = field(default_factory=lambda: DEFAULT_PENALTY_WEIGHTS)
     lap_length_m: float = _LAP_LENGTH_M
     scale: float = 1.0
@@ -130,7 +147,7 @@ class LapTimeReward:
             "corner_bonus_m",
             "lap_bonus_m",
             "target_bonus_m",
-            "steer_change_m",
+            "over_speed_m",
         ):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative, got {getattr(self, name)}")
@@ -152,19 +169,23 @@ class LapTimeReward:
         else:
             pace = progress_m
         track_limits = self.target_speed_mps * weights.time_weight * beyond_kerb * dt
-        # Capped at the step's pace, so no step that moves forward is worth less than 0.
-        track_limits_cost = min(track_limits, max(pace, 0.0))
         terms = {
             "pace": pace,
-            "track_limits": -track_limits_cost,
+            # Capped at the step's pace, so no step that moves forward is worth less than 0.
+            "track_limits": -min(track_limits, max(pace, 0.0)),
             "crash": -self.crash_penalty_m if info["crashed"] or info["stalled"] else 0.0,
             "corner_bonus": self.corner_bonus_m if info.get("corner_complete") else 0.0,
             "lap_bonus": 0.0,
         }
-        if self.steer_change_m > 0.0:
-            steering_cost = self.steer_change_m * float(info.get("steer_change", 0.0))
-            # What the kerb cost left of the same cap.
-            terms["steering"] = -min(steering_cost, max(pace, 0.0) - track_limits_cost)
+        if self.over_speed_m > 0.0:
+            previous = float(info.get("previous_over_speed_mps", 0.0))
+            ended = info["crashed"] or info["stalled"]
+            now = 0.0 if ended else float(info.get("over_speed_mps", 0.0))
+            shaping = self.over_speed_m * (previous - self.over_speed_gamma * now)
+            # An early end repays the excess, which is what makes the term telescope. Kept apart
+            # so a log shows it, and so crash and over_speed each still mean one thing.
+            terms["over_speed"] = 0.0 if ended else shaping
+            terms["over_speed_refund"] = shaping if ended else 0.0
         if info["lap_complete"]:
             lap_time = float(info["lap_time"])
             terms["lap_bonus"] = self.lap_bonus_m * self.target_lap_time_s / lap_time

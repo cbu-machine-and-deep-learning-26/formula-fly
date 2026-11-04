@@ -194,7 +194,7 @@ assert set(EYE_BUILDERS) == set(KNOWN_EYE_TYPES)
 assert set(BRAIN_BUILDERS) == set(KNOWN_BRAINS)
 
 
-TRAINING_ONLY_ENV_PARAMS = frozenset({"random_start", "start_focus"})
+TRAINING_ONLY_ENV_PARAMS = frozenset({"random_start", "start_focus", "speed_guide"})
 
 
 def build_env(config: EnvConfig, *, training: bool = False) -> Any:
@@ -239,6 +239,7 @@ def build_policy(config: PolicyConfig, feature_dim: int) -> MlpPolicy:
         normalize_features=config.normalize_features,
         init_log_std=config.init_log_std,
         init_action_mean=config.init_action_mean,
+        squash_mean=config.squash_mean,
     )
 
 

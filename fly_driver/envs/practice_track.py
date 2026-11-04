@@ -101,6 +101,7 @@ from fly_driver.envs.lap_time_reward import LapTimeReward
 from fly_driver.envs.penalty import OffTrackPenalty, PenaltyWeights
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segments import SegmentTimer, SegmentTiming, find_segments
+from fly_driver.envs.speed_guide import SpeedGuide, SpeedTarget
 from fly_driver.envs.start_focus import StartFocus, draw_start
 from fly_driver.envs.surface import SurfaceGrip
 from fly_driver.interface import (
@@ -235,6 +236,10 @@ class PracticeTrack:
             track, as a :class:`~fly_driver.envs.start_focus.StartFocus` or a mapping of its
             fields. ``None``, the default, leaves every start uniform. Needs ``random_start``.
             ``info["start_focused"]`` says which kind the episode's start was.
+        speed_guide: Report how far the car is above a target speed as
+            ``info["over_speed_mps"]``, as a :class:`~fly_driver.envs.speed_guide.SpeedGuide` or a
+            mapping of its fields. It follows :meth:`set_training_steps`. ``None``, the default,
+            leaves the key out. It changes nothing about the car.
         stall_speed_mps: End the episode once the car has been slower than this for more
             than ``stall_seconds``, and report ``info["stalled"]``. ``None``, the default,
             never stalls. The clock runs from the first step, so a car that never pulls away
@@ -271,6 +276,7 @@ class PracticeTrack:
         reward: RewardFunction | Mapping[str, Any] | None = None,
         random_start: bool = False,
         start_focus: StartFocus | Mapping[str, float] | None = None,
+        speed_guide: SpeedGuide | Mapping[str, float] | None = None,
         stall_speed_mps: float | None = None,
         stall_seconds: float = 2.5,
         braking_line_fade_steps: int = 0,
@@ -326,6 +332,11 @@ class PracticeTrack:
             )
 
         self.centerline = Centerline.load()
+        if isinstance(speed_guide, Mapping):
+            speed_guide = SpeedGuide(**speed_guide)
+        self._speed_target = (
+            None if speed_guide is None else SpeedTarget(speed_guide, self.centerline)
+        )
         if self.start_focus is not None:
             furthest_m = max(to_m for _, to_m in self.start_focus.zones)
             if furthest_m > self.centerline.length:
@@ -389,7 +400,7 @@ class PracticeTrack:
         self._done = True
         self._steps = 0
         self._previous_s = 0.0
-        self._previous_steer = 0.0
+        self._over_speed_mps = 0.0
         self._odometer_m = 0.0
         self._corner_paid_at: dict[int, float] = {}
         self._frame: Frame | None = None
@@ -500,8 +511,8 @@ class PracticeTrack:
         self._surface.reset()
         self._steps = 0
         self._slow_steps = 0
+        self._over_speed_mps = 0.0
         self._done = False
-        self._previous_steer = 0.0
 
         projection = self._project()
         self._previous_s = projection.arclength
@@ -546,8 +557,6 @@ class PracticeTrack:
             raise RuntimeError("call reset() before step(); the episode has ended")
 
         control = ControlVector.from_any(action)
-        steer_change = abs(control.steer - self._previous_steer)
-        self._previous_steer = control.steer
         self._dynamics.step(control, self._data, self._substeps)
         self._steps += 1
         truncated = self._max_steps is not None and self._steps >= self._max_steps
@@ -617,7 +626,12 @@ class PracticeTrack:
             stalled=stalled,
         )
         info["corner_complete"] = corner_complete
-        info["steer_change"] = steer_change  # for LapTimeReward's optional steering cost
+        if self._speed_target is not None:
+            info["previous_over_speed_mps"] = self._over_speed_mps
+            self._over_speed_mps = self._speed_target.over_speed_mps(
+                projection.arclength, float(info["speed_mps"])
+            )
+            info["over_speed_mps"] = self._over_speed_mps
         reward, terms = self.reward(info, self.dt)
         info["reward_terms"] = terms
 
@@ -675,7 +689,9 @@ class PracticeTrack:
         return float(self._model.mat_rgba[self._band_material, 3])
 
     def set_training_steps(self, steps: int) -> None:
-        """Fade the braking line to where ``steps`` of training have brought it."""
+        """Fade the braking line and move the target speed to where training has brought them."""
+        if self._speed_target is not None:
+            self._speed_target.set_training_steps(steps)
         fade = 1.0 if self._fade_steps == 0 else min(1.0, max(0, steps) / self._fade_steps)
         self._model.mat_rgba[self._band_material, 3] = fade
 

@@ -185,6 +185,8 @@ class PolicyConfig:
         init_log_std: Initial log standard deviation of the Gaussian over the raw action.
         init_action_mean: Initial raw action mean ``(steer, throttle, brake)``. Zeros, the
             default, park an untrained car half the time; see ``MlpPolicy``.
+        squash_mean: Keep the action mean inside +-1 with a tanh. See
+            :class:`~fly_driver.policies.mlp_policy.MlpPolicy`.
     """
 
     hidden_sizes: tuple[int, ...] = (64, 64)
@@ -192,6 +194,7 @@ class PolicyConfig:
     normalize_features: bool = True
     init_log_std: float = 0.0
     init_action_mean: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    squash_mean: bool = False
 
     def __post_init__(self) -> None:
         sizes = tuple(self.hidden_sizes)
@@ -265,8 +268,6 @@ class PPOConfig:
         max_grad_norm: Global gradient clip.
         normalize_advantages: Standardise advantages per minibatch.
         target_kl: Stop an update early past this approximate KL; ``None`` never stops.
-        output_range_coef: Weight of the penalty on raw action means past +-1, see
-            :func:`~fly_driver.training.ppo.output_range_excess`. 0 turns it off.
     """
 
     rollout_steps: int = 2048
@@ -283,7 +284,6 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     normalize_advantages: bool = True
     target_kl: float | None = None
-    output_range_coef: float = 0.0
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
@@ -301,7 +301,7 @@ class PPOConfig:
         set_(self, "gae_lambda", _check_unit_interval("ppo.gae_lambda", self.gae_lambda))
         if _check_finite("ppo.clip_coef", self.clip_coef) <= 0:
             raise ValueError(f"ppo.clip_coef must be positive, got {self.clip_coef}")
-        for name in ("entropy_coef", "value_coef", "output_range_coef"):
+        for name in ("entropy_coef", "value_coef"):
             if _check_finite(f"ppo.{name}", getattr(self, name)) < 0:
                 raise ValueError(f"ppo.{name} must be non-negative, got {getattr(self, name)}")
         if _check_finite("ppo.max_grad_norm", self.max_grad_norm) <= 0:

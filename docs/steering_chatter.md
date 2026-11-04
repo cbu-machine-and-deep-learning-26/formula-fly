@@ -20,22 +20,22 @@ Measured on `CSDS_PC_2`'s best checkpoint (1,359 m, `lab_20261103_g1` seed 1, up
 
 ## Training with variable controls
 
-`fly_driver/configs/train_lab_variable.yaml` uses the stiff steering and starts from the best checkpoint with steering x 0.3 and pedals x 0.5 written into its weights. Make that checkpoint first:
+A recipe with the stiff steering, starting from the best checkpoint with steering x 0.3 and pedals x 0.5 written into its weights, was tested and is not in the repo. Make that kind of checkpoint with:
 
 ```
 python scripts/rescale_checkpoint.py --source weights/best/policy_best.pt --target weights/variable_start/policy_best.pt --steer 0.3 --pedals 0.5
 ```
 
-**It hasn't been shown to work.** Two 200k-step tests, 3 seeds each, on the same 81 starts with noise off:
+**It wasn't an improvement.** Two 200k-step tests, 3 seeds each, on the same 81 starts with noise off:
 
 | | Stalled | Mean distance | Mean speed | Full lock at the wheels | Flips/s at the wheels |
 |---|---|---|---|---|---|
 | Baseline: default car | 7 | 1,026 m | 108 km/h | 53% | 4.92 |
 | Start: stiff car, scaled | 5 | 862 m | 123 km/h | 19% | 4.83 |
-| Trained, `output_range_coef: 0.1` | 5, 60, 26 | 714, 281, 778 m | 127, 78, 108 km/h | 14, 15, 11% | 4.76, 4.63, 5.00 |
-| Trained, recipe as it is now | 13, 5, 4 | 631, 636, 528 m | 123, 139, 142 km/h | 19, 23, 24% | 4.92, 4.59, 4.54 |
+| Trained, with a penalty on outputs past the range | 5, 60, 26 | 714, 281, 778 m | 127, 78, 108 km/h | 14, 15, 11% | 4.76, 4.63, 5.00 |
+| Trained, without that penalty | 13, 5, 4 | 631, 636, 528 m | 123, 139, 142 km/h | 19, 23, 24% | 4.92, 4.59, 4.54 |
 
-The penalty is off in the recipe because it stalled launches from a standstill on two of three seeds. Without it, the throttle drifts back towards full and the car gets faster and crashes sooner. No seed got through T10, and flips haven't dropped. These runs are too short to say what a long run would do.
+The penalty was removed because it stalled launches from a standstill on two of three seeds. Without it, the throttle drifts back towards full and the car gets faster and crashes sooner. No seed got through T10, and flips haven't dropped. These runs are too short to say what a long run would do.
 
 ## Measuring it
 
@@ -62,14 +62,10 @@ python scripts/steering_source.py
 - **Run-time tests are one-sided.** The policy never trained with smoothing, a lower gain or an override. If one helps, it shows a real cost. If one hurts, that clears nothing.
 - **Noise can hide problems.** A stalled launch doesn't show in noisy training drives, because noise opens the throttle anyway. Judge a checkpoint with noise off.
 
-## The steering speed limit
+## Tried and removed
 
-`CarConfig.max_steer_rate_rad_s` limits how fast the steering can move. It's off by default. A scripted driver copes down to 0.8 s lock to lock, but this policy crashes almost at once: 151 m at 0.3 s and 21 m at 0.7 s, against 1,026 m with no limit.
+A steering speed limit, a reward cost on steering changes and a penalty on outputs past the range are no longer in the code. Their commits and the results on #104 record them.
 
-## The steering cost
+**Steering speed limit.** A scripted driver copes down to 0.8 s lock to lock, but this policy crashes almost at once: 151 m at 0.3 s and 21 m at 0.7 s, against 1,026 m with no limit.
 
-`LapTimeReward.steer_change_m` charges for how far the steering moved since the last frame. It's off by default, and off leaves no `steering` term, no new CSV column, and the same rewards and physics as before. It shares the kerb cost's cap, so a step that moves forward is still worth at least 0.
-
-`fly_driver/configs/train_lab_steer.yaml` is the trial recipe: `train_lab.yaml` plus `steer_change_m: 0.25` and a shorter run. It isn't what `train start` runs.
-
-**The trial failed, so don't use this recipe.** Over 1.5M steps and 3 seeds, it missed its target on flips and on mean |steer| at every checkpoint. By the final checkpoints the car was faster (95th percentile 194-233 km/h, against 141) but crashed sooner (411-629 m, against 1,026 m), and no seed got through T10. The cost is kept so that result can be reproduced. If chatter gets another try, test a limit on the raw output's size or lower exploration noise, not a higher weight on this cost.
+**Steering cost.** Over 1.5M steps and 3 seeds, it missed its target on flips and on mean |steer| at every checkpoint. By the final checkpoints the car was faster (95th percentile 194-233 km/h, against 141) but crashed sooner (411-629 m, against 1,026 m), and no seed got through T10.

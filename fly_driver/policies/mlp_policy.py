@@ -126,6 +126,10 @@ class MlpPolicy(nn.Module):
             actor's output bias. Zeros leave throttle and brake clipped to 0 half the time,
             which can leave an untrained car parked; e.g. ``(0.0, 0.4, -0.6)`` launches it.
             Only the initial weights depend on it, so checkpoints do not store it.
+        squash_mean: Pass the action mean through tanh, so it stays inside +-1. The clip gives PPO
+            no signal about a mean past the edge, since every sample there drives the car the
+            same, so without this the mean can wander far outside the range. It is off by default
+            and stored in checkpoints (GH-104).
 
     Raises:
         ValueError: On a non-positive ``feature_dim``, an unknown activation, or an
@@ -140,6 +144,7 @@ class MlpPolicy(nn.Module):
         normalize_features: bool = True,
         init_log_std: float = 0.0,
         init_action_mean: Sequence[float] = (0.0, 0.0, 0.0),
+        squash_mean: bool = False,
     ) -> None:
         super().__init__()
         if int(feature_dim) < 1:
@@ -154,6 +159,7 @@ class MlpPolicy(nn.Module):
         self.hidden_sizes = tuple(int(size) for size in hidden_sizes)
         self.activation = activation
         self.init_log_std = float(init_log_std)
+        self.squash_mean = bool(squash_mean)
         self.normalizer = RunningNormalizer(self._feature_dim) if normalize_features else None
         self.actor = _mlp(self._feature_dim, self.hidden_sizes, ACTION_DIM, activation, 0.01)
         with torch.no_grad():
@@ -192,7 +198,10 @@ class MlpPolicy(nn.Module):
         """Return ``(action mean (batch, 3), value (batch,))`` for ``(batch, dim)`` features."""
         if self.normalizer is not None:
             features = self.normalizer(features)
-        return self.actor(features), self.critic(features).squeeze(-1)
+        mean = self.actor(features)
+        if self.squash_mean:
+            mean = torch.tanh(mean)
+        return mean, self.critic(features).squeeze(-1)
 
     def distribution(self, features: torch.Tensor) -> tuple[Normal, torch.Tensor]:
         """Return the raw-action Gaussian and the value for a batch of features."""
@@ -239,6 +248,7 @@ class MlpPolicy(nn.Module):
             "activation": self.activation,
             "normalize_features": self.normalizer is not None,
             "init_log_std": self.init_log_std,
+            "squash_mean": self.squash_mean,
             "state_dict": {key: value.detach().cpu() for key, value in self.state_dict().items()},
             "extra": dict(extra or {}),
         }
@@ -257,6 +267,7 @@ class MlpPolicy(nn.Module):
             activation=str(payload["activation"]),
             normalize_features=bool(payload["normalize_features"]),
             init_log_std=float(payload["init_log_std"]),
+            squash_mean=bool(payload.get("squash_mean", False)),
         )
         policy.load_state_dict(payload["state_dict"])
         policy.extra: dict[str, Any] = dict(payload.get("extra", {}))

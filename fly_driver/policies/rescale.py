@@ -56,6 +56,7 @@ def rescale_checkpoint(
     steer: float = 1.0,
     throttle: float = 1.0,
     brake: float = 1.0,
+    squash_mean: bool = False,
 ) -> Path:
     """Write a rescaled copy of a ``policy_*.pt`` checkpoint, with its brain copied beside it.
 
@@ -65,6 +66,8 @@ def rescale_checkpoint(
         steer: Gain on steering.
         throttle: Gain on throttle.
         brake: Gain on brake.
+        squash_mean: Also turn on the policy's tanh on its mean. Its critic and hidden layers stay
+            as they were, so check how the result drives before training from it.
 
     Returns:
         The written policy's path.
@@ -79,6 +82,7 @@ def rescale_checkpoint(
         raise ValueError(f"{target} would overwrite the checkpoint it was made from")
     policy = MlpPolicy.load(source)
     rescale_outputs(policy, steer=steer, throttle=throttle, brake=brake)
+    policy.squash_mean = policy.squash_mean or squash_mean
     written = policy.save(
         target,
         extra={

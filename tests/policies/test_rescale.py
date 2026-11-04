@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 pytest.importorskip("torch")
@@ -13,7 +12,6 @@ import torch  # noqa: E402
 
 from fly_driver.policies.mlp_policy import MlpPolicy  # noqa: E402
 from fly_driver.policies.rescale import rescale_checkpoint, rescale_outputs  # noqa: E402
-from fly_driver.training.ppo import output_range_excess  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("cpu_default_device")
 
@@ -73,15 +71,6 @@ def test_a_gain_that_isnt_positive_is_refused() -> None:
         rescale_outputs(_policy(), brake=-1.0)
 
 
-def test_scaling_brings_outputs_into_the_range_of_values_the_car_can_use() -> None:
-    policy = _policy()
-    before, _ = policy(_features())
-    assert output_range_excess(before).mean() > 0.0
-    rescale_outputs(policy, steer=1e-3, throttle=1e-3, brake=1e-3)
-    after, _ = policy(_features())
-    assert output_range_excess(after).abs().max() == 0.0
-
-
 def test_a_checkpoint_round_trip_keeps_the_scaling_and_copies_the_brain(tmp_path: Path) -> None:
     source = tmp_path / "best" / "policy_best.pt"
     policy = _policy()
@@ -117,17 +106,31 @@ def test_a_target_that_would_overwrite_or_lose_the_brain_is_refused(tmp_path: Pa
         rescale_checkpoint(source, tmp_path / "scaled.pt", steer=0.3)
 
 
-@pytest.mark.parametrize(
-    ("mean", "expected"),
-    [
-        ([0.0, 0.0, 0.0], 0.0),
-        ([1.0, -1.0, 0.5], 0.0),  # exactly at the edge is fine
-        ([2.0, 0.0, 0.0], 1.0),
-        ([-3.0, 0.0, 0.0], 4.0),
-        ([2.0, -2.0, 3.0], 1.0 + 1.0 + 4.0),
-    ],
-)
-def test_the_range_excess_on_hand_computed_values(mean: list[float], expected: float) -> None:
-    excess = output_range_excess(torch.tensor([mean]))
-    assert excess.item() == pytest.approx(expected)
-    assert np.isfinite(excess.item())
+def test_a_squashed_mean_stays_inside_the_range_and_near_the_original_when_small() -> None:
+    policy = _policy()
+    before, _ = policy(_features())
+    assert before.abs().max() > 1.0
+    policy.squash_mean = True
+    after, _ = policy(_features())
+    assert after.abs().max() < 1.0
+    assert torch.allclose(after, torch.tanh(before))
+
+
+def test_squashing_is_off_by_default_and_survives_a_checkpoint(tmp_path: Path) -> None:
+    source = tmp_path / "policy_best.pt"
+    _policy().save(source)
+    assert MlpPolicy.load(source).squash_mean is False
+    target = tmp_path / "out" / "policy_best.pt"
+    rescale_checkpoint(source, target, steer=0.3, squash_mean=True)
+    loaded = MlpPolicy.load(target)
+    assert loaded.squash_mean is True
+    assert loaded(_features())[0].abs().max() < 1.0
+
+
+def test_an_old_checkpoint_without_the_setting_loads_unsquashed(tmp_path: Path) -> None:
+    path = tmp_path / "policy_old.pt"
+    _policy().save(path)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    del payload["squash_mean"]
+    torch.save(payload, path)
+    assert MlpPolicy.load(path).squash_mean is False

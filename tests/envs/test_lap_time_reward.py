@@ -307,72 +307,117 @@ class TestTheDefaultIsUnchanged:
         assert reward(lap, DT)[1]["lap_bonus"] == 100.0
 
 
-#: Fast enough that a step's pace is well above the steering costs below: 1 m at 50 m/s, and
-#: REWARD's target pace is 5886.8 / 105 = about 56.06 m/s, so the weight is about 0.892.
-_STEER_SPEED_MPS = 50.0
+#: The potential-based braking signal. E is the excess over the target speed, in m/s.
+_SHAPED = replace(REWARD, over_speed_m=1.0, over_speed_gamma=GAMMA)
 
 
-def _steering(steer_change: float, *, depth: float = 0.0, speed_mps: float = _STEER_SPEED_MPS):
-    info = {**_info(speed_mps=speed_mps, depth=depth), "steer_change": steer_change}
-    return replace(REWARD, steer_change_m=0.25)(info, DT)
+def _shaped(previous: float, now: float, *, crashed: bool = False, stalled: bool = False) -> dict:
+    info = {
+        **_info(speed_mps=50.0, crashed=crashed, stalled=stalled),
+        "previous_over_speed_mps": previous,
+        "over_speed_mps": now,
+    }
+    return _SHAPED(info, DT)[1]
 
 
-def test_steering_cost_is_off_by_default_and_leaves_no_term() -> None:
-    info = {**_info(speed_mps=_STEER_SPEED_MPS), "steer_change": 2.0}
+def test_over_speed_shaping_is_off_by_default_and_leaves_no_term() -> None:
+    info = {**_info(speed_mps=50.0), "previous_over_speed_mps": 9.0, "over_speed_mps": 3.0}
     total, terms = REWARD(info, DT)
-    assert "steering" not in terms
-    assert total == pytest.approx(REWARD(_info(speed_mps=_STEER_SPEED_MPS), DT)[0])
+    assert "over_speed" not in terms
+    assert total == pytest.approx(REWARD(_info(speed_mps=50.0), DT)[0])
 
 
-def test_steering_cost_matches_a_hand_computed_step() -> None:
-    pace = REWARD(_info(speed_mps=_STEER_SPEED_MPS), DT)[1]["pace"]
-    total, terms = _steering(1.2)
-    assert terms["steering"] == pytest.approx(-0.25 * 1.2)
-    assert total == pytest.approx(pace - 0.3)
+def test_shedding_excess_speed_pays_on_the_hand_computed_frame() -> None:
+    assert _shaped(10.0, 8.0)["over_speed"] == pytest.approx(10.0 - GAMMA * 8.0)
+
+
+def test_building_excess_speed_costs_on_the_hand_computed_frame() -> None:
+    assert _shaped(8.0, 10.0)["over_speed"] == pytest.approx(8.0 - GAMMA * 10.0)
+
+
+def test_under_the_target_it_is_exactly_zero() -> None:
+    assert _shaped(0.0, 0.0)["over_speed"] == 0.0
+
+
+def test_a_missing_report_is_zero() -> None:
+    assert _SHAPED(_info(speed_mps=50.0), DT)[1]["over_speed"] == 0.0
+
+
+def test_the_terms_still_add_up_with_shaping_on() -> None:
+    info = {**_info(speed_mps=50.0), "previous_over_speed_mps": 10.0, "over_speed_mps": 8.0}
+    total, terms = _SHAPED(info, DT)
     assert sum(terms.values()) == pytest.approx(total)
 
 
-def test_a_lock_to_lock_flip_costs_twice_the_weight() -> None:
-    assert _steering(2.0)[1]["steering"] == pytest.approx(-0.5)
+def test_shaping_scales_with_the_reward() -> None:
+    reward = replace(_SHAPED, scale=0.01)
+    info = {**_info(speed_mps=50.0), "previous_over_speed_mps": 10.0, "over_speed_mps": 0.0}
+    assert reward(info, DT)[1]["over_speed"] == pytest.approx(0.1)
 
 
-def test_holding_a_steady_lock_costs_nothing() -> None:
-    assert _steering(0.0)[1]["steering"] == 0.0
+def _discounted_shaping(excesses: list[float]) -> float:
+    """Discounted shaping over a drive from rest, ending on a crash, so E_now = 0 at the end."""
+    previous, total = 0.0, 0.0
+    for step, excess in enumerate(excesses):
+        crashed = step == len(excesses) - 1
+        terms = _shaped(previous, excess, crashed=crashed)
+        total += GAMMA**step * (terms["over_speed"] + terms["over_speed_refund"])
+        previous = excess
+    return total
 
 
-def test_steering_cost_scales_with_the_reward() -> None:
-    reward = replace(REWARD, steer_change_m=0.25, scale=0.01)
-    info = {**_info(speed_mps=_STEER_SPEED_MPS), "steer_change": 2.0}
-    assert reward(info, DT)[1]["steering"] == pytest.approx(-0.005)
+@pytest.mark.parametrize(
+    "excesses",
+    [
+        [0.0, 5.0, 10.0, 15.0, 15.0],
+        [5.0, 0.0] * 50,  # brake and accelerate over and over, trying to farm it
+        [20.0] * 100,
+        [1.0, 40.0, 1.0, 40.0, 1.0],
+    ],
+)
+def test_no_drive_from_rest_can_earn_anything_from_the_shaping(excesses: list[float]) -> None:
+    # It telescopes: the discounted sum is exactly the starting potential, which is 0 at rest.
+    assert _discounted_shaping(excesses) == pytest.approx(0.0, abs=1e-9)
 
 
-def test_steering_cost_never_makes_a_forward_step_worth_less_than_zero() -> None:
-    # At 5 m/s the step's pace is tiny, far below a flip's 0.5 m.
-    total, terms = _steering(2.0, speed_mps=5.0)
-    assert terms["steering"] == pytest.approx(-terms["pace"])
-    assert total == pytest.approx(0.0)
+def test_a_cycle_of_braking_and_accelerating_nets_a_loss_each_time_round() -> None:
+    one_cycle = _shaped(10.0, 0.0)["over_speed"] + GAMMA * _shaped(0.0, 10.0)["over_speed"]
+    assert one_cycle == pytest.approx(10.0 * (1.0 - GAMMA**2))
+    assert 10.0 * (1.0 - GAMMA**2) < 0.1  # tiny, and it is repaid: see the telescoping test
 
 
-def test_kerb_and_steering_costs_share_one_cap() -> None:
-    weights = REWARD.penalty_weights
-    depth = weights.maximum_depth
-    total, terms = _steering(2.0, depth=depth, speed_mps=10.0)
-    assert terms["track_limits"] + terms["steering"] == pytest.approx(-terms["pace"])
-    assert total >= -1e-12
+def test_a_crash_or_stall_ends_the_potential() -> None:
+    for terms in (_shaped(10.0, 10.0, crashed=True), _shaped(10.0, 10.0, stalled=True)):
+        assert terms["over_speed_refund"] == pytest.approx(10.0)
+        assert terms["over_speed"] == 0.0
 
 
-def test_reversing_is_not_charged_for_steering() -> None:
-    assert _steering(2.0, speed_mps=-5.0)[1]["steering"] == 0.0
+def test_an_ordinary_frame_has_no_refund() -> None:
+    assert _shaped(10.0, 8.0)["over_speed_refund"] == 0.0
 
 
-def test_ending_the_drive_still_never_beats_driving_on_with_the_steering_cost() -> None:
-    reward = replace(REWARD, steer_change_m=0.25)
-    worst_step = {**_info(speed_mps=MIN_SPEED_MPS), "steer_change": 2.0}
-    crash = {**_info(speed_mps=MIN_SPEED_MPS, crashed=True), "steer_change": 2.0}
-    assert reward(worst_step, DT)[0] >= 0.0
-    assert reward(crash, DT)[0] < 0.0
+def test_at_the_recipe_weight_a_typical_vale_crash_still_nets_a_loss() -> None:
+    reward = replace(REWARD, over_speed_m=0.5, over_speed_gamma=GAMMA)
+    crash = {
+        **_info(crashed=True),
+        "previous_over_speed_mps": 20.0,
+        "over_speed_mps": 20.0,
+    }
+    terms = reward(crash, DT)[1]
+    assert terms["over_speed_refund"] == pytest.approx(10.0)
+    assert terms["crash"] + terms["over_speed_refund"] < 0.0
 
 
-def test_a_negative_steering_cost_is_refused() -> None:
-    with pytest.raises(ValueError, match="steer_change_m"):
-        replace(REWARD, steer_change_m=-0.1)
+def test_crashing_while_too_fast_still_loses_to_braking_for_the_same_excess() -> None:
+    crash = {
+        **_info(speed_mps=50.0, crashed=True),
+        "previous_over_speed_mps": 10.0,
+        "over_speed_mps": 10.0,
+    }
+    brake = {**_info(speed_mps=50.0), "previous_over_speed_mps": 10.0, "over_speed_mps": 0.0}
+    assert _SHAPED(crash, DT)[0] < _SHAPED(brake, DT)[0]
+
+
+def test_a_negative_over_speed_weight_is_refused() -> None:
+    with pytest.raises(ValueError, match="over_speed_m"):
+        replace(REWARD, over_speed_m=-0.1)

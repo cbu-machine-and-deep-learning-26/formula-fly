@@ -198,10 +198,6 @@ class CarConfig:
             Raised from 150 after Payton asked for a little more.
             A test computes the realised ratio from the compiled model so a heavier
             wheel cannot quietly bring the shimmy back.
-        max_steer_rate_rad_s: Fastest the steering command can move at the kingpin, in rad/s.
-            ``None``, the default, is no limit, so the wheels follow each command at once. A
-            limit stops lock-to-lock flips reaching the wheels (GH-104). The policy has to train
-            with it on, because it adds a lag the policy has not learned to drive with.
         suspension_stiffness_front_n_m: Front coilover wheel rate.
         suspension_stiffness_rear_n_m: Rear wheel rate.
 
@@ -354,7 +350,6 @@ class CarConfig:
     max_steer_rad: float = 0.3142
     steer_gain: float = 12000.0
     steer_damping_nms: float = 200.0
-    max_steer_rate_rad_s: float | None = None
     suspension_stiffness_front_n_m: float = 100_000.0
     suspension_stiffness_rear_n_m: float = 90_000.0
     suspension_damping_ns_m: float = 6_500.0
@@ -398,10 +393,6 @@ class CarConfig:
         for name, value in positives.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
-        if self.max_steer_rate_rad_s is not None and self.max_steer_rate_rad_s <= 0:
-            raise ValueError(
-                f"max_steer_rate_rad_s must be positive or None, got {self.max_steer_rate_rad_s}"
-            )
         if not 0 < self.camera_fovy_deg < 180:
             raise ValueError(f"camera_fovy_deg must be in (0, 180), got {self.camera_fovy_deg}")
         if self.max_steer_rad >= np.pi / 2:
@@ -833,7 +824,6 @@ class CarDynamics:
             self._suspension_qpos[side] = int(model.jnt_qposadr[joint])
 
         self._gear = 0
-        self._steer_angle_rad = 0.0
 
     @property
     def gear(self) -> int:
@@ -841,9 +831,8 @@ class CarDynamics:
         return self._gear
 
     def reset(self) -> None:
-        """Return to first gear with the steering centred. Call at an episode boundary."""
+        """Return to first gear. Call at an episode boundary."""
         self._gear = 0
-        self._steer_angle_rad = 0.0
 
     def _world_velocity(self, data: mujoco.MjData) -> npt.NDArray[np.float64]:
         velocity = np.zeros(6)
@@ -918,12 +907,6 @@ class CarDynamics:
         self._gear = select_gear(speed / self.car.wheel_radius_m, self._gear, self.powertrain)
 
         angle = steering_angle_rad(control.steer, self.car)
-        if self.car.max_steer_rate_rad_s is not None:
-            # Called once per physics substep, so this moves at most one substep's worth.
-            largest_move = self.car.max_steer_rate_rad_s * float(self._model.opt.timestep)
-            move = float(np.clip(angle - self._steer_angle_rad, -largest_move, largest_move))
-            self._steer_angle_rad += move
-            angle = self._steer_angle_rad
         commands = {"steer_fl": angle, "steer_fr": angle}
 
         # Drive torque uses each wheel's *actual* speed, because the engine is geared to
