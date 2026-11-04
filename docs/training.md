@@ -96,37 +96,46 @@ episode's `start_m`. The four `conditions/*.yaml` and `train_flyvis_cx.yaml` tur
 are renamed `rq1v2_<eye>` and `flyvis_cx_v2` so they do not overwrite the v1 runs.
 
 **Focused starts (GH-103).** Uniform starts share practice out by track length, whatever a
-corner costs. `env.params.start_focus` starts a share of the training episodes inside a zone
-and leaves the rest uniform:
+corner costs. `env.params.start_focus` starts a share of the training episodes inside zones and
+leaves the rest uniform. Each zone gets the same number of starts, however long it is:
 
 ```yaml
 env:
   params:
     random_start: true
-    start_focus: {share: 0.5, from_m: 4000.0, to_m: 5200.0}
+    start_focus:
+      share: 0.5
+      zones: [[470.0, 620.0], [1290.0, 1700.0], [4800.0, 5200.0]]
 ```
 
 It needs `random_start`, and like it reaches only the training env, so evaluation still starts
 on the grid. Without it, a reset seed makes the same single draw and gives the same start as
 before. `episodes.csv` says which kind each drive was (`start_focused`).
 
-`fly_driver/configs/train_lab_vale.yaml` uses this zone for Stowe and Vale. In the runs of
-2026-11-03, 95% of the drives that reached 5,500-5,599 m ended there, and 51 of the 52 drives
-over 3,800 m ended at Vale. A simple centreline-following script holding 85% of the
-`speed_profile` got past Vale from every start tried, so the corner can be driven. Measured
-from rest with that script, on the real physics (its speed cap makes these lower bounds):
+`fly_driver/configs/train_lab_vale.yaml` uses these zones for T3, T5 and T10 (Vale), the corners
+the table below shows the fly can't get through. A simple centreline-following script holding
+85% of the `speed_profile` got through all three from every start tried, so they can be driven.
+The zones come from that script, from rest, on the real physics. Each is past the corner before
+it, and ends where a later start would reach the braking point too slowly. The script's speed
+cap makes these lower bounds, and it never reaches more than 266 km/h at T3's braking point,
+278 km/h at T5's or about 256 km/h at T10's:
 
-| Start | At Stowe's brake point (4,942 m) | At Vale's brake point (5,390 m) |
-|---|---|---|
-| 4,000-4,700 m | ~245 km/h | ~228 km/h |
-| 4,800 m | 216 km/h | 230 km/h |
-| 4,900-5,200 m | already past, or under 120 km/h | ~228 km/h |
-| 5,300 m | - | 180 km/h |
-| 5,350 m | - | 116 km/h |
+| Corner | Braking starts | Start | Speed there |
+|---|---|---|---|
+| T3 | 764 m | 470-550 m | ~235 km/h |
+| | | 600 m | 226 km/h |
+| | | 650 m | 198 km/h |
+| | | 700 m | 151 km/h |
+| T5 | 1,855 m | 1,290-1,650 m | ~246 km/h |
+| | | 1,700 m | 224 km/h |
+| | | 1,750 m | 192 km/h |
+| | | 1,800 m | 138 km/h |
+| T10 | 5,390 m | 4,800-5,200 m | ~228 km/h |
+| | | 5,250 m | 215 km/h |
+| | | 5,300 m | 180 km/h |
 
-A start after about 5,200 m doesn't reach the speed that makes Vale hard, so the zone stops
-there. The car still starts at rest, and a policy can only practise braking from the speed it
-chose to reach.
+The car still starts at rest, and a policy can only practise braking from the speed it chose to
+reach.
 
 A focused drive is short by design, so the lab supervisor scores only the uniform share
 (`fly_driver/training/lab.py`, `scored_drives`). That is the distribution every earlier run
@@ -140,7 +149,7 @@ records them:
 
 | Setting | `train_lab.yaml` | `train_lab_vale.yaml` |
 |---|---|---|
-| `env.params.start_focus` | none, every start uniform | half the drives start at 4,000-5,200 m |
+| `env.params.start_focus` | none, every start uniform | half the drives start before T3, T5 or T10 |
 | `ppo.entropy_coef` | 0.005 | 0.002 |
 
 The test changes both at once, so a result can't say which one caused it. To separate them,
@@ -159,7 +168,7 @@ focused run:
 | Number | Baseline | What improving looks like |
 |---|---|---|
 | Laps | 0, as in every earlier run on that PC | Any |
-| Through Vale (T10, 5,485-5,810 m) | 9 of 6,210 arrivals (0.1%) | The main thing to watch |
+| Through T3, T5 and T10 | 1 of 2,416, 195 of 2,809, 9 of 6,210 | The main thing to watch; `lab_compare.py` prints all three |
 | Best 50-drive score, uniform starts | 1,359 m | Clearly over 1,359 m: one window is only good to about ±100-150 m |
 | Longest drive | 5,486 m | Past 5,486 m |
 | Best grid eval, no noise | 1,184 m | Past 1,184 m |
@@ -183,12 +192,22 @@ when it leaves the corner and not counting one that started inside it:
 | T10, Vale | 5,485-5,810 m | **9 of 6,210** | **0.1%** |
 
 T3 and T10 are why the longest drives used to stop near 4,450 m: that is the distance from just
-past T3 to T10. A lap has to get through both, and `train_lab_vale.yaml` practises only T9 and T10.
+past T3 to T10. A lap has to get through every corner, which is why the recipe practises those two
+and T5.
 
-A 61,440-step check of this recipe from the 1,359 m checkpoint, one trainer on `CSDS_PC_1`, ran
-43 drives: 20 focused, all starting inside the zone. 26 of the 43 reached Vale, against about
-20% of drives in the baseline runs, and none got through. That shows the practice is happening,
-not that it helps.
+A 102,400-step check of this recipe from the 1,359 m checkpoint, one trainer on a desktop RTX
+4060 Ti, ran 105 drives. 57 were focused (54%), all inside a zone: 22 before T3, 15 before T5 and
+20 before T10. Compared with the baseline:
+
+| Corner | Arrivals per drive, baseline | Arrivals per drive, check | Through, check |
+|---|---|---|---|
+| T3 | 0.08 | 0.19 | 0 of 20 |
+| T5 | 0.10 | 0.18 | 2 of 19 |
+| T10 | 0.21 | 0.34 | 0 of 36 |
+
+That shows the practice is happening, not that it helps. 16 of the 57 focused drives ended within
+30 m of their start, against 4 of the 48 uniform ones, so some of it is lost to failed launches.
+Five of those 16 started at 607-615 m, in T2.
 
 To run another condition, copy the file, change `name` and the condition keys, keep the
 seeds. To spread the seeds over the cluster, give every job the same file and a different
