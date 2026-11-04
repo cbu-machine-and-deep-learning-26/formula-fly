@@ -101,6 +101,7 @@ from fly_driver.envs.lap_time_reward import LapTimeReward
 from fly_driver.envs.penalty import OffTrackPenalty, PenaltyWeights
 from fly_driver.envs.scene import SceneConfig
 from fly_driver.envs.segments import SegmentTimer, SegmentTiming, find_segments
+from fly_driver.envs.start_focus import StartFocus, draw_start
 from fly_driver.envs.surface import SurfaceGrip
 from fly_driver.interface import (
     FRAME_RATE_HZ,
@@ -197,9 +198,9 @@ class PracticeTrack:
             :class:`~fly_driver.envs.scene.SceneConfig`, which starts the car
             ``grid_offset_m`` behind the line so the first lap is timed from a real
             crossing rather than from wherever the simulator booted.
-        seed: Default seed, overridable per episode by :meth:`reset`. The only thing drawn
-            from it is the ``random_start`` position, so a given reset seed always gives the
-            same episode.
+        seed: Default seed, overridable per episode by :meth:`reset`. The only things drawn
+            from it are the ``random_start`` position and ``start_focus``'s choice, so a given
+            reset seed always gives the same episode.
         max_steps: Truncate the episode after this many steps. ``None`` runs forever, which
             is what a hand-driven session or a lap-time measurement wants.
         frame_shape: ``(height, width, 3)``. Must fit inside the scene's offscreen buffer.
@@ -230,6 +231,10 @@ class PracticeTrack:
             assumes the grid: the lap timer waits for the first crossing of the line
             (the out lap), segments re-anchor at the start, and progress is a per-step
             delta that is safe across the seam.
+        start_focus: Start a share of the ``random_start`` episodes inside a zone of the
+            track, as a :class:`~fly_driver.envs.start_focus.StartFocus` or a mapping of its
+            fields. ``None``, the default, leaves every start uniform. Needs ``random_start``.
+            ``info["start_focused"]`` says which kind the episode's start was.
         stall_speed_mps: End the episode once the car has been slower than this for more
             than ``stall_seconds``, and report ``info["stalled"]``. ``None``, the default,
             never stalls. The clock runs from the first step, so a car that never pulls away
@@ -265,6 +270,7 @@ class PracticeTrack:
         camera: str = DEFAULT_CAMERA,
         reward: RewardFunction | Mapping[str, Any] | None = None,
         random_start: bool = False,
+        start_focus: StartFocus | Mapping[str, float] | None = None,
         stall_speed_mps: float | None = None,
         stall_seconds: float = 2.5,
         braking_line_fade_steps: int = 0,
@@ -284,6 +290,8 @@ class PracticeTrack:
             raise ValueError(f"stall_speed_mps must be positive or None, got {stall_speed_mps}")
         if stall_seconds <= 0:
             raise ValueError(f"stall_seconds must be positive, got {stall_seconds}")
+        if start_focus is not None and not random_start:
+            raise ValueError("start_focus needs random_start: it reshapes the random starts")
 
         self.car = car or CarConfig()
         self.scene = scene or SceneConfig()
@@ -301,6 +309,10 @@ class PracticeTrack:
         self._max_steps = max_steps
         self._camera = camera
         self.random_start = bool(random_start)
+        if isinstance(start_focus, Mapping):
+            start_focus = StartFocus(**start_focus)
+        self.start_focus = start_focus
+        self._start_focused = False
         self.seed = int(seed)
         self.rng = np.random.default_rng(self.seed)
 
@@ -314,6 +326,11 @@ class PracticeTrack:
             )
 
         self.centerline = Centerline.load()
+        if self.start_focus is not None and self.start_focus.to_m > self.centerline.length:
+            raise ValueError(
+                f"start_focus.to_m={self.start_focus.to_m} is past the end of the "
+                f"{self.centerline.length:.0f} m lap"
+            )
         self._model = mujoco.MjModel.from_xml_string(
             assemble_model_xml(self.centerline, self.scene, self.car)
         )
@@ -471,7 +488,10 @@ class PracticeTrack:
         # qpos0 holds the grid pose baked into the MJCF by assemble_model_xml.
         mujoco.mj_resetData(self._model, self._data)
         if self.random_start:
-            self._place_car(float(self.rng.uniform(0.0, self.centerline.length)))
+            start_m, self._start_focused = draw_start(
+                self.rng, self.centerline.length, self.start_focus
+            )
+            self._place_car(start_m)
         mujoco.mj_forward(self._model, self._data)
         self._dynamics.reset()
         self._surface.reset()
@@ -768,6 +788,7 @@ class PracticeTrack:
             "off_track_fraction": float(beyond),
             "crashed": crashed,  # this step ended the episode at the track limit
             "stalled": stalled,  # this step ended the episode for being too slow too long
+            "start_focused": self._start_focused,  # this episode's start was from start_focus
             # telemetry
             "steps": self._steps,
             "sim_time": float(self._data.time),

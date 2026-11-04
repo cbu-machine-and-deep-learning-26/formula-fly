@@ -313,6 +313,61 @@ class TestRandomStartReachesOnlyTheTrainingEnv:
         assert seen[0] == {"random_start": True}, "the first env built is the training env"
         assert len(seen) > 1 and all(params == {} for params in seen[1:])
 
+    def test_a_start_focus_is_training_only_too(self, monkeypatch):
+        """A focus left on an evaluation env would be refused for having no random start."""
+        focus = {"share": 0.5, "from_m": 4000.0, "to_m": 5200.0}
+        params = {"random_start": True, "start_focus": focus, "track_limit": 0.15}
+        seen: list[dict] = []
+        monkeypatch.setitem(
+            train_module.ENV_BUILDERS, "dummy", lambda config: seen.append(dict(config.params))
+        )
+        config = EnvConfig(type="dummy", params=params)
+        build_env(config, training=True)
+        build_env(config)
+        assert seen == [params, {"track_limit": 0.15}]
+
+    def test_episodes_csv_says_which_starts_were_focused(self, monkeypatch, tmp_path: Path):
+        class FocusedEveryOtherEpisode(DummyTrackEnv):
+            """Publishes the env's flag, so the loop's handling is what is under test."""
+
+            episodes = 0
+
+            def reset(self, *args, **kwargs):
+                frame, info = super().reset(*args, **kwargs)
+                type(self).episodes += 1
+                return frame, {**info, "start_focused": type(self).episodes % 2 == 0}
+
+        monkeypatch.setitem(
+            train_module.ENV_BUILDERS,
+            "dummy",
+            lambda config: FocusedEveryOtherEpisode(max_steps=config.max_steps),
+        )
+        config = _config(tmp_path, env=EnvConfig(type="dummy", max_steps=40))
+        result = train_seed(config, 0)
+        with (result.run_dir / "episodes.csv").open(encoding="utf-8", newline="") as handle:
+            kinds = [row["start_focused"] for row in csv.DictReader(handle)]
+        assert len(kinds) >= 2
+        assert kinds[:2] == ["False", "True"]
+
+    def test_an_env_that_publishes_no_flag_logs_false(self, tmp_path: Path):
+        result = train_seed(_config(tmp_path, env=EnvConfig(type="dummy", max_steps=40)), 0)
+        with (result.run_dir / "episodes.csv").open(encoding="utf-8", newline="") as handle:
+            assert {row["start_focused"] for row in csv.DictReader(handle)} == {"False"}
+
+    @pytest.mark.render
+    def test_the_vale_recipe_trains_focused_and_evaluates_from_the_grid(self):
+        config = TrainConfig.from_yaml(CONDITIONS_DIR.parent / "train_lab_vale.yaml").env
+        training, evaluation = build_env(config, training=True), build_env(config)
+        try:
+            assert training.random_start and training.start_focus is not None
+            assert not evaluation.random_start and evaluation.start_focus is None
+            _, info = evaluation.reset(seed=5)
+            assert np.array_equal(evaluation.data.qpos, evaluation.model.qpos0)
+            assert not info["start_focused"]
+        finally:
+            training.close()
+            evaluation.close()
+
     @pytest.mark.render
     def test_the_checked_in_conditions_train_from_random_starts_and_eval_from_the_grid(self):
         config = TrainConfig.from_yaml(CONDITIONS_DIR / "cnn.yaml").env
