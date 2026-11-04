@@ -153,20 +153,37 @@ folders. It only reads, so it is safe while either folder trains:
 .venv-flyvis\Scripts\python.exe scripts\lab_compare.py D:\formula-fly D:\formula-fly-vale
 ```
 
-The baseline, from `CSDS_PC_2` on the evening of 2026-11-03, before any focused run:
+The baseline, from `CSDS_PC_2` over 2026-11-03 and 04 (29,336 drives, 25.4M steps), before any
+focused run:
 
 | Number | Baseline | What improving looks like |
 |---|---|---|
-| Laps | 0 in 174,466 drives | Any |
-| Through Vale (5,500-5,600 m) | About 5% of arrivals | The main thing to watch |
+| Laps | 0, and 0 in the 174,466 drives on that PC before these | Any |
+| Through Vale (T10, 5,485-5,810 m) | 9 of 6,210 arrivals (0.1%) | The main thing to watch |
 | Best 50-drive score, uniform starts | 1,359 m | Clearly over 1,359 m: one window is only good to about ±100-150 m |
-| Longest drive | 4,475 m | Past 4,475 m, which is where Vale stops them |
-| Best grid eval, no noise | 1,183 m | Past 1,183 m |
+| Longest drive | 5,486 m | Past 5,486 m |
+| Best grid eval, no noise | 1,184 m | Past 1,184 m |
 | Mean \|steer\| | About 0.85 | Falling, if the driving is getting calmer |
-| Entropy | Rising, 2.0-2.15 | Falling slowly, not collapsing to the 1.2-1.5 of round 6 |
+| Entropy | Rising, to 2.35 by 5M steps | Falling slowly, not collapsing to the 1.2-1.5 of round 6 |
 
-The 5% counts a drive that started inside the stretch as an arrival. `lab_compare.py` doesn't,
-so its figure for the same runs can come out a little lower.
+Vale is not the only wall. The same drives, corner by corner, counting a drive as through only
+when it leaves the corner and not counting one that started inside it:
+
+| Corner | Where | Through | |
+|---|---|---|---|
+| T1 | 370-465 m | 1,111 of 2,366 | 47% |
+| T2 | 575-695 m | 1,405 of 1,572 | 89% |
+| T3 | 855-1,115 m | **1 of 2,416** | **0.04%** |
+| T4 | 1,210-1,285 m | 329 of 741 | 44% |
+| T5 | 1,895-2,310 m | 195 of 2,809 | 7% |
+| T6 | 2,430-2,625 m | 1,493 of 1,614 | 93% |
+| T7 | 3,010-3,175 m | 2,962 of 3,719 | 80% |
+| T8 | 3,590-4,230 m | 1,467 of 4,612 | 32% |
+| T9, Stowe | 4,960-5,165 m | 4,420 of 6,060 | 73% |
+| T10, Vale | 5,485-5,810 m | **9 of 6,210** | **0.1%** |
+
+T3 and T10 are why the longest drives used to stop near 4,450 m: that is the distance from just
+past T3 to T10. A lap has to get through both, and `train_lab_vale.yaml` practises only T9 and T10.
 
 A 61,440-step check of this recipe from the 1,359 m checkpoint, one trainer on `CSDS_PC_1`, ran
 43 drives: 20 focused, all starting inside the zone. 26 of the 43 reached Vale, against about

@@ -35,10 +35,10 @@ __all__ = [
     "summarize_run",
 ]
 
-#: Vale on the practice track, by where drives ended on 2026-11-03: 95% of the drives that
-#: reached this stretch ended in it.
-VALE_FROM_M = 5500.0
-VALE_TO_M = 5600.0
+#: Vale, the track's corner T10 (fly_driver.envs.segments). A drive has to leave the whole corner
+#: to count as through it: 9 of 6,210 arrivals did in the baseline runs of 2026-11-03 and 04.
+VALE_FROM_M = 5485.0
+VALE_TO_M = 5810.0
 LAP_M = 5886.8
 
 #: Config keys that name a run rather than describe its recipe.

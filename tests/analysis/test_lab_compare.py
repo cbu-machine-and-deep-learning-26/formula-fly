@@ -30,7 +30,7 @@ class TestCornerSurvival:
         assert corner_survival([(5000.0, 515.0)]) == (1, 0)
 
     def test_leaving_the_corner_is_a_pass(self) -> None:
-        assert corner_survival([(5000.0, 700.0)]) == (1, 1)
+        assert corner_survival([(5000.0, 900.0)]) == (1, 1)
 
     def test_starting_inside_the_corner_has_not_arrived_at_it(self) -> None:
         """A start past the corner's entry must not count as surviving it."""
@@ -46,7 +46,7 @@ class TestCornerSurvival:
         assert corner_survival([(5000.0, once_round_and_through)]) == (2, 2)
 
     def test_the_counts_add_up_over_many_drives(self) -> None:
-        assert corner_survival([(5000.0, 515.0), (5000.0, 700.0), (100.0, 50.0)]) == (2, 1)
+        assert corner_survival([(5000.0, 515.0), (5000.0, 900.0), (100.0, 50.0)]) == (2, 1)
 
 
 class TestConfigDifferences:
@@ -109,7 +109,7 @@ def _write_run(
 
 def test_a_run_reads_the_supervisors_score_and_counts_every_drive_for_vale(tmp_path: Path) -> None:
     uniform = [(100.0, 1000.0, False)] * 50
-    focused_through_vale = [(5000.0, 700.0, True)] * 50
+    focused_through_vale = [(5000.0, 900.0, True)] * 50
     run_dir = _write_run(tmp_path, "lab_20261104_g1", 2, 2.1, uniform + focused_through_vale)
     summary = summarize_run(run_dir)
     assert summary.seed == 2
@@ -146,7 +146,7 @@ def test_a_run_with_nothing_yet_does_not_crash(tmp_path: Path) -> None:
 def test_the_comparison_marks_the_difference_and_prints_both_folders(tmp_path: Path) -> None:
     base, test = tmp_path / "formula-fly", tmp_path / "formula-fly-vale"
     _write_run(base, "lab_20261104_g1", 0, 0.005, [(5000.0, 515.0, False)] * 60)
-    _write_run(test, "lab_20261104_g1", 0, 0.002, [(5000.0, 700.0, False)] * 60)
+    _write_run(test, "lab_20261104_g1", 0, 0.002, [(5000.0, 900.0, False)] * 60)
     text = format_comparison(base, test)
     assert "ppo.entropy_coef: 0.005 -> 0.002" in text
     assert "through Vale        0.0%  (0 of 60 arrivals)" in text
