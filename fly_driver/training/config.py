@@ -225,8 +225,9 @@ class EnvConfig:
         params: Extra constructor keyword arguments. For ``practice_track`` the key
             ``racing_line`` (bool) selects the painted line -- leave it on for hand driving,
             turn it off for RQ1 comparisons (see the env's docstring) -- ``random_start``
-            (bool) reaches only the training env, never an evaluation one, and everything
-            else (``track_limit``, ``frame_shape``...) goes to ``PracticeTrack`` as given.
+            (bool) and ``start_focus`` (mapping) reach only the training env, never an
+            evaluation one, and everything else (``track_limit``, ``frame_shape``...) goes to
+            ``PracticeTrack`` as given.
     """
 
     type: str = "practice_track"

@@ -77,7 +77,7 @@ misspelt hyperparameter cannot silently keep its default.
 | `policy` | `hidden_sizes`, `activation`, `normalize_features`, `init_log_std`, `init_action_mean` (default zeros) |
 | `env.type` | `practice_track` or `dummy` |
 | `env.max_steps` | Episode truncation in frames. 15 000 = 5 minutes at 50 Hz, room for a slow clean lap |
-| `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, `random_start` (training env only, see below), and anything else `PracticeTrack` takes |
+| `env.params` | For the practice track: `racing_line` (turn it **off** for the RQ1 comparisons; the env's docstring says why), `track_limit`, `random_start` and `start_focus` (training env only, see below), and anything else `PracticeTrack` takes |
 | `ppo` | CleanRL's continuous-control defaults: 2048-step rollouts, 32 minibatches, 10 epochs, lr 3e-4 annealed, γ 0.99, λ 0.95, clip 0.2 |
 | `eval` | `every_updates` (0 = off), `episodes`, `max_steps`, `record_video` |
 | `logging.wandb` | `enabled: false` by default; `project`, `entity`, `mode`, `tags` |
@@ -94,6 +94,101 @@ evaluation, `scripts/evaluate.py` and robustness build the env without it and st
 grid, so their lap times compare with every other run. `episodes.csv` records each
 episode's `start_m`. The four `conditions/*.yaml` and `train_flyvis_cx.yaml` turn it on and
 are renamed `rq1v2_<eye>` and `flyvis_cx_v2` so they do not overwrite the v1 runs.
+
+**Focused starts (GH-103).** Uniform starts share practice out by track length, whatever a
+corner costs. `env.params.start_focus` starts a share of the training episodes inside a zone
+and leaves the rest uniform:
+
+```yaml
+env:
+  params:
+    random_start: true
+    start_focus: {share: 0.5, from_m: 4000.0, to_m: 5200.0}
+```
+
+It needs `random_start`, and like it reaches only the training env, so evaluation still starts
+on the grid. Without it, a reset seed makes the same single draw and gives the same start as
+before. `episodes.csv` says which kind each drive was (`start_focused`).
+
+`fly_driver/configs/train_lab_vale.yaml` uses this zone for Stowe and Vale. In the runs of
+2026-11-03, 95% of the drives that reached 5,500-5,599 m ended there, and 51 of the 52 drives
+over 3,800 m ended at Vale. A simple centreline-following script holding 85% of the
+`speed_profile` got past Vale from every start tried, so the corner can be driven. Measured
+from rest with that script, on the real physics (its speed cap makes these lower bounds):
+
+| Start | At Stowe's brake point (4,942 m) | At Vale's brake point (5,390 m) |
+|---|---|---|
+| 4,000-4,700 m | ~245 km/h | ~228 km/h |
+| 4,800 m | 216 km/h | 230 km/h |
+| 4,900-5,200 m | already past, or under 120 km/h | ~228 km/h |
+| 5,300 m | - | 180 km/h |
+| 5,350 m | - | 116 km/h |
+
+A start after about 5,200 m doesn't reach the speed that makes Vale hard, so the zone stops
+there. The car still starts at rest, and a policy can only practise braking from the speed it
+chose to reach.
+
+A focused drive is short by design, so the lab supervisor scores only the uniform share
+(`fly_driver/training/lab.py`, `scored_drives`). That is the distribution every earlier run
+was scored on, so `weights/best/best.json` means the same thing either side of the change, and
+a focused run isn't restarted just for having short drives. Compare runs on that score and on
+Vale survival, not on the mean of every drive.
+
+**The Vale test, and how to read it.** The test folder runs `train_lab_vale.yaml`. The base
+folder runs `train_lab.yaml`. They differ in two settings, and each run's own `config.yaml`
+records them:
+
+| Setting | `train_lab.yaml` | `train_lab_vale.yaml` |
+|---|---|---|
+| `env.params.start_focus` | none, every start uniform | half the drives start at 4,000-5,200 m |
+| `ppo.entropy_coef` | 0.005 | 0.002 |
+
+The test changes both at once, so a result can't say which one caused it. To separate them,
+run a follow-up with one of the two put back.
+
+`scripts/lab_compare.py` prints the recipe differences as run, then the same numbers for both
+folders. It only reads, so it is safe while either folder trains:
+
+```powershell
+.venv-flyvis\Scripts\python.exe scripts\lab_compare.py D:\formula-fly D:\formula-fly-vale
+```
+
+The baseline, from `CSDS_PC_2` over 2026-11-03 and 04 (29,336 drives, 25.4M steps), before any
+focused run:
+
+| Number | Baseline | What improving looks like |
+|---|---|---|
+| Laps | 0, as in every earlier run on that PC | Any |
+| Through Vale (T10, 5,485-5,810 m) | 9 of 6,210 arrivals (0.1%) | The main thing to watch |
+| Best 50-drive score, uniform starts | 1,359 m | Clearly over 1,359 m: one window is only good to about ±100-150 m |
+| Longest drive | 5,486 m | Past 5,486 m |
+| Best grid eval, no noise | 1,184 m | Past 1,184 m |
+| Mean \|steer\| | About 0.85 | Falling, if the driving is getting calmer |
+| Entropy | Rising, to 2.35 by 5M steps | Falling slowly, not collapsing to the 1.2-1.5 of round 6 |
+
+Vale is not the only wall. The same drives, corner by corner, counting a drive as through only
+when it leaves the corner and not counting one that started inside it:
+
+| Corner | Where | Through | |
+|---|---|---|---|
+| T1 | 370-465 m | 1,111 of 2,366 | 47% |
+| T2 | 575-695 m | 1,405 of 1,572 | 89% |
+| T3 | 855-1,115 m | **1 of 2,416** | **0.04%** |
+| T4 | 1,210-1,285 m | 329 of 741 | 44% |
+| T5 | 1,895-2,310 m | 195 of 2,809 | 7% |
+| T6 | 2,430-2,625 m | 1,493 of 1,614 | 93% |
+| T7 | 3,010-3,175 m | 2,962 of 3,719 | 80% |
+| T8 | 3,590-4,230 m | 1,467 of 4,612 | 32% |
+| T9, Stowe | 4,960-5,165 m | 4,420 of 6,060 | 73% |
+| T10, Vale | 5,485-5,810 m | **9 of 6,210** | **0.1%** |
+
+T3 and T10 are why the longest drives used to stop near 4,450 m: that is the distance from just
+past T3 to T10. A lap has to get through both, and `train_lab_vale.yaml` practises only T9 and T10.
+
+A 61,440-step check of this recipe from the 1,359 m checkpoint, one trainer on `CSDS_PC_1`, ran
+43 drives: 20 focused, all starting inside the zone. 26 of the 43 reached Vale, against about
+20% of drives in the baseline runs, and none got through. That shows the practice is happening,
+not that it helps.
 
 To run another condition, copy the file, change `name` and the condition keys, keep the
 seeds. To spread the seeds over the cluster, give every job the same file and a different
@@ -114,8 +209,9 @@ runs/<name>/seed_0/eval/step_<n>/    the evaluation harness's episodes.csv + sum
 ```
 
 **`episodes.csv`** -- `seed, episode, update, env_steps, steps, total_return, lap_complete,
-lap_time_s, terminated, truncated, start_m, distance_m` (the arclength the episode started
-at, and metres driven along the centreline), then
+lap_time_s, terminated, truncated, start_m, distance_m, start_focused` (the arclength the
+episode started at, metres driven along the centreline, and whether the start came from
+`start_focus`), then
 one column per reward term:
 `reward_progress, reward_lateral, reward_lap_bonus, reward_off_track` (sorted by name).
 The term columns are what `AGENTS.md` §11 asks for: they always add up to `total_return`,
