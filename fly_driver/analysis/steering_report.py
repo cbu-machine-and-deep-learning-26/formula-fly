@@ -220,6 +220,13 @@ def _stat_columns(stats: SteeringStats) -> dict[str, float | int]:
     }
 
 
+def _standard_error(values: Sequence[float]) -> float:
+    """Standard error of the mean, NaN with fewer than two values."""
+    if len(values) < 2:
+        return float("nan")
+    return float(np.std(values, ddof=1) / np.sqrt(len(values)))
+
+
 def summary_rows(results: Sequence[DriveResult]) -> list[dict[str, Any]]:
     """Pool drives by condition, start kind and region, with all start kinds pooled as ``all``.
 
@@ -249,6 +256,7 @@ def summary_rows(results: Sequence[DriveResult]) -> list[dict[str, Any]]:
                         "region": region,
                         "drives": len(group),
                         "mean_distance_m": round(float(np.mean(distances)), 1),
+                        "distance_se_m": round(_standard_error(distances), 1),
                         **_stat_columns(pooled),
                     }
                 )
@@ -340,12 +348,13 @@ def write_results(results: Sequence[DriveResult], output_dir: Path) -> None:
 def print_summary(results: Sequence[DriveResult]) -> None:
     """Print the pooled table."""
     print(
-        f"{'condition':<12}{'starts':<9}{'region':<10}{'drives':>7}{'mean m':>9}{'seconds':>9}"
-        f"{'flips/s':>9}{'|steer|':>9}{'lock':>7}{'step':>7}"
+        f"{'condition':<12}{'starts':<9}{'region':<10}{'drives':>7}{'mean m':>9}{'se':>6}"
+        f"{'seconds':>9}{'flips/s':>9}{'|steer|':>9}{'lock':>7}{'step':>7}"
     )
     for row in summary_rows(results):
         print(
             f"{row['condition']:<12}{row['start_kind']:<9}{row['region']:<10}{row['drives']:>7}"
-            f"{row['mean_distance_m']:>9.0f}{row['seconds']:>9.1f}{row['flips_per_s']:>9.2f}"
+            f"{row['mean_distance_m']:>9.0f}{row['distance_se_m']:>6.0f}"
+            f"{row['seconds']:>9.1f}{row['flips_per_s']:>9.2f}"
             f"{row['mean_abs_steer']:>9.2f}{row['full_lock_share']:>7.2f}{row['mean_step']:>7.2f}"
         )

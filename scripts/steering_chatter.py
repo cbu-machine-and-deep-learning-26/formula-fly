@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -46,6 +47,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--zone", type=float, nargs=2, default=(4000.0, 5200.0))
     parser.add_argument("--max-steps", type=int, default=7500)
     parser.add_argument("--output", type=Path, default=Path("runs/steering_chatter"))
+    parser.add_argument(
+        "--eye-device",
+        default="cpu",
+        help="cpu repeats bit for bit. On cuda the eye differs by about 1e-6 between runs, and "
+        "the closed loop grows that to a full steering lock within about 4 s.",
+    )
     return parser.parse_args(argv)
 
 
@@ -53,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point; returns the process exit code."""
     args = _parse_args(argv)
     run_config = TrainConfig.from_yaml(args.config)
+    eye_params = {**run_config.eye.params, "device": args.eye_device}
+    run_config = replace(run_config, eye=replace(run_config.eye, params=eye_params))
     grid_env = build_env(run_config.env)
     random_env = build_env(run_config.env, training=True)
     try:

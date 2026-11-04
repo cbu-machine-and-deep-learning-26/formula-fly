@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,22 @@ def test_summary_pools_counts_over_total_time() -> None:
         row for row in rows if row["start_kind"] == "uniform" and row["region"] == "straight"
     )
     assert only_calm["flips"] == 0
+
+
+def test_summary_reports_the_standard_error_of_mean_distance() -> None:
+    near = _result("noise_off", "uniform", [0.0])
+    far = _result("noise_off", "uniform", [0.0])
+    near = replace(near, trace=replace(near.trace, distance_m=100.0))
+    far = replace(far, trace=replace(far.trace, distance_m=300.0))
+    pooled = next(row for row in summary_rows([near, far]) if row["start_kind"] == "all")
+    # Sample std of 100 and 300 is sqrt(20000), over sqrt(2) gives 100.
+    assert pooled["mean_distance_m"] == pytest.approx(200.0)
+    assert pooled["distance_se_m"] == pytest.approx(100.0)
+
+
+def test_one_drive_has_no_standard_error() -> None:
+    row = summary_rows([_result("noise_off", "grid", [0.0])])[0]
+    assert math.isnan(row["distance_se_m"])
 
 
 def test_summary_keeps_conditions_apart() -> None:
