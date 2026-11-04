@@ -11,6 +11,7 @@ on a random-start env. Three kinds of start answer different questions:
 from __future__ import annotations
 
 import csv
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -54,6 +55,11 @@ _ZONE_MAX_TRIES = 2000
 
 REGIONS = ("all", "straight", "corner")
 
+_NUMBER = r"[0-9]+(?:\.[0-9]+)?"
+_CONDITION_LABEL = re.compile(
+    rf"(noise_on|noise_off)?_?(?:gain_({_NUMBER}))?_?(?:smooth_({_NUMBER}))?"
+)
+
 
 @dataclass(frozen=True)
 class ConditionSpec:
@@ -63,29 +69,37 @@ class ConditionSpec:
         noise_on: Sample the policy's actions rather than take its mean.
         blend: Steering low-pass blend, see
             :class:`~fly_driver.analysis.steering_chatter.SmoothedSteering`. ``None`` is off.
+        gain: Multiplies the raw steering mean, see
+            :class:`~fly_driver.policies.scaled_steering_policy.ScaledSteeringPolicy`. ``None``
+            is off.
     """
 
     noise_on: bool
-    blend: float | None
+    blend: float | None = None
+    gain: float | None = None
 
     @classmethod
     def parse(cls, label: str) -> ConditionSpec:
-        """Read ``noise_off``, ``noise_on``, ``smooth_0.2`` or ``noise_on_smooth_0.2``.
+        """Read a condition label.
 
-        ``smooth_<blend>`` alone means noise off.
+        Labels are ``noise_off``, ``noise_on``, ``smooth_<blend>``, ``gain_<gain>``, a noise
+        prefix on either, or ``gain_<gain>_smooth_<blend>``. No noise prefix means noise off.
 
         Raises:
-            ValueError: If the label is none of those, or the blend isn't a number.
+            ValueError: If the label is none of those, or it asks for a gain with noise on,
+                which would change the noise as well as the policy's steering.
         """
-        noise_on = label.startswith("noise_on")
-        rest = label.removeprefix("noise_on").removeprefix("noise_off").removeprefix("_")
-        if not rest:
-            if label in ("noise_on", "noise_off"):
-                return cls(noise_on=noise_on, blend=None)
+        match = _CONDITION_LABEL.fullmatch(label)
+        if match is None or not label:
             raise ValueError(f"unknown condition {label!r}")
-        if not rest.startswith("smooth_"):
-            raise ValueError(f"unknown condition {label!r}")
-        return cls(noise_on=noise_on, blend=float(rest.removeprefix("smooth_")))
+        noise, gain, blend = match.groups()
+        if noise == "noise_on" and gain is not None:
+            raise ValueError(f"condition {label!r} asks for a gain with noise on")
+        return cls(
+            noise_on=noise == "noise_on",
+            blend=None if blend is None else float(blend),
+            gain=None if gain is None else float(gain),
+        )
 
 
 @dataclass(frozen=True)

@@ -159,23 +159,37 @@ def test_print_summary_prints_a_row_per_group(capsys: pytest.CaptureFixture[str]
 
 
 @pytest.mark.parametrize(
-    ("label", "noise_on", "blend"),
+    ("label", "noise_on", "blend", "gain"),
     [
-        ("noise_off", False, None),
-        ("noise_on", True, None),
-        ("smooth_0.2", False, 0.2),
-        ("noise_off_smooth_0.5", False, 0.5),
-        ("noise_on_smooth_0.5", True, 0.5),
+        ("noise_off", False, None, None),
+        ("noise_on", True, None, None),
+        ("smooth_0.2", False, 0.2, None),
+        ("noise_off_smooth_0.5", False, 0.5, None),
+        ("noise_on_smooth_0.5", True, 0.5, None),
+        ("gain_0.5", False, None, 0.5),
+        ("noise_off_gain_0.5", False, None, 0.5),
+        ("gain_1", False, None, 1.0),
+        ("gain_0.5_smooth_0.2", False, 0.2, 0.5),
     ],
 )
-def test_condition_labels_parse(label: str, noise_on: bool, blend: float | None) -> None:
-    assert ConditionSpec.parse(label) == ConditionSpec(noise_on=noise_on, blend=blend)
+def test_condition_labels_parse(
+    label: str, noise_on: bool, blend: float | None, gain: float | None
+) -> None:
+    assert ConditionSpec.parse(label) == ConditionSpec(noise_on, blend, gain)
 
 
-@pytest.mark.parametrize("label", ["", "noise", "noise_onward", "smooth", "smooth_fast"])
+@pytest.mark.parametrize(
+    "label",
+    ["", "noise", "noise_onward", "smooth", "smooth_fast", "gain", "gain_x", "gain_0.5_noise_on"],
+)
 def test_an_unknown_condition_label_is_refused(label: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown condition"):
         ConditionSpec.parse(label)
+
+
+def test_a_gain_with_noise_on_is_refused() -> None:
+    with pytest.raises(ValueError, match="gain with noise on"):
+        ConditionSpec.parse("noise_on_gain_0.5")
 
 
 def test_exit_speed_rows_pool_by_condition_and_straight_in_kmh() -> None:

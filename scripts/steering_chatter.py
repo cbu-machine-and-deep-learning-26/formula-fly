@@ -3,7 +3,7 @@
 Example:
     python scripts/steering_chatter.py --checkpoint weights/best/policy_best.pt
     python scripts/steering_chatter.py --conditions noise_off --uniform-starts 2 --zone-starts 0
-    python scripts/steering_chatter.py --conditions noise_off smooth_0.5 smooth_0.2
+    python scripts/steering_chatter.py --conditions noise_off smooth_0.5 smooth_0.2 gain_0.5
 
 Writes ``episodes.csv``, ``summary.csv``, ``straight_exits.csv`` and one ``.npz`` trace per drive
 to ``--output``. The checkpoint needs its brain beside it. It needs torch and a flyvis install.
@@ -27,6 +27,7 @@ from fly_driver.analysis.steering_report import (
 )
 from fly_driver.envs.segments import find_segments
 from fly_driver.policies.sampled_policy import SampledPolicy
+from fly_driver.policies.scaled_steering_policy import ScaledSteeringPolicy
 from fly_driver.training import TrainConfig
 from fly_driver.training.train import build_env, load_driver
 
@@ -67,7 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         results = []
         for condition in args.conditions:
             spec = ConditionSpec.parse(condition)
-            driver.policy = SampledPolicy(mean_policy) if spec.noise_on else mean_policy
+            if spec.noise_on:
+                driver.policy = SampledPolicy(mean_policy)
+            elif spec.gain is not None:
+                driver.policy = ScaledSteeringPolicy(mean_policy, spec.gain)
+            else:
+                driver.policy = mean_policy
             agent = driver if spec.blend is None else SmoothedSteering(driver, spec.blend)
             results.extend(
                 measure(
