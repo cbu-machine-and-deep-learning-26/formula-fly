@@ -43,9 +43,9 @@ __all__ = [
     "write_results",
 ]
 
-#: Vale's braking zone and corner (#103): the speed profile brakes from 5,390 m to 5,502 m, and
-#: the drives that end there end between 5,500 m and 5,599 m.
-VALE_ZONE_M = (5390.0, 5600.0)
+#: Vale's braking zone and its whole corner, T10: the speed profile brakes from 5,390 m (#103),
+#: and T10 runs from 5,485 m to 5,810 m. A drive that gets past the end has got through it.
+VALE_ZONE_M = (5390.0, 5810.0)
 
 #: Where zone seeds begin, so they never overlap the uniform seeds counted up from 0.
 _ZONE_FIRST_SEED = 1000
@@ -247,6 +247,7 @@ def summary_rows(results: Sequence[DriveResult]) -> list[dict[str, Any]]:
         for kind in [*kinds, "all"]:
             group = [item for item in chosen if kind in ("all", item.start_kind)]
             distances = [item.trace.distance_m for item in group]
+            vale = [zone_outcome(item.trace, *VALE_ZONE_M) for item in group]
             for region in REGIONS:
                 pooled = combine_stats(item.stats[region] for item in group)
                 rows.append(
@@ -257,6 +258,8 @@ def summary_rows(results: Sequence[DriveResult]) -> list[dict[str, Any]]:
                         "drives": len(group),
                         "mean_distance_m": round(float(np.mean(distances)), 1),
                         "distance_se_m": round(_standard_error(distances), 1),
+                        "vale_run_ups": vale.count("ended_in_zone") + vale.count("passed"),
+                        "vale_through": vale.count("passed"),
                         **_stat_columns(pooled),
                     }
                 )
@@ -348,13 +351,14 @@ def write_results(results: Sequence[DriveResult], output_dir: Path) -> None:
 def print_summary(results: Sequence[DriveResult]) -> None:
     """Print the pooled table."""
     print(
-        f"{'condition':<12}{'starts':<9}{'region':<10}{'drives':>7}{'mean m':>9}{'se':>6}"
-        f"{'seconds':>9}{'flips/s':>9}{'|steer|':>9}{'lock':>7}{'step':>7}"
+        f"{'condition':<16}{'starts':<9}{'region':<10}{'drives':>7}{'mean m':>9}{'se':>6}"
+        f"{'vale':>9}{'seconds':>9}{'flips/s':>9}{'|steer|':>9}{'lock':>7}{'step':>7}"
     )
     for row in summary_rows(results):
+        through = f"{row['vale_through']}/{row['vale_run_ups']}"
         print(
-            f"{row['condition']:<12}{row['start_kind']:<9}{row['region']:<10}{row['drives']:>7}"
-            f"{row['mean_distance_m']:>9.0f}{row['distance_se_m']:>6.0f}"
+            f"{row['condition']:<16}{row['start_kind']:<9}{row['region']:<10}{row['drives']:>7}"
+            f"{row['mean_distance_m']:>9.0f}{row['distance_se_m']:>6.0f}{through:>9}"
             f"{row['seconds']:>9.1f}{row['flips_per_s']:>9.2f}"
             f"{row['mean_abs_steer']:>9.2f}{row['full_lock_share']:>7.2f}{row['mean_step']:>7.2f}"
         )

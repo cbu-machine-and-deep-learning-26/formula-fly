@@ -140,6 +140,23 @@ def test_summary_reports_the_standard_error_of_mean_distance() -> None:
     assert pooled["distance_se_m"] == pytest.approx(100.0)
 
 
+def test_summary_counts_vale_run_ups_and_passes_but_not_starts_inside_it() -> None:
+    def drive_at(start_m: float, positions: list[float]) -> DriveResult:
+        base = _result("noise_off", "uniform", [0.0] * len(positions))
+        arclengths = np.array(positions)
+        return replace(base, trace=replace(base.trace, start_m=start_m, arclength_m=arclengths))
+
+    results = [
+        drive_at(5000.0, [5380.0, 5515.0]),  # a run-up that ends inside
+        drive_at(5000.0, [5500.0, 5820.0]),  # a run-up that gets through
+        drive_at(5551.0, [5560.0, 5820.0]),  # started inside: neither
+        drive_at(100.0, [200.0, 300.0]),  # never got there: neither
+    ]
+    row = next(item for item in summary_rows(results) if item["start_kind"] == "all")
+    assert row["vale_run_ups"] == 2
+    assert row["vale_through"] == 1
+
+
 def test_one_drive_has_no_standard_error() -> None:
     row = summary_rows([_result("noise_off", "grid", [0.0])])[0]
     assert math.isnan(row["distance_se_m"])
