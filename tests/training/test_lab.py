@@ -280,3 +280,49 @@ def test_the_vale_recipe_is_train_lab_plus_its_two_changes_and_nothing_else() ->
         ppo=replace(vale.ppo, entropy_coef=recipe.ppo.entropy_coef),
     )
     assert undone == recipe
+
+
+def test_the_combined_recipe_is_the_vale_recipe_plus_the_steering_and_braking_work() -> None:
+    """GH-108's comparison only means something if nothing else changed."""
+    pytest.importorskip("yaml")
+    vale = TrainConfig.from_yaml(CONFIGS / "train_lab_vale.yaml")
+    combined = TrainConfig.from_yaml(CONFIGS / "train_lab_combined.yaml")
+
+    assert combined.env.params["car"] == {"steer_gain": 192000.0, "steer_damping_nms": 800.0}
+    assert combined.env.params["speed_guide"]["start_factor"] == 0.7
+    assert combined.env.params["speed_guide"]["ramp_steps"] == 0, "a ramp breaks the guarantee"
+    assert combined.env.params["reward"]["over_speed_m"] == 0.5
+    assert combined.policy.squash_mean
+    assert combined.env.params["start_focus"] == vale.env.params["start_focus"]
+
+    params = {
+        key: value
+        for key, value in combined.env.params.items()
+        if key not in ("car", "speed_guide")
+    }
+    params["reward"] = {
+        key: value
+        for key, value in params["reward"].items()
+        if key not in ("over_speed_m", "over_speed_gamma")
+    }
+    undone = replace(
+        combined,
+        name=vale.name,
+        env=replace(combined.env, params=params),
+        policy=replace(combined.policy, squash_mean=False),
+    )
+    assert undone == vale
+
+
+def test_the_shaping_discount_matches_ppo_or_the_guarantee_is_gone() -> None:
+    pytest.importorskip("yaml")
+    combined = TrainConfig.from_yaml(CONFIGS / "train_lab_combined.yaml")
+    assert combined.env.params["reward"]["over_speed_gamma"] == combined.ppo.gamma
+
+
+def test_the_refund_stays_under_the_crash_cost_at_ordinary_crash_speeds() -> None:
+    """A positive reward on the crash frame could teach that a crash at speed is fine."""
+    pytest.importorskip("yaml")
+    reward = TrainConfig.from_yaml(CONFIGS / "train_lab_combined.yaml").env.params["reward"]
+    usual_excess_mps = 20.0
+    assert reward["over_speed_m"] * usual_excess_mps < reward["crash_penalty_m"]
