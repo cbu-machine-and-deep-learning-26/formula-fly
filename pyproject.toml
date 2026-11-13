@@ -32,6 +32,11 @@ dev = [
     "pyyaml>=6.0",
     "imageio>=2.34",
 ]
+# The reward coach (scripts/reward_coach.py, docs/reward-coach.md): Claude reviews a run.
+coach = [
+    "anthropic>=2.5",
+    "pyyaml>=6.0",
+]
 
 # There is deliberately no `flyvis` extra here, and torch does not belong in this file.
 # The optic lobe installs into its own virtualenv from `requirements-flyvis.txt` --

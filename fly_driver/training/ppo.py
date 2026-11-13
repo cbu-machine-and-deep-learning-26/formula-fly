@@ -26,6 +26,7 @@ stepping on it, and the tests pin the advantage recursion to a hand-computed cas
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -37,6 +38,7 @@ from torch import nn
 from fly_driver.brains.central_complex import CentralComplexBrain
 from fly_driver.policies.mlp_policy import ACTION_DIM, MlpPolicy
 from fly_driver.training.config import PPOConfig
+from fly_driver.training.teacher import teacher_loss as driving_teacher_loss
 
 __all__ = ["DifferentiableEye", "PPOLearner", "RolloutBuffer", "UpdateStats"]
 
@@ -97,6 +99,13 @@ class RolloutBuffer:
             None if brain_dims is None else np.zeros((self.steps, brain_dims[1]), np.float32)
         )
         self.raw_actions = np.zeros((self.steps, ACTION_DIM), dtype=np.float32)
+        # The driving teacher's raw (steer, throttle, brake) targets; read only with a teacher.
+        self.teacher_targets = np.zeros((self.steps, ACTION_DIM), dtype=np.float32)
+        # False where the trainer executed the teacher's action instead of the policy's: PPO
+        # skips those steps (their log-probs are not the policy's), the teacher loss keeps them.
+        self.policy_mask = np.ones(self.steps, dtype=np.bool_)
+        # Per-step weight of the teacher's pedal loss (env.params.teacher_weights).
+        self.teacher_weights = np.ones(self.steps, dtype=np.float32)
         self.log_probs = np.zeros(self.steps, dtype=np.float32)
         self.rewards = np.zeros(self.steps, dtype=np.float32)
         self.episode_ends = np.zeros(self.steps, dtype=np.bool_)
@@ -185,6 +194,7 @@ class UpdateStats:
     explained_variance: float
     learning_rate: float
     epochs_run: int
+    teacher_loss: float = 0.0
 
 
 class PPOLearner:
@@ -276,12 +286,17 @@ class PPOLearner:
         advantages = torch.as_tensor(buffer.advantages, device=self.device)
         returns = torch.as_tensor(buffer.returns, device=self.device)
         old_values = torch.as_tensor(buffer.values, device=self.device)
+        teacher_targets = torch.as_tensor(buffer.teacher_targets, device=self.device)
+        policy_mask = torch.as_tensor(buffer.policy_mask, device=self.device).float()
+        teacher_weights = torch.as_tensor(buffer.teacher_weights, device=self.device)
+        use_teacher = config.uses_teacher
 
         policy_losses: list[float] = []
         value_losses: list[float] = []
         entropies: list[float] = []
         kls: list[float] = []
         clip_fractions: list[float] = []
+        teacher_losses: list[float] = []
         epochs_run = 0
         stop = False
         for _ in range(config.epochs):
@@ -303,36 +318,42 @@ class PPOLearner:
                 log_prob, entropy, value = self.policy.evaluate_actions(
                     batch_features, raw_actions[index]
                 )
-                log_ratio = log_prob - old_log_probs[index]
+                mask = policy_mask[index]
+                masked_mean = functools.partial(_masked_mean, mask=mask)
+
+                # Teacher-executed steps carry no log-prob of the policy's; zero their ratio
+                # term before exp so a far-off action cannot overflow.
+                log_ratio = (log_prob - old_log_probs[index]) * mask
                 ratio = log_ratio.exp()
                 with torch.no_grad():
-                    approx_kl = ((ratio - 1.0) - log_ratio).mean()
-                    clip_fraction = ((ratio - 1.0).abs() > config.clip_coef).float().mean()
+                    approx_kl = masked_mean((ratio - 1.0) - log_ratio)
+                    clip_fraction = masked_mean(((ratio - 1.0).abs() > config.clip_coef).float())
 
                 batch_advantages = advantages[index]
-                if config.normalize_advantages and index.numel() > 1:
-                    batch_advantages = (batch_advantages - batch_advantages.mean()) / (
-                        batch_advantages.std() + 1e-8
-                    )
+                if config.normalize_advantages and mask.sum() > 1:
+                    mean = masked_mean(batch_advantages)
+                    # Bessel's correction, as torch.std: an all-policy batch normalises as before.
+                    deviations = ((batch_advantages - mean).square() * mask).sum()
+                    std = (deviations / (mask.sum() - 1.0)).sqrt()
+                    batch_advantages = (batch_advantages - mean) / (std + 1e-8)
                 surrogate = -batch_advantages * ratio
                 surrogate_clipped = -batch_advantages * torch.clamp(
                     ratio, 1.0 - config.clip_coef, 1.0 + config.clip_coef
                 )
-                policy_loss = torch.max(surrogate, surrogate_clipped).mean()
+                policy_loss = masked_mean(torch.max(surrogate, surrogate_clipped))
 
                 if config.clip_value_loss:
                     value_clipped = old_values[index] + torch.clamp(
                         value - old_values[index], -config.clip_coef, config.clip_coef
                     )
-                    value_loss = (
-                        0.5
-                        * torch.max(
+                    value_loss = 0.5 * masked_mean(
+                        torch.max(
                             (value - returns[index]).square(),
                             (value_clipped - returns[index]).square(),
-                        ).mean()
+                        )
                     )
                 else:
-                    value_loss = 0.5 * (value - returns[index]).square().mean()
+                    value_loss = 0.5 * masked_mean((value - returns[index]).square())
 
                 entropy_mean = entropy.mean()
                 loss = (
@@ -340,6 +361,20 @@ class PPOLearner:
                     - config.entropy_coef * entropy_mean
                     + config.value_coef * value_loss
                 )
+                if use_teacher:
+                    # The teacher pulls the mean action, not the samples: exploration noise
+                    # stays PPO's, and the ratio above already saw these parameters.
+                    mean_action = self.policy(batch_features)[0]
+                    targets = teacher_targets[index]
+                    pedal_loss = driving_teacher_loss(
+                        mean_action[:, 1:3], targets[:, 1:3], teacher_weights[index]
+                    )
+                    steer_loss = driving_teacher_loss(mean_action[:, :1], targets[:, :1])
+                    teacher_loss = (
+                        config.teacher_coef * pedal_loss + config.teacher_steer_coef * steer_loss
+                    )
+                    loss = loss + teacher_loss
+                    teacher_losses.append(teacher_loss.item())
                 if not torch.isfinite(loss):
                     raise RuntimeError(
                         f"non-finite PPO loss at update {update_index}: policy "
@@ -374,7 +409,13 @@ class PPOLearner:
             explained_variance=explained,
             learning_rate=learning_rate,
             epochs_run=epochs_run,
+            teacher_loss=float(np.mean(teacher_losses)) if teacher_losses else 0.0,
         )
+
+
+def _masked_mean(values: torch.Tensor, *, mask: torch.Tensor) -> torch.Tensor:
+    """Mean of ``values`` over the rows ``mask`` (0/1 floats) keeps; 0 when it keeps none."""
+    return (values * mask).sum() / mask.sum().clamp(min=1.0)
 
 
 def _optional_tensor(array: np.ndarray | None, device: torch.device) -> torch.Tensor | None:

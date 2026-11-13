@@ -87,6 +87,7 @@ determinism check. Compare the physics, or compare frames with a tolerance.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -248,6 +249,9 @@ class PracticeTrack:
             through :meth:`set_training_steps`, on the training env and on every evaluation
             env, so an evaluation sees the fade training has reached. 0 shows the line at
             once. A warm-started eye that never saw the line stalled on it (v7b).
+        mirror: Drive Silverstone flipped left to right: every corner turns the other way.
+            A policy that memorised the circuit fails here; one that steers from what it
+            sees should not. Arclengths are unchanged, so corner zones still apply.
 
     Raises:
         ValueError: If any argument is out of range, if the frame does not fit the
@@ -274,6 +278,7 @@ class PracticeTrack:
         stall_speed_mps: float | None = None,
         stall_seconds: float = 2.5,
         braking_line_fade_steps: int = 0,
+        mirror: bool = False,
     ) -> None:
         shape = tuple(int(value) for value in frame_shape)
         if len(shape) != 3 or shape[2] != 3:
@@ -325,7 +330,7 @@ class PracticeTrack:
                 "SceneConfig.offscreen_width/height"
             )
 
-        self.centerline = Centerline.load()
+        self.centerline = Centerline.load().mirrored() if mirror else Centerline.load()
         if self.start_focus is not None:
             furthest_m = max(to_m for _, to_m in self.start_focus.zones)
             if furthest_m > self.centerline.length:
@@ -699,6 +704,13 @@ class PracticeTrack:
         self._corner_paid_at[index] = self._odometer_m
         return True
 
+    def _heading_error(self, projection: Projection) -> float:
+        """The car's yaw minus the centreline's at ``projection``, wrapped to ``[-pi, pi)``."""
+        w, x, y, z = (float(value) for value in self._data.xquat[self._body])
+        car_yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        _, track_yaw = self.centerline.pose_at(projection.arclength)
+        return (car_yaw - float(track_yaw) + math.pi) % (2.0 * math.pi) - math.pi
+
     def _project(self) -> Projection:
         position = self._data.xpos[self._body]
         return self.centerline.project(float(position[0]), float(position[1]))
@@ -787,6 +799,9 @@ class PracticeTrack:
             "progress_m": float(progress_m),
             "speed_mps": 0.0 if diverged else self._dynamics.speed_mps(self._data),
             "lateral_m": 0.0 if projection is None else projection.lateral,
+            # The car's heading minus the centreline's, wrapped to [-pi, pi); positive points
+            # left of the direction of travel, like lateral_m. Training-only teachers read it.
+            "heading_error_rad": 0.0 if projection is None else self._heading_error(projection),
             "off_track_fraction": float(beyond),
             "crashed": crashed,  # this step ended the episode at the track limit
             "stalled": stalled,  # this step ended the episode for being too slow too long

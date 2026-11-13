@@ -365,3 +365,16 @@ class TestOffTrackFraction:
                 )
                 == 0.0
             ), f"centreline is off track at {arclength:.0f} m"
+
+
+def test_mirrored_flips_every_corner_and_swaps_widths() -> None:
+    from fly_driver.envs.segments import signed_curvature
+
+    track = Centerline.load()
+    flipped = track.mirrored()
+    assert flipped.length == pytest.approx(track.length)
+    np.testing.assert_allclose(flipped.points[:, 0], -track.points[:, 0])
+    np.testing.assert_allclose(flipped.half_width_left, track.half_width_right)
+    np.testing.assert_allclose(
+        signed_curvature(flipped.points), -signed_curvature(track.points), atol=1e-9
+    )
