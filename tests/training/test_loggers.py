@@ -89,7 +89,8 @@ class TestEpisodeRows:
         header = logger.episodes_path.read_text(encoding="utf-8").splitlines()[0]
         assert header.startswith(
             "seed,episode,update,env_steps,steps,total_return,lap_complete,lap_time_s,"
-            "terminated,truncated,start_m,distance_m,start_focused,reward_"
+            "terminated,truncated,start_m,distance_m,start_focused,end_reason,max_speed_kmh,"
+            "teacher_driven,reward_"
         )
 
     def test_rows_are_on_disk_before_close(self, tmp_path: Path):

@@ -39,7 +39,7 @@ import shutil
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -49,10 +49,6 @@ import torch
 from fly_driver.brains.blank import blank_trainable_parameter_count
 from fly_driver.brains.central_complex import CentralComplexBrain
 from fly_driver.drivers import DirectDriveAgent
-from fly_driver.envs.assetto_corsa import AssettoCorsaTrack
-from fly_driver.envs.dummy_track import DummyTrackEnv
-from fly_driver.envs.practice_track import PracticeTrack
-from fly_driver.envs.scene import SceneConfig
 from fly_driver.eyes.cnn_eye import CnnEye
 from fly_driver.eyes.flyvis_eye import FlyvisEye
 from fly_driver.eyes.pixel_eye import PixelEye
@@ -62,14 +58,13 @@ from fly_driver.interface import ControlVector, Eye, validate_features, validate
 from fly_driver.policies.mlp_policy import MlpPolicy
 from fly_driver.training.config import (
     KNOWN_BRAINS,
-    KNOWN_ENV_TYPES,
     KNOWN_EYE_TYPES,
     BrainConfig,
-    EnvConfig,
     EyeConfig,
     PolicyConfig,
     TrainConfig,
 )
+from fly_driver.training.env_factory import ENV_BUILDERS, build_env
 from fly_driver.training.evaluation import EvalConfig, EvalReport, evaluate, seed_everything
 from fly_driver.training.loggers import (
     EPISODES_FILENAME,
@@ -110,23 +105,6 @@ ProgressCallback = Callable[[UpdateRecord], None]
 # -- building the stages from their config ------------------------------------------------
 
 
-def _build_practice_track(config: EnvConfig) -> PracticeTrack:
-    params = dict(config.params)
-    scene_kwargs = dict(params.pop("scene", {}) or {})
-    if "racing_line" in params:
-        scene_kwargs["racing_line"] = bool(params.pop("racing_line"))
-    scene = SceneConfig(**scene_kwargs) if scene_kwargs else None
-    return PracticeTrack(scene=scene, max_steps=config.max_steps, **params)
-
-
-def _build_dummy_track(config: EnvConfig) -> DummyTrackEnv:
-    return DummyTrackEnv(max_steps=config.max_steps, **config.params)
-
-
-def _build_assetto_corsa(config: EnvConfig) -> AssettoCorsaTrack:
-    return AssettoCorsaTrack.connect(max_steps=config.max_steps, **config.params)
-
-
 def _build_flyvis_eye(config: EyeConfig, env: Any) -> Eye:
     return FlyvisEye(
         frame_shape=tuple(env.frame_shape),
@@ -155,13 +133,6 @@ def _build_pixel_eye(config: EyeConfig, env: Any) -> Eye:
     return PixelEye(frame_shape=tuple(env.frame_shape), **config.params)
 
 
-#: Env type name → builder. Keyed exactly like :data:`~fly_driver.training.config.KNOWN_ENV_TYPES`.
-ENV_BUILDERS: dict[str, Callable[[EnvConfig], Any]] = {
-    "practice_track": _build_practice_track,
-    "dummy": _build_dummy_track,
-    "assetto_corsa": _build_assetto_corsa,
-}
-
 #: Eye type name → builder taking the env, which supplies ``frame_shape`` and
 #: ``frame_rate_hz`` so the eye and the track cannot disagree.
 EYE_BUILDERS: dict[str, Callable[[EyeConfig, Any], Eye]] = {
@@ -186,32 +157,8 @@ BRAIN_BUILDERS: dict[str, Callable[[BrainConfig, int, float], CentralComplexBrai
     "central_complex": _build_central_complex,
 }
 
-assert set(ENV_BUILDERS) == set(KNOWN_ENV_TYPES)
 assert set(EYE_BUILDERS) == set(KNOWN_EYE_TYPES)
 assert set(BRAIN_BUILDERS) == set(KNOWN_BRAINS)
-
-
-TRAINING_ONLY_ENV_PARAMS = frozenset({"random_start", "start_focus"})
-
-
-def build_env(config: EnvConfig, *, training: bool = False) -> Any:
-    """Construct the env a config names.
-
-    Args:
-        config: The env section of a run config.
-        training: Build the training env. Only then do ``params.random_start`` and
-            ``params.start_focus`` reach the env; every evaluation env (periodic,
-            ``scripts/evaluate.py``, robustness) drops them and starts on the grid, so lap
-            times stay comparable across runs.
-    """
-    if not training and TRAINING_ONLY_ENV_PARAMS & config.params.keys():
-        params = {
-            key: value
-            for key, value in config.params.items()
-            if key not in TRAINING_ONLY_ENV_PARAMS
-        }
-        config = replace(config, params=params)
-    return ENV_BUILDERS[config.type](config)
 
 
 def build_eye(config: EyeConfig, env: Any) -> Eye:
@@ -332,6 +279,8 @@ def train_seed(
 
     seed_everything(seed)
     device = resolve_device(config.device)
+    if config.num_envs > 1:
+        return _train_seed_vectorized(config, seed, run_dir, device=device, progress=progress)
     env = build_env(config.env, training=True)
     try:
         eye = build_eye(config.eye, env)
@@ -342,7 +291,7 @@ def train_seed(
         feature_dim = int(eye.feature_dim) if brain is None else brain.output_dim
         policy = build_policy(config.policy, feature_dim).to(device)
         if config.init_from is not None:
-            warm_start(Path(config.init_from), policy, brain)
+            warm_start(Path(config.init_from), policy, brain, ceiling=config.policy.init_log_std)
         learner = PPOLearner(policy, config.ppo, eye=trainable_eye, brain=brain, device=device)
         parameters = _parameter_counts(config, trainable_eye, brain, policy)
         (run_dir / PARAMETERS_FILENAME).write_text(
@@ -367,6 +316,54 @@ def train_seed(
             loggers.close()
     finally:
         env.close()
+
+
+def _train_seed_vectorized(
+    config: TrainConfig,
+    seed: int,
+    run_dir: Path,
+    *,
+    device: torch.device,
+    progress: ProgressCallback | None,
+) -> SeedResult:
+    """:func:`train_seed` over ``config.num_envs`` tracks (:mod:`.vector_train`)."""
+    from fly_driver.training.vector_train import build_vector_env, run_vectorized
+
+    vector_env = build_vector_env(config)
+    try:
+        eye = build_eye(config.eye, vector_env)
+        trainable_eye = _trainable_eye(config.eye, eye, device)
+        brain = build_brain(config.brain, eye, vector_env)
+        if brain is not None:
+            brain.to(device)
+        feature_dim = int(eye.feature_dim) if brain is None else brain.output_dim
+        policy = build_policy(config.policy, feature_dim).to(device)
+        if config.init_from is not None:
+            warm_start(Path(config.init_from), policy, brain, ceiling=config.policy.init_log_std)
+        learner = PPOLearner(policy, config.ppo, eye=trainable_eye, brain=brain, device=device)
+        parameters = _parameter_counts(config, trainable_eye, brain, policy)
+        (run_dir / PARAMETERS_FILENAME).write_text(
+            json.dumps(parameters, indent=2) + "\n", encoding="utf-8"
+        )
+        loggers = _open_loggers(config, seed, run_dir, parameters)
+        try:
+            return run_vectorized(
+                config,
+                seed,
+                vector_env=vector_env,
+                eye=eye,
+                brain=brain,
+                policy=policy,
+                learner=learner,
+                loggers=loggers,
+                run_dir=run_dir,
+                device=device,
+                progress=progress,
+            )
+        finally:
+            loggers.close()
+    finally:
+        vector_env.close()
 
 
 def _trainable_eye(config: EyeConfig, eye: Eye, device: torch.device) -> DifferentiableEye | None:
@@ -446,12 +443,15 @@ class _EpisodeTally:
         self.frame_rate_hz = frame_rate_hz
         self.start_m = start_m
         self.start_focused = start_focused
+        self.teacher_driven = False
         self.steps = 0
         self.total_return = 0.0
         self.terms: dict[str, float] = {}
         self.lap_complete = False
         self.lap_time: float | None = None
         self.distance_m: float | None = None
+        self.max_speed_mps: float | None = None
+        self.end_reason: str | None = None
 
     def add(self, reward: float, terms: Mapping[str, float], info: Mapping[str, Any]) -> None:
         if self.terms and set(terms) != set(self.terms):
@@ -465,6 +465,14 @@ class _EpisodeTally:
             self.terms[name] = self.terms.get(name, 0.0) + value
         if "progress_m" in info:
             self.distance_m = (self.distance_m or 0.0) + float(info["progress_m"])
+        if "speed_mps" in info:
+            self.max_speed_mps = max(self.max_speed_mps or 0.0, float(info["speed_mps"]))
+        if info.get("crashed"):
+            self.end_reason = "crash"
+        elif info.get("stalled"):
+            self.end_reason = "stall"
+        elif info.get("diverged"):
+            self.end_reason = "diverged"
         if info.get("lap_complete"):
             self.lap_complete = True
             reported = info.get("lap_time")
@@ -497,8 +505,19 @@ class _EpisodeTally:
             reward_terms=dict(self.terms),
             start_m=self.start_m,
             distance_m=self.distance_m,
-            start_focused=self.start_focused,
+            # A teacher-driven drive is not the policy's, so no score may count it.
+            start_focused=self.start_focused or self.teacher_driven,
+            end_reason=self._end_reason(terminated=terminated, truncated=truncated),
+            max_speed_kmh=None if self.max_speed_mps is None else 3.6 * self.max_speed_mps,
+            teacher_driven=self.teacher_driven,
         )
+
+    def _end_reason(self, *, terminated: bool, truncated: bool) -> str | None:
+        if self.end_reason is not None:
+            return self.end_reason
+        if truncated:
+            return "truncated"
+        return "terminated" if terminated else None
 
 
 def _reward_terms(info: Mapping[str, Any], reward: float) -> dict[str, float]:
@@ -811,7 +830,13 @@ def _sibling(checkpoint: Path, stage: str) -> Path:
     return path
 
 
-def warm_start(checkpoint: Path, policy: MlpPolicy, brain: CentralComplexBrain | None) -> None:
+def warm_start(
+    checkpoint: Path,
+    policy: MlpPolicy,
+    brain: CentralComplexBrain | None,
+    *,
+    ceiling: float | None = None,
+) -> None:
     """Load a checkpoint's policy, normaliser statistics and brain into freshly built ones.
 
     Each round starts from the previous round's best checkpoint (docs/training.md). The
@@ -821,6 +846,10 @@ def warm_start(checkpoint: Path, policy: MlpPolicy, brain: CentralComplexBrain |
         FileNotFoundError: If the checkpoint, or the brain beside it, is missing.
         ValueError: If the checkpoint's policy is shaped differently from ``policy``.
         RuntimeError: If the brain's weights do not fit ``brain`` (torch's strict load).
+
+    Args:
+        ceiling: The most the loaded log std may be (``policy.init_log_std``). Only a negative
+            ceiling applies, so the default 0.0 leaves every existing warm start as it was.
     """
     saved = MlpPolicy.load(checkpoint)
     shape = (saved.feature_dim, saved.hidden_sizes, saved.activation, saved.normalizer is None)
@@ -831,6 +860,9 @@ def warm_start(checkpoint: Path, policy: MlpPolicy, brain: CentralComplexBrain |
             f"unnormalised) {shape}, but this config builds {wanted}"
         )
     policy.load_state_dict(saved.state_dict())
+    if ceiling is not None and ceiling < 0:
+        with torch.no_grad():
+            policy.log_std.clamp_(max=float(ceiling))
     if brain is not None:
         weights = torch.load(_sibling(checkpoint, "brain"), map_location="cpu", weights_only=True)
         brain.load_state_dict(weights)

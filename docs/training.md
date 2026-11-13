@@ -194,6 +194,46 @@ To run another condition, copy the file, change `name` and the condition keys, k
 seeds. To spread the seeds over the cluster, give every job the same file and a different
 `--seed`; the run directories do not collide.
 
+## Many tracks per trainer (`num_envs`)
+
+The single-track loop runs render, eye, brain and policy one after another at batch size 1,
+about 55 steps/s on a lab PC, and the GPU sits mostly idle. With `num_envs: N` in a config,
+`train_seed` hands the run to `fly_driver/training/vector_train.py`:
+
+- each track runs in its own worker process (`fly_driver/training/vector_env.py`, `spawn`, with
+  frames in shared memory), so render and physics use N CPU cores;
+- the flyvis eye runs once per step on all N frames (`fly_driver/eyes/batched.py`), with one
+  optic-lobe state per track. A reset copies a cached grey warm-up state instead of integrating
+  a second of grey. The tests check the features against N separate `FlyvisEye`s, and they
+  match exactly, through resets and partial batches;
+- the brain keeps one membrane per track and steps through its batched `transition`; the
+  policy samples all N actions at once;
+- advantages are computed down each track's own column, exactly the single-track recursion
+  (tested), then flattened for the unchanged `PPOLearner`.
+
+`ppo.rollout_steps` stays the steps per update **summed over the tracks**, and must divide by
+`num_envs`. Everything a run writes is unchanged: `episodes.csv` (drives in the order they
+finished), `updates.csv`, checkpoints and periodic evaluation, so `train status`, the
+supervisor's 50-drive windows and `lab_compare.py` work as before. `episodes.csv` now also
+records `end_reason` (crash, stall, truncated...) and `max_speed_kmh` for every run.
+
+`fly_driver/configs/train_lab_fast.yaml` is the lab recipe at 16 tracks and 8,192 steps per
+update. Measure on the machine before settling on N:
+
+```bash
+python scripts/bench_vector.py --num-envs 1 8 16 24 32
+```
+
+On an M-series Mac CPU (flyvis has no Apple-GPU path), 8 tracks ran 80 steps/s against 35 for
+the single-track loop, limited by the eye on the CPU. On a CUDA GPU, the eye's batch cost is
+mostly fixed per call, so the gain should be much larger, but it hasn't been measured on a lab
+PC yet. One trainer at N tracks uses about N+1 CPU threads. Start `train_lab_fast.yaml` with one
+seed (`train start --seeds 0`) before adding more. The supervisor's `WARMUP_UPDATES` (150)
+counts updates, which are 4x larger here, so its restart rule waits 1.2M steps instead of 300k.
+
+The reward coach (`docs/reward-coach.md`) has Claude read a run's digest and propose the next
+recipe, inside guardrails that keep the reward's guarantees.
+
 ## What a run writes
 
 ```

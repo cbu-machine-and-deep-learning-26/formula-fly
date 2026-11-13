@@ -183,6 +183,10 @@ class PolicyConfig:
             layer. Optic-lobe activity spans roughly -3 to 6 a.u. with very different scales
             per cell type; pixels sit in ``[0, 1]``. The statistics are part of the checkpoint.
         init_log_std: Initial log standard deviation of the Gaussian over the raw action.
+            When negative it is also a warm-start ceiling: a checkpoint's larger log std is
+            lowered to it, so a recipe can cut a policy's exploration noise without retraining.
+            Nov 5, 2026: the lap-push policy carried std ~0.95 on every control, which swamped
+            a steering mean the teacher had already fixed.
         init_action_mean: Initial raw action mean ``(steer, throttle, brake)``. Zeros, the
             default, park an untrained car half the time; see ``MlpPolicy``.
     """
@@ -265,6 +269,13 @@ class PPOConfig:
         max_grad_norm: Global gradient clip.
         normalize_advantages: Standardise advantages per minibatch.
         target_kl: Stop an update early past this approximate KL; ``None`` never stops.
+        teacher_coef: Weight of the driving teacher's pedal loss
+            (:mod:`fly_driver.training.teacher`): squared error between the policy's mean
+            throttle and brake and the teacher's, on the states the policy visits. 0 turns it
+            off. Needs ``num_envs`` above 1.
+        teacher_steer_coef: Weight of the teacher's steering loss, the same for ``steer``.
+        teacher_speed_fraction: Share of the physics speed profile the teacher aims for.
+        teacher_lookahead_s: How far ahead, in seconds, the teacher reads the profile.
     """
 
     rollout_steps: int = 2048
@@ -281,6 +292,10 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     normalize_advantages: bool = True
     target_kl: float | None = None
+    teacher_coef: float = 0.0
+    teacher_steer_coef: float = 0.0
+    teacher_speed_fraction: float = 0.85
+    teacher_lookahead_s: float = 0.3
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
@@ -305,6 +320,22 @@ class PPOConfig:
             raise ValueError(f"ppo.max_grad_norm must be positive, got {self.max_grad_norm}")
         if self.target_kl is not None and _check_finite("ppo.target_kl", self.target_kl) <= 0:
             raise ValueError(f"ppo.target_kl must be positive or null, got {self.target_kl}")
+        for name in ("teacher_coef", "teacher_steer_coef"):
+            if _check_finite(f"ppo.{name}", getattr(self, name)) < 0:
+                raise ValueError(f"ppo.{name} must be non-negative, got {getattr(self, name)}")
+        if not 0 < _check_finite("ppo.teacher_speed_fraction", self.teacher_speed_fraction) <= 1.2:
+            raise ValueError(
+                f"ppo.teacher_speed_fraction must be in (0, 1.2], got {self.teacher_speed_fraction}"
+            )
+        if _check_finite("ppo.teacher_lookahead_s", self.teacher_lookahead_s) < 0:
+            raise ValueError(
+                f"ppo.teacher_lookahead_s must be non-negative, got {self.teacher_lookahead_s}"
+            )
+
+    @property
+    def uses_teacher(self) -> bool:
+        """Whether either teacher loss is on."""
+        return self.teacher_coef > 0 or self.teacher_steer_coef > 0
 
     @property
     def minibatch_size(self) -> int:
@@ -447,6 +478,11 @@ class TrainConfig:
         init_from: A ``policy_*.pt`` checkpoint to warm-start from, or ``None`` to start
             fresh. The policy (with its feature-normaliser statistics) and the brain beside
             it load before PPO starts; the optimiser starts fresh and the eye stays frozen.
+        num_envs: Tracks driven at once by one trainer. 1 is the original loop. More runs
+            :mod:`fly_driver.training.vector_train`: each track in its own worker process,
+            and the eye, brain and policy see every track's frame in one batch on the GPU.
+            ``ppo.rollout_steps`` stays the steps per update, summed over the tracks, so it
+            must divide by ``num_envs``.
     """
 
     name: str = "flyvis_frozen"
@@ -462,6 +498,7 @@ class TrainConfig:
     eval: PeriodicEvalConfig = field(default_factory=PeriodicEvalConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     init_from: str | None = None
+    num_envs: int = 1
 
     def __post_init__(self) -> None:
         if not self.name or os.sep in self.name or "/" in self.name or self.name in (".", ".."):
@@ -481,6 +518,14 @@ class TrainConfig:
             raise ValueError(
                 f"total_env_steps={self.total_env_steps} is less than one rollout of "
                 f"ppo.rollout_steps={self.ppo.rollout_steps}; nothing would be learned"
+            )
+        object.__setattr__(self, "num_envs", _check_int("num_envs", self.num_envs, minimum=1))
+        if self.ppo.uses_teacher and self.num_envs < 2:
+            raise ValueError("the ppo teacher needs the vectorized trainer: set num_envs >= 2")
+        if self.ppo.rollout_steps % self.num_envs != 0:
+            raise ValueError(
+                f"ppo.rollout_steps={self.ppo.rollout_steps} must divide by "
+                f"num_envs={self.num_envs}: every track fills the same share of each rollout"
             )
         if isinstance(self.brain, str):
             object.__setattr__(self, "brain", BrainConfig(type=self.brain))

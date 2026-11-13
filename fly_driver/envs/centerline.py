@@ -332,6 +332,20 @@ class Centerline:
             delta += self.length
         return delta
 
+    def mirrored(self) -> Centerline:
+        """Return the circuit flipped left to right (x -> -x), driven in the same order.
+
+        Every left corner becomes a right corner of the same radius at the same arclength,
+        so corner names, start zones and the lap length all still line up. Mirroring swaps
+        which side of the direction of travel each half-width is on.
+        """
+        points = self._points[:-1] * np.array([-1.0, 1.0])
+        return Centerline(
+            points=points,
+            half_width_right=self._half_width_left[:-1],
+            half_width_left=self._half_width_right[:-1],
+        )
+
     def resample(self, spacing_m: float) -> Centerline:
         """Return a copy resampled to roughly uniform ``spacing_m`` spacing.
 

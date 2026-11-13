@@ -44,6 +44,7 @@ class Drive(NamedTuple):
     distance_m: float
     lap_complete: bool
     start_focused: bool = False
+    teacher_driven: bool = False
 
 
 class Window(NamedTuple):
@@ -202,6 +203,7 @@ def read_drives(run_dir: Path) -> list[Drive]:
                         row["lap_complete"] == "True",
                         # Runs from before the column read as unfocused, which they were.
                         row.get("start_focused") == "True",
+                        row.get("teacher_driven") == "True",
                     )
                 )
             except (KeyError, TypeError, ValueError):

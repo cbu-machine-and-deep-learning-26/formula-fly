@@ -69,9 +69,24 @@ class SpeedProfile:
     bands: npt.NDArray[np.int64]
 
 
-def speed_profile(centerline: Centerline, spacing_m: float = 4.0) -> SpeedProfile:
-    """The braking profile along ``centerline``'s racing line."""
-    points = racing_line(centerline, spacing_m=spacing_m)
+def speed_profile(
+    centerline: Centerline, spacing_m: float = 4.0, *, line: str = "racing"
+) -> SpeedProfile:
+    """The braking profile along ``centerline``'s racing line, or along the centreline itself.
+
+    Args:
+        centerline: The track.
+        spacing_m: Point spacing.
+        line: ``"racing"`` (the painted braking line's) or ``"centre"``. A driver that follows
+            the centreline needs the centreline's: its corners are tighter than the racing
+            line's, and the racing profile put a centreline follower off at T7 at 230 km/h.
+    """
+    if line == "racing":
+        points = racing_line(centerline, spacing_m=spacing_m)
+    elif line == "centre":
+        points = np.asarray(centerline.resample(spacing_m).points, dtype=float)
+    else:
+        raise ValueError(f"line must be 'racing' or 'centre', got {line!r}")
     arclength = np.asarray(centerline.resample(spacing_m).arclength, dtype=float)[: len(points)]
     steps = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
     curvature = np.abs(signed_curvature(points))

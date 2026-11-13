@@ -70,6 +70,14 @@ class TrainingEpisode:
             terms so distance stays readable whatever the reward pays.
         start_focused: The start came from the env's ``start_focus`` share, not the uniform
             one. Always false without a focus, or for an env that does not publish it.
+        end_reason: Why the episode ended: ``crash`` (past the track limit), ``stall`` (the
+            slow rule), ``diverged``, ``truncated``, or ``terminated`` for any other env
+            ending. ``None`` for an env that publishes none of those flags.
+        max_speed_kmh: Fastest the car went in the episode, from ``info["speed_mps"]``, or
+            ``None`` for an env that does not publish it.
+        teacher_driven: The trainer executed the driving teacher's controls, not the
+            policy's (``env.params.teacher_drive``). Such a drive is also marked
+            ``start_focused``, so no score counts it.
     """
 
     seed: int
@@ -86,6 +94,9 @@ class TrainingEpisode:
     start_m: float | None = None
     distance_m: float | None = None
     start_focused: bool = False
+    end_reason: str | None = None
+    max_speed_kmh: float | None = None
+    teacher_driven: bool = False
 
     def to_row(self) -> dict[str, Any]:
         """Flat CSV row: the fixed columns, then one ``reward_<term>`` column per term."""
